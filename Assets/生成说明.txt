@@ -1,0 +1,10 @@
+搞操作图标
+
+工具：内置 image_gen，透明背景。
+风格参考：搞文件的 AppIcon.png 与 Lettering.png。
+最终生成提示词：
+Use case: logo-brand. Generate a NEW transparent white Chinese brush-calligraphy lettermark for a macOS app called 搞操作. Use the supplied reference images ONLY for brush-lettering family style; do not copy their text. Exact text is 操作, vertically stacked one character per line: 操 on top, 作 below. Both characters must be correctly written, crisp and readable, bold expressive Chinese brush strokes with elegant tapered tips. Pure opaque white lettering with clean antialiased edges on a genuinely transparent background. Square 1024 by 1024 composition; tightly grouped two-character mark centered, approximately 880 pixels tall leaving transparent margins. No square, no gray background, no paper texture, no shadows, no gradients, no speckles, no stray marks, no seal or extra writing. Asset intended to be deterministically composed onto an existing plain gray app icon.
+
+Lettering.png 为透明字形原稿。ComposeIcon.swift 根据实际透明度边界缩放到 512 像素高，绘制到 1024 画布，背景为 #777777 的 860×860 圆角色块，四周透明。MakeIcon.swift 生成各尺寸 ICNS。最终文件为 AppIcon.png 与 AppIcon.icns。
+
+2026-10-08 按用户反馈缩小：仅通过 ComposeIcon.swift 将同一透明字形从 602 等比缩至 512 像素高（85.05%），居中绘制，不重生成、不增加字重。1024 画布下，纯白像素（RGB 和 alpha > 0.9）边界：搞文件 298×602、搞邮件 253×547、搞机灵 308×573、搞门户 220×610；操作调整前 345×595，调整后 293×505。操作白色笔画面积由 67,102 降至 48,335 像素，与搞文件 49,460 接近。含较淡抗锯齿的操作边界约 300×511。图形高度不直接等同视觉大小，本次以实际显示、字宽和白色面积共同对齐。

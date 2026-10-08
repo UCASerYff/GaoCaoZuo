@@ -1,0 +1,9 @@
+Release/
+安全备份/
+.DS_Store
+.build/
+build/
+tmp/
+*.log
+*.xcuserstate
+TestResults/
