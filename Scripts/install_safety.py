@@ -20,6 +20,9 @@ import uuid
 
 BUNDLE = "com.gaoseries.GaoCaoZuo"
 APP_NAME = "搞操作.app"
+EXTENSION_BUNDLE = BUNDLE + ".FinderSync"
+EXTENSION_NAME = "GaoFinderSync.appex"
+PLUGIN_KIT = "/usr/bin/pluginkit"
 DEFAULT_TARGET = Path("/Applications") / APP_NAME
 PROJECT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path.home() / "Library/Application Support/GaoSeries/GaoCaoZuo"
@@ -32,10 +35,19 @@ def fail(message):
     raise RuntimeError(message)
 
 
+class CommandFailure(RuntimeError):
+    def __init__(self, argv, result):
+        self.argv = list(argv)
+        self.returncode = result.returncode
+        self.stdout = result.stdout
+        self.stderr = result.stderr
+        super().__init__("命令失败：" + argv[0] + "\n" + (result.stderr or result.stdout).strip()[:1800])
+
+
 def run(argv):
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode:
-        fail("命令失败：" + argv[0] + "\n" + (result.stderr or result.stdout).strip()[:1800])
+        raise CommandFailure(argv, result)
     return result.stdout
 
 
@@ -115,9 +127,65 @@ def verify_signature(path, simulate):
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(path)])
 
 
+def finder_extension(path):
+    """Return only this app's real embedded FinderSync bundle, never another plug-in."""
+    plugins = path / "Contents/PlugIns"
+    extension = plugins / EXTENSION_NAME
+    try:
+        extension.lstat()
+    except FileNotFoundError:
+        return None
+    if plugins.is_symlink() or extension.is_symlink() or not extension.is_dir():
+        fail("Finder 扩展必须是本应用内的实际目录：" + str(extension))
+    if extension.resolve() != path.resolve() / "Contents/PlugIns" / EXTENSION_NAME:
+        fail("Finder 扩展路径越出本应用，禁止修改系统登记。")
+    with (extension / "Contents/Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    if (info.get("CFBundleIdentifier") != EXTENSION_BUNDLE or
+            info.get("CFBundlePackageType") != "XPC!" or
+            info.get("NSExtension", {}).get("NSExtensionPointIdentifier") != "com.apple.FinderSync"):
+        fail("Finder 扩展标识不匹配，禁止修改系统登记：" + str(extension))
+    executable = info.get("CFBundleExecutable")
+    if (not isinstance(executable, str) or not executable or "/" in executable or
+            not (extension / "Contents/MacOS" / executable).is_file()):
+        fail("Finder 扩展缺少有效可执行文件。")
+    return extension
+
+
 def register(path, simulate, remove=False):
+    # Validate both identities before the first external mutation. LaunchServices
+    # may rediscover private staging apps after they were moved, so remove their
+    # exact old paths again during finalization, including their Finder extension.
+    app_info(path)
+    extension = finder_extension(path)
     if not simulate:
-        run([LSREGISTER, "-u" if remove else "-f", str(path)])
+        command = [LSREGISTER, "-u" if remove else "-f", str(path)]
+        try:
+            run(command)
+        except CommandFailure as error:
+            # kLSApplicationNotFoundErr is harmless only while removing this
+            # already validated, exact app path. Never ignore a failed -f scan.
+            expected = "failed to scan " + str(path) + ": -10814"
+            diagnostics = (expected, expected + "\n from spotlight")
+            outputs = (error.stdout.strip(), error.stderr.strip())
+            absent = (remove and error.argv == command and
+                      any(outputs in (("", message), (message, "")) for message in diagnostics))
+            if not absent:
+                raise
+        if extension is not None:
+            command = [PLUGIN_KIT, "-r" if remove else "-a", str(extension)]
+            try:
+                run(command)
+            except CommandFailure as error:
+                # Removing an already absent registration is an idempotent success.
+                # Match the full response AND requested path; permission, service,
+                # connection and unrelated-path failures must still stop cleanup.
+                expected = "remove: no plugin at " + str(extension)
+                outputs = (error.stdout.strip(), error.stderr.strip())
+                absent = (remove and error.argv == command and
+                          outputs in (("", expected), (expected, "")))
+                if not absent:
+                    raise
 
 
 def ensure_not_running(target, simulate):
@@ -214,30 +282,54 @@ def rollback(manifest, path):
     target = Path(manifest["target_app"])
     stage = Path(manifest["stage_dir"])
     previous = stage / "previous.app"
+    failed = stage / "failed-candidate.app"
     simulate = manifest["simulate"]
     ensure_not_running(target, simulate)
-    if target.exists():
-        app_info(target)
-        register(target, simulate, remove=True)
-        failed = stage / "failed-candidate.app"
-        if failed.exists():
+    # If a registration command failed after the old app was restored, a retry
+    # resumes that exact recovery rather than replacing the saved failed candidate.
+    restored = manifest["had_previous"] and failed.exists() and not previous.exists()
+    if restored:
+        verify_signature(target, simulate)
+        if inventory(target, permit_symlinks=True) != manifest.get("previous_inventory"):
+            fail("恢复后的旧程序发生变化，保留现场并停止回滚。")
+    else:
+        if target.exists() and failed.exists():
             fail("已有待检查的失败程序，禁止覆盖：" + str(failed))
-        target.rename(failed)
+        if manifest["had_previous"]:
+            if not previous.exists():
+                fail("旧程序未找到，已保留现有资料与备份，请人工核验安装记录。")
+            ensure_not_running(previous, simulate)
+            verify_signature(previous, simulate)
+            if inventory(previous, permit_symlinks=True) != manifest.get("previous_inventory"):
+                fail("旧程序备份发生变化，禁止回滚。")
+            # Staging copies can have been rediscovered after the original move.
+            register(previous, simulate, remove=True)
+        if target.exists():
+            app_info(target)
+            register(target, simulate, remove=True)
+            target.rename(failed)
+        if manifest["had_previous"]:
+            previous.rename(target)
+    if failed.exists():
+        ensure_not_running(failed, simulate)
+        app_info(failed)
+        manifest["failed_candidate"] = {
+            "path": str(failed), "inventory": inventory(failed, permit_symlinks=True),
+            "recorded_at": datetime.datetime.now().astimezone().isoformat()
+        }
+        atomic_json(path, manifest)
+        register(failed, simulate, remove=True)
     if manifest["had_previous"]:
-        if not previous.exists():
-            fail("旧程序未找到，已保留现有资料与备份，请人工核验安装记录。")
-        verify_signature(previous, simulate)
-        previous.rename(target)
         register(target, simulate)
-    if (stage / "failed-candidate.app").exists():
-        app_info(stage / "failed-candidate.app")
-        shutil.rmtree(str(stage / "failed-candidate.app"))
+    if failed.exists():
+        shutil.rmtree(str(failed))
+        manifest["failed_candidate"]["removed_after_registration"] = True
     if stage.exists() and not any(stage.iterdir()):
         stage.rmdir()
     manifest["state"] = "rolled_back"
     manifest["rolled_back_at"] = datetime.datetime.now().astimezone().isoformat()
     atomic_json(path, manifest)
-    print("已恢复旧程序。用户资料与安全备份均保留。" if manifest["had_previous"] else "已撤回首次安装。用户资料与安全备份均保留。")
+    print("已恢复旧程序。用户资料、安全备份与失败候选核验记录均保留。" if manifest["had_previous"] else "已撤回首次安装。用户资料、安全备份与失败候选核验记录均保留。")
 
 
 def install(args):
@@ -377,12 +469,29 @@ def finalize(args):
             app_info(stage / "previous.app")
             if inventory(stage / "previous.app", permit_symlinks=True) != manifest["previous_inventory"]:
                 fail("旧程序备份发生变化，禁止清理。")
+        old_apps = []
         if stage.exists():
+            old_apps = sorted(stage.iterdir())
             allowed = {"previous.app", "candidate.app"}
-            if any(child.name not in allowed for child in stage.iterdir()):
+            if any(child.name not in allowed for child in old_apps):
                 fail("暂存目录包含未知文件，禁止自动清理。")
-            for child in stage.iterdir():
+            # Check every old identity and process before changing any registration.
+            # A staging app opened by LaunchServices must be quit by the user first.
+            for child in old_apps:
                 app_info(child)
+                finder_extension(child)
+                ensure_not_running(child, manifest["simulate"])
+                expected = manifest.get("previous_inventory" if child.name == "previous.app" else "candidate_inventory")
+                if expected is None or inventory(child, permit_symlinks=True) != expected:
+                    fail("暂存程序发生变化，禁止清理：" + str(child))
+        finder_extension(target)
+        for child in old_apps:
+            register(child, manifest["simulate"], remove=True)
+        # Re-register the installed pair after removing stale registrations, but
+        # before deleting the recovery copy. Any failed command leaves the pending
+        # transaction, stage and data backups intact and safely retryable.
+        register(target, manifest["simulate"])
+        if stage.exists():
             shutil.rmtree(str(stage))
         manifest["state"] = "verified"
         manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()

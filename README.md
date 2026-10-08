@@ -2,7 +2,7 @@
 
 搞操作是一款原生 macOS 操作增强工具，把文件处理、窗口控制、剪贴板、压缩包与自定义动作集中到一个操作库，通过主窗口、菜单栏、快捷面板、访达菜单、系统服务和输入规则调用。
 
-首版：**V1.00 / build 1**。运行要求：Apple Silicon Mac、macOS 14 或更高版本。独立 Bundle ID：`com.gaoseries.GaoCaoZuo`。
+当前版：**V1.01 / build 2**（首版 V1.00 / build 1）。运行要求：Apple Silicon Mac、macOS 14 或更高版本。独立 Bundle ID：`com.gaoseries.GaoCaoZuo`。
 
 ## 功能
 
@@ -66,7 +66,7 @@ Scripts/test.sh
 Scripts/build.sh
 ```
 
-发行包输出到 `Release/GaoCaoZuo-1.00.dmg`，旁边有 SHA-256 校验文件。临时构建目录位于系统临时目录，结束自动删除。只构建 `.app`：
+发行包输出到 `Release/GaoCaoZuo-1.01.dmg`，旁边有 SHA-256 校验文件。临时构建目录位于系统临时目录，结束自动删除。只构建 `.app`：
 
 ```sh
 Scripts/build.sh --app-only /private/tmp/GaoCaoZuo-review.app

@@ -62,7 +62,29 @@ final class GaoFinderSync: FIFinderSync {
         components.scheme = "gaocaozuo"; components.host = "perform"; components.path = "/" + action.id
         components.queryItems = [URLQueryItem(name: "payload", value: data.base64EncodedString())]
         guard let url = components.url, url.absoluteString.utf8.count <= 120_000 else { return }
-        NSWorkspace.shared.open(url)
+        // A retained installation backup can also claim our URL scheme. Address only the app
+        // containing this extension, and do not substitute another running copy of that app.
+        let extensionURL = Bundle.main.bundleURL
+        let pluginsURL = extensionURL.deletingLastPathComponent()
+        let contentsURL = pluginsURL.deletingLastPathComponent()
+        let containingAppURL = contentsURL.deletingLastPathComponent()
+        guard extensionURL.pathExtension == "appex",
+              pluginsURL.lastPathComponent == "PlugIns",
+              contentsURL.lastPathComponent == "Contents",
+              containingAppURL.pathExtension == "app",
+              Bundle(url: containingAppURL)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else {
+            NSLog("GaoFinderSync open failed code=%ld", -1)
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.allowsRunningApplicationSubstitution = false
+        NSWorkspace.shared.open([url], withApplicationAt: containingAppURL, configuration: configuration) { _, error in
+            if let error = error as NSError? {
+                // Never log selected paths, the URL payload, or localized error userInfo.
+                NSLog("GaoFinderSync open failed code=%ld", error.code)
+            }
+        }
     }
 
     /// Invoke only from menu(for:) or its action callback, as required by FIFinderSyncController.
