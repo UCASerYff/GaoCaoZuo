@@ -30,21 +30,18 @@ final class GaoFinderSync: FIFinderSync {
 
     override func menu(for menuKind: FIMenuKind) -> NSMenu? {
         guard menuKind == .contextualMenuForItems || menuKind == .contextualMenuForContainer else { return nil }
-        let controller = FIFinderSyncController.default()
-        let selection = controller.selectedItemURLs() ?? []
-        let context = controller.targetedURL()
         let menu = NSMenu(title: "搞操作")
         let root = NSMenuItem(title: "搞操作", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "搞操作")
-        for action in actions {
-            let isCreate = action.id.hasPrefix("new.")
-            let urls: [URL]
-            if isCreate { urls = context.map { [$0] } ?? selection }
-            else { urls = selection.isEmpty ? context.map { [$0] } ?? [] : selection }
+        submenu.autoenablesItems = false
+        for (index, action) in actions.enumerated() {
+            let urls = contextURLs(for: action)
             let item = NSMenuItem(title: action.title, action: #selector(openAction(_:)), keyEquivalent: "")
             item.target = self
+            // Finder forwards a menu action across the extension boundary. Keep only a scalar action tag.
+            // Do not depend on an arbitrary representedObject dictionary surviving that boundary.
+            item.tag = index + 1
             item.isEnabled = !urls.isEmpty && urls.count <= 1000
-            item.representedObject = ["action": action.id, "paths": urls.map(\.path)] as [String: Any]
             submenu.addItem(item)
         }
         root.submenu = submenu; menu.addItem(root)
@@ -52,16 +49,34 @@ final class GaoFinderSync: FIFinderSync {
     }
 
     @objc private func openAction(_ sender: NSMenuItem) {
-        guard let context = sender.representedObject as? [String: Any],
-              let action = context["action"] as? String,
-              actions.contains(where: { $0.id == action }),
-              let paths = context["paths"] as? [String], !paths.isEmpty,
+        guard sender.tag > 0, sender.tag <= actions.count else { return }
+        let index = sender.tag - 1
+        let action = actions[index]
+        // Apple's FinderSync contract makes these getters valid inside the menu action itself.
+        // Read before opening the containing app, while Finder's menu context is still current.
+        let paths = contextURLs(for: action).map(\.path)
+        guard !paths.isEmpty,
               paths.count <= 1000,
               let data = try? JSONSerialization.data(withJSONObject: paths) else { return }
         var components = URLComponents()
-        components.scheme = "gaocaozuo"; components.host = "perform"; components.path = "/" + action
+        components.scheme = "gaocaozuo"; components.host = "perform"; components.path = "/" + action.id
         components.queryItems = [URLQueryItem(name: "payload", value: data.base64EncodedString())]
         guard let url = components.url, url.absoluteString.utf8.count <= 120_000 else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Invoke only from menu(for:) or its action callback, as required by FIFinderSyncController.
+    private func contextURLs(for action: Action) -> [URL] {
+        let controller = FIFinderSyncController.default()
+        let selection = controller.selectedItemURLs() ?? []
+        let target = controller.targetedURL()
+        let urls: [URL]
+        if action.id.hasPrefix("new.") {
+            urls = target.map { [$0] } ?? selection
+        } else {
+            urls = selection.isEmpty ? target.map { [$0] } ?? [] : selection
+        }
+        var seen = Set<String>()
+        return urls.filter { $0.isFileURL && $0.path.hasPrefix("/") && seen.insert($0.path).inserted }
     }
 }
