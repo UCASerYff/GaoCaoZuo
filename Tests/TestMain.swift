@@ -5,10 +5,14 @@ import AppKit
     @MainActor static func main() async throws {
         try runSystemTests()
         try runWindowDragTests()
+        try runWindowFocusTests()
+        try runFinderCommandTests()
         print("系统几何与输入规则测试通过")
         try runDataTests()
         print("资料完整性与剪贴板附件测试通过")
         try await runFileToolsTests()
+        try await runQuickFileActionsTests()
+        try await runQuickQueueTests()
         print("文件与压缩真实引擎测试通过")
         let temp=FileManager.default.temporaryDirectory.appendingPathComponent("GaoCaoZuo-model-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:temp)}

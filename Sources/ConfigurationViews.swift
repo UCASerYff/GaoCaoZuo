@@ -330,11 +330,15 @@ private struct WorkflowActionChoice: Identifiable {
     @State private var loginBusy = false
     @State private var loginMessage: String?
     @State private var backupMessage: String?
+    init(store: OperationStore, initialTab: Int = 0) {
+        self.store = store
+        _selectedTab = State(initialValue: (0...4).contains(initialTab) ? initialTab : 0)
+    }
     var body: some View {
         TabView(selection:$selectedTab) {
             general.tabItem { Label("外观与剪贴板",systemImage:"slider.horizontal.3") }.tag(0)
             SettingsWindowBehaviorView(store:store).tabItem { Label("窗口",systemImage:"rectangle.3.group") }.tag(4)
-            SettingsPermissionsView(input:store.input,windows:store.windows).tabItem { Label("权限",systemImage:"hand.raised") }.tag(1)
+            SettingsPermissionsView(input:store.input).tabItem { Label("权限",systemImage:"hand.raised") }.tag(1)
             data.tabItem { Label("数据",systemImage:"externaldrive") }.tag(2)
             about.tabItem { Label("关于",systemImage:"info.circle") }.tag(3)
         }.padding(16).frame(width:660,height:580)
@@ -466,31 +470,73 @@ private struct WorkflowActionChoice: Identifiable {
 
 @MainActor private struct SettingsPermissionsView: View {
     @ObservedObject var input: InputController
-    @ObservedObject var windows: WindowManager
+    @StateObject private var status = PermissionsStatus()
     var body: some View {
-        Form {
-            Section("窗口控制") {
-                LabeledContent("辅助功能",value:windows.isTrusted ? "已授权" : "尚未授权")
-                Text("用于定位和调整您选择的目标窗口。").font(.caption).foregroundStyle(.secondary)
-                Button("设置辅助功能权限") { windows.requestPermission() }
-                if let error=windows.lastError { Text(error).font(.caption).foregroundStyle(.orange) }
-            }
-            Section("快捷键与鼠标") {
-                LabeledContent("输入监听",value:input.permissionGranted ? "权限可用" : "尚未授权")
-                Button("设置输入监控权限") { input.requestPermission() }
-                Text("识别您配置的快捷键、鼠标按钮和方向手势。不会记录键盘输入内容。").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Finder 右键菜单") {
-                Button("打开系统扩展设置") {
-                    let pane: String
-                    if #available(macOS 15, *) { pane="com.apple.LoginItems-Settings.extension" }
-                    else { pane="com.apple.ExtensionsPreferences" }
-                    if let url=URL(string:"x-apple.systempreferences:"+pane) { NSWorkspace.shared.open(url) }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(status.allReady ? "所需权限已就绪" : "完成授权，操作更顺手").font(.headline)
+                    Text("已完成 \(status.readyCount)/3 项 · 从系统设置返回后自动检查")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("在系统设置中启用“搞操作访达扩展”。不同 macOS 版本可位于“通用 → 登录项与扩展 → 文件提供程序”或“隐私与安全性 → 扩展”。扩展当前覆盖桌面、下载与文稿目录。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("云盘或系统管理目录可能不显示扩展菜单，仍可用系统服务、快捷面板或拖入文件。").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("重新检测") { status.refresh() }
+                if !status.allReady {
+                    Button("继续完成授权") { status.continueSetup() }.buttonStyle(.borderedProminent)
+                }
+            }.padding(.horizontal, 6)
+            if let message = status.message {
+                Text(message).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 6)
             }
-        }.formStyle(.grouped)
+            Form {
+                Section {
+                    permissionRow("辅助功能", detail: "调整与拖动窗口、自动粘贴、锁定屏幕。",
+                                  granted: status.accessibilityGranted, action: status.openAccessibility)
+                }
+                Section {
+                    permissionRow("输入监控", detail: "识别快捷键、鼠标按钮和方向手势，不记录键盘输入内容。",
+                                  granted: status.inputMonitoringGranted, action: status.openInputMonitoring)
+                    Text(status.inputListeningAvailable
+                         ? (input.isPaused ? "输入监听当前已暂停，可在快捷键与手势页恢复。" : "输入监听所需权限已具备。")
+                         : "输入监听当前不可用。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !status.inputMonitoringGranted && status.accessibilityGranted {
+                        Text("当前监听可通过辅助功能权限工作；输入监控这一项尚未授权。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    permissionRow("Finder 扩展", detail: "在 Finder 右键菜单中直接操作文件。",
+                                  granted: status.finderExtensionEnabled, enabledLabel: "已启用", missingLabel: "未启用",
+                                  action: status.openFinderExtension)
+                    Text("系统中的名称为“搞操作访达扩展”。在主目录及系统支持的位置显示菜单；部分云盘或系统管理目录可能不显示。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("文件与文件夹") {
+                    Text("文件访问由 macOS 按实际目录管理。遇到访问提示时允许所需目录，或用“选择文件”“选择目录”指定项目。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Text("现有功能不要求屏幕录制、完全磁盘访问或自动化权限。系统授权需要在系统界面完成；此页仅请求授权并检测结果。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.formStyle(.grouped)
+        }
+        .onAppear { status.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            status.refresh()
+        }
+    }
+    private func permissionRow(_ title: String, detail: String, granted: Bool,
+                               enabledLabel: String = "已授权", missingLabel: String = "未授权",
+                               action: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(granted ? Color.green : Color.secondary).padding(.top, 3)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack { Text(title).fontWeight(.medium); Text(granted ? enabledLabel : missingLabel).font(.caption).foregroundStyle(.secondary) }
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Button(granted ? "查看设置" : "去开启", action: action)
+        }.padding(.vertical, 3)
     }
 }

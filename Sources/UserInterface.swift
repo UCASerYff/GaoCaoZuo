@@ -26,12 +26,7 @@ struct OperationRootView: View {
                 if !store.dataHealthy { Label("资料保护模式：\(store.data.failure ?? "无法写入资料")",systemImage:"exclamationmark.shield").font(.callout).foregroundStyle(.red).padding().frame(maxWidth:.infinity,alignment:.leading) }
                 sectionContent
                 Divider()
-                HStack {
-                    if store.busy || store.workflowRunning { ProgressView().controlSize(.small) }
-                    Text(store.message).lineLimit(2).font(.callout).foregroundStyle(.secondary)
-                    Spacer()
-                    if store.awake { Label("保持唤醒",systemImage:"sun.max").font(.callout) }
-                }.padding(.horizontal,20).padding(.vertical,10)
+                OperationTaskStatusView(store: store)
             }.frame(minWidth:740,minHeight:640)
         }
         .sheet(item:$store.sheet) { request in ToolSheet(store:store,request:request) }
@@ -46,6 +41,38 @@ struct OperationRootView: View {
         case .history: RecoveryView(store:store)
         default: ActionWorkspace(store:store)
         }
+    }
+}
+
+private struct OperationTaskStatusView: View {
+    @ObservedObject var store: OperationStore
+    @ObservedObject private var archive: ArchiveService
+    init(store: OperationStore) { self.store = store; self.archive = store.archive }
+    var body: some View {
+        HStack(spacing: 12) {
+            if store.busy || store.workflowRunning || archive.isRunning {
+                ProgressView().controlSize(.small)
+            }
+            Text(store.awaitingArchivePassword ? "等待解压密码" : store.message)
+                .lineLimit(2).font(.callout).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if store.queuedCount > 0 {
+                Menu {
+                    Button("清除等待任务") { store.cancelWaitingJobs() }
+                } label: { Label("等待 \(store.queuedCount) 项", systemImage: "list.bullet") }
+                .controlSize(.small).fixedSize()
+            }
+            if archive.isRunning || store.awaitingArchivePassword {
+                Button("取消任务") { store.cancelQuickArchive() }
+                    .controlSize(.small).help("停止压缩或解压，同时取消等待任务")
+            }
+            if !store.lastOutputs.isEmpty {
+                Button { NSWorkspace.shared.activateFileViewerSelecting(store.lastOutputs) } label: {
+                    Label("上次结果", systemImage: "folder")
+                }.controlSize(.small).help("在 Finder 中显示最近生成或处理的文件")
+            }
+            if store.awake { Image(systemName: "sun.max").foregroundStyle(.orange).help("保持唤醒已开启") }
+        }.padding(.horizontal, 20).padding(.vertical, 10)
     }
 }
 
@@ -86,14 +113,33 @@ struct ActionWorkspace: View {
             HStack { Text("常用目录").font(.headline); Spacer(); Button("添加目录…",action:store.addFolder) }
             if store.settings.folders.isEmpty { Text("收藏常用目录，快速打开或在复制、移动时选择。").foregroundStyle(.secondary) }
             ForEach(store.settings.folders) { folder in
-                HStack { Button { store.openFolder(folder) } label: { Label(folder.name,systemImage:"folder") }; Text(folder.path).foregroundStyle(.secondary).font(.caption).lineLimit(1); Spacer(); Button { store.update {$0.folders.removeAll {$0.id == folder.id}} } label: { Image(systemName:"minus.circle") }.buttonStyle(.borderless).help("移除收藏") }
+                HStack(spacing: 10) {
+                    Button { store.openFolder(folder) } label: { Label(folder.name, systemImage: "folder") }
+                    Text(folder.path).foregroundStyle(.secondary).font(.caption).lineLimit(1).help(folder.path)
+                    Spacer(minLength: 8)
+                    if !store.selection.isEmpty {
+                        Button("复制到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: false) }
+                            .controlSize(.small).disabled(!store.dataHealthy)
+                        Button("移动到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: true) }
+                            .controlSize(.small).disabled(!store.dataHealthy)
+                    }
+                    Button { store.update { $0.folders.removeAll { $0.id == folder.id } } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).help("移除收藏")
+                }
             }
         }.padding().background(.quaternary.opacity(0.5),in:RoundedRectangle(cornerRadius:12))
     }
     private var templates: some View {
         VStack(alignment:.leading,spacing:12) {
             HStack { Text("文件模板").font(.headline); Spacer(); Button("管理模板…"){store.sheet = ToolRequest(actionID:"templates.edit")} }
-            HStack { ForEach(store.settings.templates.prefix(5)) { template in Button(template.name){store.sheet = ToolRequest(actionID:"template."+template.id.uuidString)} }; Spacer() }
+            ScrollView(.horizontal) {
+                HStack {
+                    ForEach(store.settings.templates) { template in
+                        Button(template.name) { store.prepare("template." + template.id.uuidString) }
+                            .disabled(!store.dataHealthy).help("在当前目录直接新建，自动避开同名文件")
+                    }
+                }
+            }.scrollIndicators(.hidden)
         }
     }
 }
@@ -127,7 +173,12 @@ struct OperationPanelView: View {
     @State private var selected = 0
     @FocusState private var focused: Bool
     var actions: [OperationAction] {
-        let all = OperationAction.all.filter {$0.id != "panel.show" && $0.matches(query)}
+        let workflows = store.settings.workflows.map { workflow in
+            OperationAction(id: "workflow.run." + workflow.id.uuidString, title: workflow.name,
+                            detail: "运行组合操作 · \(workflow.steps.count) 个步骤", icon: "square.stack.3d.up",
+                            section: .workflows, keywords: "组合 工作流 workflow")
+        }
+        let all = (OperationAction.all + workflows).filter { $0.id != "panel.show" && $0.matches(query) }
         return query.isEmpty ? all.sorted { a,b in
             let af = store.settings.favorites.contains(a.id), bf = store.settings.favorites.contains(b.id)
             if af != bf { return af }
@@ -156,6 +207,7 @@ struct OperationPanelView: View {
         }.frame(width:600,height:480)
         .onAppear { selected = 0; focused = true }
         .onChange(of:query) { _,_ in selected = 0 }
+        .onChange(of: actions.map(\.id)) { _, _ in selected = min(selected, max(0, actions.count - 1)) }
         .onExitCommand(perform:close)
         .onMoveCommand { direction in if direction == .down { selected = min(selected+1,max(0,actions.count-1)) }; if direction == .up { selected = max(0,selected-1) } }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { acceptDrop($0,store:store) }

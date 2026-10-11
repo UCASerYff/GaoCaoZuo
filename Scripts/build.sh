@@ -15,16 +15,17 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
 ditto "$PROJECT_DIR/FinderExtension" "$STAGING/FinderExtension"
+ditto "$PROJECT_DIR/Shared" "$STAGING/Shared"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Assets/Lettering.png" -nt "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Scripts/ComposeIcon.swift" -nt "$PROJECT_DIR/Assets/AppIcon.png" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/ComposeIcon.swift" "$PROJECT_DIR/Assets/Lettering.png" "$PROJECT_DIR/Assets/AppIcon.png"
 fi
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
-  "$STAGING"/Sources/*.swift -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
+  "$STAGING"/Sources/*.swift "$STAGING"/Shared/*.swift -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
   -framework CryptoKit -framework ApplicationServices -framework Carbon -framework CoreImage \
   -framework ServiceManagement -framework IOKit -framework Security -framework ImageIO -o "$APP/Contents/MacOS/GaoCaoZuo"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoFinderSync -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
-  "$STAGING"/FinderExtension/*.swift -framework AppKit -framework FinderSync -o "$EXT/Contents/MacOS/GaoFinderSync"
+  "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi

@@ -171,12 +171,44 @@ enum WindowDragGeometry {
     }
 }
 
+/// Keep focus restoration bound to the captured window, even if the user switches apps meanwhile.
+/// Callbacks let the state transitions be tested without moving the user's real windows.
+@MainActor
+enum WindowFocusRestoration {
+    static func perform(targetPID: pid_t, ownPID: pid_t,
+                        frontmostPID: () -> pid_t?, validateTarget: () throws -> Void,
+                        raiseTarget: () throws -> Void, activateTarget: () -> Bool) throws {
+        func validate() throws {
+            guard targetPID != ownPID else {
+                throw SystemControlError.message("不能将搞操作自己的窗口作为本次操作目标。")
+            }
+            try validateTarget()
+            guard let foreground = frontmostPID(), foreground == targetPID || foreground == ownPID else {
+                throw SystemControlError.message("前台应用已变化，已停止切换窗口；请重新选择需要操作的窗口。")
+            }
+        }
+        try validate()
+        // Raise the specific window before activating the app, so another window is not chosen.
+        try raiseTarget()
+        try validate()
+        guard activateTarget() else {
+            throw SystemControlError.message("窗口布局已调整，但系统拒绝激活目标应用。请手动切回该窗口查看。")
+        }
+        // Activation can reorder an application's windows; raise the same captured element again.
+        try validate()
+        try raiseTarget()
+    }
+}
+
 @MainActor
 final class WindowManager: ObservableObject {
     @Published private(set) var isTrusted = AXIsProcessTrusted()
     @Published private(set) var lastError: String?
     private var target: AXUIElement?
     private var targetPID: pid_t?
+    // Retain the original application object: a recycled PID must never select a new process.
+    private var targetApplication: NSRunningApplication?
+    private var targetLaunchDate: Date?
     private struct OriginalFrame { let element: AXUIElement; let pid: pid_t; let frame: CGRect }
     private var originalFrames: [OriginalFrame] = []
     private struct DragSession {
@@ -195,6 +227,8 @@ final class WindowManager: ObservableObject {
               application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
         target = nil
         targetPID = nil
+        targetApplication = nil
+        targetLaunchDate = nil
         guard isTrusted else { return }
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
         AXUIElementSetMessagingTimeout(applicationElement, 0.2)
@@ -203,6 +237,8 @@ final class WindowManager: ObservableObject {
         if result == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
             target = (focused as! AXUIElement)
             targetPID = application.processIdentifier
+            targetApplication = application
+            targetLaunchDate = application.launchDate
         }
     }
 
@@ -218,10 +254,11 @@ final class WindowManager: ObservableObject {
             guard isTrusted else { throw SystemControlError.message("窗口操作需要辅助功能权限，请先在设置中授权。") }
             // Direct shortcuts act on the current foreground app; the panel keeps its captured target.
             captureTarget()
-            guard let window = target, let pid = targetPID,
-                  let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else {
+            guard let window = target, let pid = targetPID, let application = targetApplication else {
                 throw SystemControlError.message("没有可操作的目标窗口。请先切换到需要调整的窗口，再打开操作面板。")
             }
+            let launchDate = targetLaunchDate
+            try validateTarget(window, pid: pid, application: application, launchDate: launchDate)
             var fullScreen: CFTypeRef?
             if AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &fullScreen) == .success,
                (fullScreen as? Bool) == true {
@@ -258,6 +295,20 @@ final class WindowManager: ObservableObject {
                 originalFrames.removeAll { NSRunningApplication(processIdentifier: $0.pid)?.isTerminated != false }
                 originalFrames.append(OriginalFrame(element: window, pid: pid, frame: current))
             }
+            try WindowFocusRestoration.perform(
+                targetPID: pid, ownPID: ProcessInfo.processInfo.processIdentifier,
+                frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+                validateTarget: { try self.validateTarget(window, pid: pid, application: application, launchDate: launchDate) },
+                raiseTarget: {
+                    guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
+                        throw SystemControlError.message("窗口布局已调整，但目标应用不支持将这个窗口带到前台。请手动切回查看。")
+                    }
+                },
+                activateTarget: {
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+                    NSApp.yieldActivation(to: application)
+                    return application.activate(from: .current, options: [])
+                })
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -350,11 +401,33 @@ final class WindowManager: ObservableObject {
             }
             rememberOriginal(drag)
             self.target = drag.window; targetPID = drag.pid
+            targetApplication = NSRunningApplication(processIdentifier: drag.pid)
+            targetLaunchDate = targetApplication?.launchDate
             lastError = nil
         } catch { lastError = error.localizedDescription; throw error }
     }
 
     func cancelWindowDrag() { dragSession = nil }
+
+    private func validateTarget(_ window: AXUIElement, pid: pid_t, application: NSRunningApplication, launchDate: Date?) throws {
+        guard pid != ProcessInfo.processInfo.processIdentifier,
+              application.processIdentifier == pid, !application.isTerminated,
+              let current = NSRunningApplication(processIdentifier: pid), !current.isTerminated,
+              application.launchDate == launchDate, current.launchDate == launchDate else {
+            throw SystemControlError.message("原目标应用已经退出或失效，请重新选择窗口。")
+        }
+        var actualPID: pid_t = 0
+        guard AXUIElementGetPid(window, &actualPID) == .success, actualPID == pid else {
+            throw SystemControlError.message("原目标窗口已经失效，请重新选择窗口。")
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, 0.2)
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windows) == .success,
+              let elements = windows as? [AXUIElement], elements.contains(where: { CFEqual($0, window) }) else {
+            throw SystemControlError.message("原目标窗口已关闭，或应用不提供标准窗口列表；请重新选择可操作的窗口。")
+        }
+    }
 
     private func checkDragApplication(_ drag: DragSession) throws {
         isTrusted = AXIsProcessTrusted()

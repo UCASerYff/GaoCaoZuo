@@ -30,21 +30,23 @@ struct ToolSheet: View {
     @State private var resultURL: URL?
     @State private var taskError: String?
     @State private var working = false
+    @State private var didAutoLoadArchive = false
     init(store: OperationStore, request: ToolRequest) {
-        self.store = store; self.archive = store.archive; self.request = request; self.items = store.selection
-        _directory = State(initialValue:store.defaultDirectory.path)
+        let selected = request.files ?? store.selection
+        self.store = store; self.archive = store.archive; self.request = request; self.items = selected
+        _directory = State(initialValue:store.directory(for:selected).path)
         switch request.actionID {
         case "new.markdown": _filename = State(initialValue:"未命名.md"); _content = State(initialValue:"# 新文档\n\n")
         case "new.folder": _filename = State(initialValue:"新文件夹")
-        case "archive.create": _filename = State(initialValue:(store.selection.first?.deletingPathExtension().lastPathComponent ?? "归档")+".zip")
-        case "archive.extract", "archive.list": _filename = State(initialValue:(store.selection.first?.deletingPathExtension().lastPathComponent ?? "归档")+"-解压")
+        case "archive.create": _filename = State(initialValue:(selected.count == 1 ? selected[0].deletingPathExtension().lastPathComponent : "归档")+".zip")
+        case "archive.extract", "archive.list": _filename = State(initialValue:(selected.first.map(QuickFileActions.extractionFolderName) ?? "归档")+"-解压")
         default:
             if request.actionID.hasPrefix("template."), let id = UUID(uuidString:String(request.actionID.dropFirst(9))), let template = store.settings.templates.first(where:{$0.id == id}) {
                 _templateID = State(initialValue:id); _filename = State(initialValue:template.filename); _content = State(initialValue:template.content)
             }
         }
     }
-    var title: String { OperationAction.all.first(where:{$0.id == request.actionID})?.title ?? (request.actionID == "templates.edit" ? "管理文件模板" : "从模板新建") }
+    var title: String { request.title ?? OperationAction.all.first(where:{$0.id == request.actionID})?.title ?? (request.actionID == "templates.edit" ? "管理文件模板" : "从模板新建") }
     var running: Bool { working || store.busy || archive.isRunning }
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -74,7 +76,9 @@ struct ToolSheet: View {
         .onAppear {
             if ["archive.list","archive.extract"].contains(request.actionID), let path = items.first?.path { do{password = try PasswordVault.read(account:path) ?? ""}catch{taskError=error.localizedDescription} }
             if request.actionID == "files.rename" { updatePreview() }
+            loadArchivePreviewIfReady()
         }
+        .onChange(of:running) { _, value in if !value { loadArchivePreviewIfReady() } }
     }
     @ViewBuilder private var contentView: some View {
         if request.actionID.hasPrefix("new.") || request.actionID.hasPrefix("template.") { newFileView }
@@ -139,6 +143,9 @@ struct ToolSheet: View {
                 directoryPicker
                 HStack { TextField("压缩包名称",text:$filename).textFieldStyle(.roundedBorder); Picker("格式",selection:$format){ForEach(ArchiveFormat.allCases){Text($0.title).tag($0)}}.frame(width:170).onChange(of:format){_,value in filename=URL(fileURLWithPath:filename).deletingPathExtension().lastPathComponent+"."+value.rawValue;if value == .zip {solid=false}} }
                 SecureField("加密密码（留空不加密）",text:$password).textFieldStyle(.roundedBorder)
+                if format == .zip, !password.unicodeScalars.allSatisfy({ $0.value < 128 }) {
+                    Label("ZIP 加密不支持非 ASCII 密码；中文或其他 Unicode 密码请选择 7Z。",systemImage:"info.circle").font(.callout).foregroundStyle(.orange)
+                }
                 Toggle("将密码保存到系统钥匙串",isOn:$rememberPassword).disabled(password.isEmpty)
                 Toggle("分卷压缩",isOn:$split)
                 if split { Stepper("每卷 \(splitMB) MB",value:$splitMB,in:1...100000) }
@@ -150,7 +157,7 @@ struct ToolSheet: View {
                 TextField("新的解压文件夹名称",text:$filename).textFieldStyle(.roundedBorder)
                 SecureField("压缩包密码（需要时填写）",text:$password).textFieldStyle(.roundedBorder)
                 Toggle("将密码保存到系统钥匙串",isOn:$rememberPassword).disabled(password.isEmpty)
-                HStack { Button("查看包内文件",action:listArchive).disabled(running || items.count != 1); Button("全部解压"){extractArchive(selected:nil)}.buttonStyle(.borderedProminent).disabled(running || items.count != 1 || !store.dataHealthy); if !selectedPaths.isEmpty { Button("提取勾选 \(selectedPaths.count) 项"){extractArchive(selected:Array(selectedPaths))}.disabled(running || !store.dataHealthy) } }
+                HStack { Button(request.actionID == "archive.list" ? "刷新列表" : "查看包内文件",action:listArchive).disabled(running || items.count != 1); Button("全部解压"){extractArchive(selected:nil)}.buttonStyle(.borderedProminent).disabled(running || items.count != 1 || !store.dataHealthy); if !selectedPaths.isEmpty { Button("提取勾选 \(selectedPaths.count) 项"){extractArchive(selected:Array(selectedPaths))}.disabled(running || !store.dataHealthy) } }
                 if !entries.isEmpty { HStack { Text("\(entries.count) 个项目").font(.caption); Spacer(); Button("全选文件"){selectedPaths=Set(entries.filter{!$0.isDirectory}.map(\.path))};Button("清除勾选"){selectedPaths=[]} }; ForEach(entries.prefix(2000)) { entry in HStack { Toggle(isOn:Binding(get:{selectedPaths.contains(entry.path)},set:{v in if v{selectedPaths.insert(entry.path)}else{selectedPaths.remove(entry.path)}})){Label(entry.path,systemImage:entry.isDirectory ? "folder" : "doc")}; Spacer(); Text(ByteCountFormatter.string(fromByteCount:Int64(clamping:entry.size),countStyle:.file)).font(.caption).foregroundStyle(.secondary) }.disabled(entry.isDirectory) }; if entries.count > 2000 {Text("列表仅展示前 2000 项；全部解压仍处理完整内容。").font(.caption).foregroundStyle(.secondary)} }
             }
             if archive.isRunning { if let p=archive.progress{ProgressView(value:p)}else{ProgressView()} }
@@ -161,20 +168,63 @@ struct ToolSheet: View {
             }
         }
     }
+    private func loadArchivePreviewIfReady() {
+        guard request.actionID == "archive.list", !didAutoLoadArchive, !running, items.count == 1 else{return}
+        didAutoLoadArchive=true
+        listArchive()
+    }
     private func createArchive() {
+        guard !running, store.dataHealthy else{return}
         guard filename == URL(fileURLWithPath:filename).lastPathComponent, !filename.contains(".."), !filename.isEmpty else{taskError="请输入有效的压缩包名称。";return}
+        guard format != .zip || password.unicodeScalars.allSatisfy({ $0.value < 128 }) else{taskError="ZIP 加密不支持非 ASCII 密码。请将格式改为 7Z，或使用英文字母、数字及 ASCII 符号。";return}
         let items=items,destination=URL(fileURLWithPath:directory).appendingPathComponent(filename),pw=password.isEmpty ? nil : password
-        Task { do {taskError=nil;let output=try await archive.create(items:items,destination:destination,format:format,password:pw,splitMB:split ? splitMB : nil,solid:solid);resultURL=output;if rememberPassword,let pw{try PasswordVault.save(pw,account:output.path)};store.message="压缩完成"}catch{taskError=error.localizedDescription} }
+        let selectedFormat=format,volumeSize=split ? splitMB : nil,solidMode=solid,remember=rememberPassword
+        working=true;store.busy=true;taskError=nil;resultURL=nil
+        Task {
+            defer {working=false;store.busy=false;store.drainQuickJobs()}
+            do {
+                let output=try await archive.create(items:items,destination:destination,format:selectedFormat,password:pw,splitMB:volumeSize,solid:solidMode)
+                let records=archive.lastResultReceipts
+                guard !records.isEmpty else{throw DataFailure.message("压缩包已生成，但未取得恢复记录，请核验输出。")}
+                try store.record(records)
+                finishArchive(title:"压缩完成",outputs:records.map(\.destination),password:pw,remember:remember,account:output.path)
+            } catch {taskError=error.localizedDescription}
+        }
     }
     private func listArchive() {
-        guard let url=items.first,items.count == 1 else{return}
-        Task {do{taskError=nil;entries=try await archive.list(archive:url,password:password.isEmpty ? nil : password);selectedPaths=[]}catch{taskError=error.localizedDescription}}
+        guard !running,let url=items.first,items.count == 1 else{return}
+        let pw=password.isEmpty ? nil : password
+        working=true;store.busy=true;taskError=nil;selectedPaths=[]
+        Task {
+            defer {working=false;store.busy=false;store.drainQuickJobs()}
+            do {entries=try await archive.list(archive:url,password:pw)}
+            catch {entries=[];taskError=error.localizedDescription}
+        }
     }
     private func extractArchive(selected:[String]?) {
-        guard let url=items.first,items.count == 1 else{return}
+        guard !running,store.dataHealthy,let url=items.first,items.count == 1 else{return}
         guard !filename.isEmpty,filename != ".",filename != "..",!filename.contains("/"),!filename.contains("\0") else{taskError="请输入有效的新文件夹名称。";return}
-        let destination=URL(fileURLWithPath:directory).appendingPathComponent(filename),pw=password.isEmpty ? nil : password
-        Task {do{taskError=nil;let output=try await archive.extract(archive:url,to:destination,password:pw,selected:selected);resultURL=output;if rememberPassword,let pw{try PasswordVault.save(pw,account:url.path)};store.message="解压完成"}catch{taskError=error.localizedDescription}}
+        let destination=URL(fileURLWithPath:directory).appendingPathComponent(filename),pw=password.isEmpty ? nil : password,remember=rememberPassword
+        working=true;store.busy=true;taskError=nil;resultURL=nil
+        Task {
+            defer {working=false;store.busy=false;store.drainQuickJobs()}
+            do {
+                _=try await archive.extract(archive:url,to:destination,password:pw,selected:selected)
+                let records=archive.lastResultReceipts
+                guard !records.isEmpty else{throw DataFailure.message("解压结果已生成，但未取得恢复记录，请核验输出。")}
+                try store.record(records)
+                finishArchive(title:"解压完成",outputs:records.map(\.destination),password:pw,remember:remember,account:url.path)
+            } catch {taskError=error.localizedDescription}
+        }
+    }
+    private func finishArchive(title:String,outputs:[URL],password:String?,remember:Bool,account:String) {
+        var warning:String?
+        if remember,let password {
+            do {try PasswordVault.save(password,account:account)}
+            catch {warning="\(title)，但密码未能保存到钥匙串：\(error.localizedDescription)"}
+        }
+        if store.sheet?.id == request.id {store.sheet=nil}
+        store.notify(warning ?? title,failed:warning != nil,outputs:outputs)
     }
     private var imageView: some View {
         VStack(alignment:.leading,spacing:16) {

@@ -113,6 +113,9 @@ struct FileToolsTests {
             let secret = "test-only-中文-password"
             let encrypted = try await service.create(items: [file], destination: root.appendingPathComponent("secret.7z"), format: .sevenZip, password: secret, splitMB: 1, solid: true)
             try expect(encrypted.pathExtension == "001", "7Z volume result")
+            let volumeReceipts = service.lastResultReceipts
+            try expect(!volumeReceipts.isEmpty && volumeReceipts.contains(where: { $0.destination == encrypted }), "split archive publishes recovery receipts")
+            for receipt in volumeReceipts { try expect(try FileTools.fingerprint(receipt.destination) == receipt.fingerprint, "volume receipt matches prepublication fingerprint") }
             let encryptedEntries = try await service.list(archive: encrypted, password: secret)
             try expect(encryptedEntries.first?.path == file.lastPathComponent, "encrypted 7Z stdin password listing")
             let decrypted = try await service.extract(archive: encrypted, to: root.appendingPathComponent("decrypted"), password: secret, selected: nil)
@@ -122,7 +125,7 @@ struct FileToolsTests {
             try expect(abs((sevenZipAttributes[.modificationDate] as! Date).timeIntervalSince(historicalDate)) <= 2, "7Z modification time restored")
             try expect(!service.output.contains(secret), "password excluded from output")
             do { _ = try await service.list(archive: encrypted, password: "wrong"); throw NSError(domain: "Expected wrong password rejection", code: 1) }
-            catch let error as ArchiveError { try expect(error.localizedDescription.contains("退出码"), "wrong password detected") }
+            catch ArchiveError.passwordRequired(let incorrect) { try expect(incorrect, "wrong password detected") }
             try expect(!service.isRunning, "state reset after failure")
             let cancellableInput = try FileTools.createFile(in: source, name: "cancel-input.bin", content: "")
             try Data(repeating: 0x17, count: 64 * 1024 * 1024).write(to: cancellableInput)

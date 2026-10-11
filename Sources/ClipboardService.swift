@@ -218,6 +218,29 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         previousApplication = application
     }
     func paste(_ item: ClipboardItem, plain: Bool = false) throws {
+        try pastePreparedContent { try copy(item, plain: plain) }
+    }
+
+    /// Paste the current system text without formatting; does not enable history.
+    func pastePlainText() throws {
+        let board = NSPasteboard.general
+        let sourceCount = board.changeCount
+        guard let text = board.string(forType: .string), !text.isEmpty else {
+            throw DataFailure.message("剪贴板没有可粘贴的文字。")
+        }
+        try pastePreparedContent {
+            guard board.changeCount == sourceCount else {
+                throw DataFailure.message("剪贴板内容已变化，请重试纯文本粘贴。")
+            }
+            board.clearContents()
+            guard board.setString(text, forType: .string) else {
+                throw DataFailure.message("无法写入系统剪贴板。")
+            }
+            count = board.changeCount
+        }
+    }
+
+    private func pastePreparedContent(_ prepareContent: () throws -> Void) throws {
         guard AXIsProcessTrusted() else { throw DataFailure.message("自动粘贴需要辅助功能权限；也可以先复制后手动按 ⌘V。") }
         guard !IsSecureEventInputEnabled() else { throw DataFailure.message("系统正处于安全输入状态，暂不发送自动粘贴。") }
         rememberApplication(NSWorkspace.shared.frontmostApplication)
@@ -227,7 +250,7 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
               let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { throw DataFailure.message("无法创建系统粘贴事件。") }
         pasteTask?.cancel()
-        try copy(item, plain: plain)
+        try prepareContent()
         let expectedCount = NSPasteboard.general.changeCount
         guard target.activate(options: []) else { throw DataFailure.message("目标应用无法激活；内容已复制，可手动粘贴。") }
         pasteTask = Task { @MainActor [weak self] in

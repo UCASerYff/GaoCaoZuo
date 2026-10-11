@@ -13,23 +13,27 @@ struct ArchiveEntry: Identifiable, Hashable {
     let path: String
     let size: UInt64
     let isDirectory: Bool
+    let isEncrypted: Bool
     let permissions: UInt16?
     let modifiedAt: Date?
     var id: String { path }
-    init(path: String, size: UInt64, isDirectory: Bool, permissions: UInt16? = nil, modifiedAt: Date? = nil) {
+    init(path: String, size: UInt64, isDirectory: Bool, permissions: UInt16? = nil, modifiedAt: Date? = nil, isEncrypted: Bool = false) {
         self.path = path; self.size = size; self.isDirectory = isDirectory
         self.permissions = permissions; self.modifiedAt = modifiedAt
+        self.isEncrypted = isEncrypted
     }
 }
 
 enum ArchiveError: LocalizedError {
     case invalid(String)
     case failed(Int32, String)
+    case passwordRequired(incorrect: Bool)
     case cancelled
     var errorDescription: String? {
         switch self {
         case .invalid(let message): return message
         case .failed(let code, let detail): return "压缩引擎退出码 \(code)：\(detail)"
+        case .passwordRequired(let incorrect): return incorrect ? "密码不正确，请重新输入。" : "此压缩包需要密码。"
         case .cancelled: return "已取消，原始文件未改变。"
         }
     }
@@ -42,6 +46,7 @@ final class ArchiveService: ObservableObject {
     @Published var progress: Double?
     @Published var output = ""
     @Published var lastResultURL: URL?
+    private(set) var lastResultReceipts: [FileOperationReceipt] = []
     private var process: Process?
     private var cancellationRequested = false
     private var jobDeadline = Date.distantFuture
@@ -101,6 +106,13 @@ final class ArchiveService: ObservableObject {
         try checkCancellation()
         let targets = volumes.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
         for target in targets { try requireAbsent(target) }
+        // Fingerprint isolated results before publishing any path the user can start editing.
+        let receipts = try await Task.detached(priority: .userInitiated) {
+            try zip(volumes, targets).map { source, target in
+                FileOperationReceipt(kind: .create, destination: target, fingerprint: try FileTools.fingerprint(source))
+            }
+        }.value
+        try checkCancellation()
         var committed: [(URL, URL)] = []
         do {
             for (source, target) in zip(volumes, targets) {
@@ -113,6 +125,7 @@ final class ArchiveService: ObservableObject {
             throw error
         }
         let result = destination.deletingLastPathComponent().appendingPathComponent(first.lastPathComponent)
+        lastResultReceipts = receipts
         lastResultURL = result; progress = 1; output += "\n压缩完成，完整性验证通过。"
         return result
     }
@@ -134,12 +147,15 @@ final class ArchiveService: ObservableObject {
         try requireAbsent(destination)
         let entries = try await checkedEntries(archive: archive, password: password)
         let selected = try validateSelection(selected, entries: entries)
+        let expected = entries.filter { entry in selected == nil || selected!.contains(where: { entry.path == $0 || entry.path.hasPrefix($0 + "/") }) }
+        if password?.isEmpty != false, expected.contains(where: { $0.isEncrypted }) {
+            throw ArchiveError.passwordRequired(incorrect: false)
+        }
         let stage = try makeStage(in: destination.deletingLastPathComponent())
         defer { try? fm.removeItem(at: stage) }
         let payload = stage.appendingPathComponent("payload", isDirectory: true)
         try fm.createDirectory(at: payload, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         output = "路径与容量预检通过，正在隔离解压…\n"
-        let expected = entries.filter { entry in selected == nil || selected!.contains(where: { entry.path == $0 || entry.path.hasPrefix($0 + "/") }) }
         let files = expected.filter { !$0.isDirectory }
         for entry in expected where entry.isDirectory {
             try fm.createDirectory(at: payload.appendingPathComponent(entry.path, isDirectory: true), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -154,15 +170,20 @@ final class ArchiveService: ObservableObject {
         }
         try checkCancellation()
         try Self.verifyExtractedTree(payload, expected: expected)
+        let receipt = try await Task.detached(priority: .userInitiated) {
+            FileOperationReceipt(kind: .create, destination: destination, fingerprint: try FileTools.fingerprint(payload))
+        }.value
+        try checkCancellation()
         try requireAbsent(destination)
         try fm.moveItem(at: payload, to: destination)
+        lastResultReceipts = [receipt]
         lastResultURL = destination; progress = 1; output += "\n解压完成，结果已核验并保存到新目录。"
         return destination
     }
 
     private func begin() throws {
         guard !isRunning else { throw ArchiveError.invalid("已有压缩任务正在运行，请等待或取消。") }
-        cancellationRequested = false; isRunning = true; progress = nil; output = ""; lastResultURL = nil
+        cancellationRequested = false; isRunning = true; progress = nil; output = ""; lastResultURL = nil; lastResultReceipts = []
         jobDeadline = Date().addingTimeInterval(60 * 60)
     }
     private func finish() { process = nil; isRunning = false }
@@ -231,7 +252,8 @@ final class ArchiveService: ObservableObject {
             guard size <= maximumExpandedBytes, expanded <= maximumExpandedBytes - size else { throw ArchiveError.invalid("压缩包展开内容超过 20 GiB 安全预算。") }
             expanded += size
             entries.append(.init(path: clean, size: size, isDirectory: directory,
-                                 permissions: parsePermissions(attributes), modifiedAt: parseModifiedDate(fields["Modified"])))
+                                 permissions: parsePermissions(attributes), modifiedAt: parseModifiedDate(fields["Modified"]),
+                                 isEncrypted: fields["Encrypted"] == "+"))
             guard entries.count <= maximumEntries else { throw ArchiveError.invalid("压缩包超过 10 万个项目的安全预算。") }
         }
         for line in text.components(separatedBy: .newlines) {
@@ -467,8 +489,29 @@ final class ArchiveService: ObservableObject {
         if let failure = streamWriter?.failure { throw ArchiveError.invalid(failure) }
         if let reason = collector.stopReason { throw ArchiveError.invalid(reason) }
         guard !collector.exceeded else { throw ArchiveError.invalid("压缩引擎输出超过安全预算。") }
+        // Preserve cancellation/budget errors; only explicit engine diagnostics request a password.
+        if task.terminationStatus != 0,
+           Self.isPasswordDiagnostic(text, exitCode: task.terminationStatus, passwordProvided: password?.isEmpty == false) {
+            throw ArchiveError.passwordRequired(incorrect: password?.isEmpty == false)
+        }
         guard task.terminationStatus == 0 else { throw ArchiveError.failed(task.terminationStatus, String(redacted.suffix(2000))) }
         return text
+    }
+
+    nonisolated static func isPasswordDiagnostic(_ text: String, exitCode: Int32, passwordProvided: Bool) -> Bool {
+        // Progress output uses backspaces and can put ERROR immediately after a progress update.
+        let lines = text.replacingOccurrences(of: "\u{8}", with: "\n").lowercased()
+            .components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+        let wrongPassword = lines.contains { line in
+            line.hasPrefix("error:") && (line.contains("wrong password") || line.contains("password is incorrect")) ||
+            line.hasPrefix("errors:") && line.contains("wrong password") ||
+            line == "cannot open encrypted archive. wrong password?" ||
+            line == "can not open encrypted archive. wrong password?"
+        }
+        // Header-encrypted archives abort at EOF when no stdin password is available. A prompt
+        // alone is insufficient: e.g. unsupported password encoding can produce E_INVALIDARG.
+        let missingPassword = !passwordProvided && exitCode == 255 && lines.contains("enter password:") && lines.contains("break signaled")
+        return wrongPassword || missingPassword
     }
 
     private nonisolated static func exceedsDiskBudget(_ root: URL) -> Bool {
