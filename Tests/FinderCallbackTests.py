@@ -28,6 +28,54 @@ FinderCallbackMainActor.sync {
     }
 }
 
+FinderCallbackMainActor.sync {
+    let selector=NSSelectorFromString("openAction:")
+    var snapshot=FinderMenuSnapshot()
+    snapshot.preferences.items=snapshot.preferences.items.map { value in
+        var result=value;result.enabled=true;return result
+    }
+    let folderID=UUID().uuidString,templateID=UUID().uuidString,binaryID=UUID().uuidString,appID=UUID().uuidString
+    snapshot.folders=[FinderMenuFolder(id:folderID,name:"Same title",path:"/private/tmp")]
+    snapshot.templates=[FinderMenuTemplate(id:templateID,name:"Same title",binary:false),FinderMenuTemplate(id:binaryID,name:"Same title",binary:true)]
+    snapshot.applications=[FinderMenuApplication(id:appID,name:"Same title")]
+    let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:[URL(fileURLWithPath:"/private/tmp/callback.txt")],hasSelection:true,target:finder,selector:selector)
+    let registry=FinderMenuActionRegistry(),now=Date()
+    precondition(registry.assignTags(in:menu,selector:selector,now:now))
+    func leaves(_ menu:NSMenu)->[NSMenuItem] {
+        menu.items.flatMap { item in item.submenu.map(leaves) ?? (item.action == selector ? [item] : []) }
+    }
+    let items=leaves(menu),tags=items.map(\.tag)
+    precondition(!items.isEmpty && tags.allSatisfy{$0>0} && Set(tags).count == tags.count)
+    let actions=Set(items.compactMap{$0.representedObject as? String})
+    for action in ["archive.create","folder.copy."+folderID,"folder.move."+folderID,"template."+templateID,"binaryTemplate."+binaryID,"file.open."+appID] {
+        precondition(actions.contains(action),"Missing nested action sample")
+    }
+    for item in items {
+        // Reconstruct only Finder's documented remote fields. Neither object
+        // identity, title uniqueness nor representedObject may carry the command.
+        let remote=NSMenuItem(title:"Same title",action:item.action,keyEquivalent:"")
+        remote.tag=item.tag
+        precondition(remote.representedObject == nil)
+        precondition(registry.action(for:remote.tag,now:now) == item.representedObject as? String)
+    }
+    for tag in [0,-1,Int.max] {precondition(registry.action(for:tag,now:now) == nil)}
+    precondition(registry.action(for:tags[0],now:now.addingTimeInterval(301)) == nil)
+    let forged=NSMenuItem(title:"Same title",action:selector,keyEquivalent:"")
+    forged.representedObject="archive.create"
+    precondition(registry.action(for:forged.tag,now:now) == nil)
+    precondition(registry.assignTags(in:menu,selector:selector,now:now))
+    precondition(Set(tags).isDisjoint(with:Set(leaves(menu).map(\.tag))))
+    for tag in tags {precondition(registry.action(for:tag,now:now) == nil)}
+    let bad=NSMenuItem(title:"Unknown command",action:selector,keyEquivalent:"")
+    bad.representedObject="untrusted.action"
+    menu.addItem(bad)
+    precondition(registry.assignTags(in:menu,selector:selector,now:now))
+    precondition(bad.tag == 0 && !bad.isEnabled)
+    registry.invalidate()
+    for item in leaves(menu) {precondition(registry.action(for:item.tag,now:now) == nil)}
+    print("FinderSync remote-copy regression passed: nested UUID actions, unique tags, stale/expired/invalid rejection")
+}
+
 var complete = false
 DispatchQueue.global(qos: .userInitiated).async {
     precondition(!Thread.isMainThread)

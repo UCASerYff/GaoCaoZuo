@@ -15,8 +15,46 @@ enum FinderCallbackMainActor {
     }
 }
 
+/// Finder copies menu items across XPC and does not preserve representedObject.
+/// Only tags issued for the latest menu may resolve to an action. Tags are never
+/// reused by this instance, so a delayed callback cannot select a newer action.
+@MainActor final class FinderMenuActionRegistry {
+    private var nextTag = 1
+    private var actions: [Int:String] = [:]
+    private var expiresAt = Date.distantPast
+
+    func invalidate() {
+        actions.removeAll(keepingCapacity:true)
+        expiresAt = .distantPast
+    }
+    func assignTags(in menu:NSMenu,selector:Selector,now:Date=Date())->Bool {
+        invalidate()
+        func visit(_ menu:NSMenu)->Bool {
+            for item in menu.items {
+                item.tag=0
+                if let submenu=item.submenu {
+                    if !visit(submenu) {return false}
+                } else if item.action == selector {
+                    guard let action=item.representedObject as? String,FinderActionRequest.isAllowed(action) else {item.isEnabled=false;continue}
+                    guard nextTag<Int.max else {return false}
+                    item.tag=nextTag;actions[nextTag]=action;nextTag += 1
+                }
+            }
+            return true
+        }
+        guard visit(menu) else {invalidate();return false}
+        expiresAt=now.addingTimeInterval(300)
+        return true
+    }
+    func action(for tag:Int,now:Date=Date())->String? {
+        guard tag>0,now<=expiresAt,let action=actions[tag],FinderActionRequest.isAllowed(action) else {return nil}
+        return action
+    }
+}
+
 final class GaoFinderSync: FIFinderSync {
     private var observer:NSObjectProtocol?
+    @MainActor private var menuActions:FinderMenuActionRegistry?
     override init() {
         super.init()
         FinderCallbackMainActor.sync { updateScope() }
@@ -45,19 +83,23 @@ final class GaoFinderSync: FIFinderSync {
         return menu
     }
     @MainActor private func makeMenu(for menuKind:FIMenuKind)->NSMenu? {
+        let registry=menuActions ?? FinderMenuActionRegistry();menuActions=registry
+        registry.invalidate()
         guard [.contextualMenuForItems,.contextualMenuForContainer,.contextualMenuForSidebar,.toolbarItemMenu].contains(menuKind) else {return nil}
         let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
         if menuKind == .toolbarItemMenu && !snapshot.preferences.showToolbar {return nil}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
         let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
         guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,preferences:snapshot.preferences) else{return nil}
-        return FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
+        let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
+        guard registry.assignTags(in:menu,selector:#selector(openAction(_:))) else {return nil}
+        return menu
     }
     @objc private func openAction(_ sender:NSMenuItem) {
         FinderCallbackMainActor.sync { performAction(sender) }
     }
     @MainActor private func performAction(_ sender:NSMenuItem) {
-        guard let action=sender.representedObject as? String,FinderActionRequest.isAllowed(action) else{return}
+        guard let action=menuActions?.action(for:sender.tag),FinderActionRequest.isAllowed(action) else {NSLog("GaoFinderSync ignored unknown or expired menu command");return}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
         let containerAction=FinderMenuContext.usesContainer(action)
         let urls=containerAction ? controller.targetedURL().map{[$0]} ?? selection : selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
