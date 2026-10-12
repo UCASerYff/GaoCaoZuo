@@ -1,0 +1,8 @@
+The official cwebp tool includes code from libpng, libjpeg-turbo / the Independent JPEG Group, zlib, LibTIFF, Lerc, libdeflate, Zstandard and XZ Utils (liblzma).
+
+This software is based in part on the work of the Independent JPEG Group.
+This software includes code from XZ Utils <https://tukaani.org/xz/>.
+
+Full applicable license texts and Lerc NOTICE are retained in third_party/.
+THIRD_PARTY-SOURCE.json records official source URLs, downloaded archive and license hashes, and the distinction between identified binary versions and unconfirmed versions.
+No third-party binary has been rebuilt or replaced by this notice update.

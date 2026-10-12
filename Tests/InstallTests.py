@@ -299,6 +299,32 @@ def main():
                 raise AssertionError("Permission failure was treated as missing")
             except PermissionError:
                 pass
+        # Protecting a backup must never follow a shared-directory symlink.
+        shared = root / "shared-user-data"
+        shared.mkdir(); shared.chmod(0o755)
+        attached = shared / "attachment.txt"; attached.write_bytes(b"real attachment"); attached.chmod(0o644)
+        linked_backup = root / "linked-backup"; linked_backup.mkdir()
+        (linked_backup / "shared").symlink_to(shared, target_is_directory=True)
+        installer.protect_backup(linked_backup)
+        assert shared.stat().st_mode & 0o777 == 0o755
+        assert attached.stat().st_mode & 0o777 == 0o644
+        # Validate the optional QuickLook identity before any registration mutation.
+        ql_app = root / "quicklook-app"; fixture(ql_app,"1.03",b"ql fixture")
+        ql = ql_app / "Contents/PlugIns/GaoArchiveQuickLook.appex"
+        (ql / "Contents/MacOS").mkdir(parents=True)
+        ql_info = {"CFBundleIdentifier":BUNDLE+".QuickLook","CFBundleExecutable":"GaoArchiveQuickLook","CFBundlePackageType":"XPC!","NSExtension":{"NSExtensionPointIdentifier":"com.apple.quicklook.preview"}}
+        (ql / "Contents/Info.plist").write_bytes(plistlib.dumps(ql_info))
+        (ql / "Contents/MacOS/GaoArchiveQuickLook").write_bytes(b"fixture")
+        assert installer.quicklook_extension(ql_app) == ql
+        ql_info["CFBundleIdentifier"] = "another.app.QuickLook"
+        (ql / "Contents/Info.plist").write_bytes(plistlib.dumps(ql_info))
+        with unittest.mock.patch.object(installer,"run") as commands:
+            try:
+                installer.register(ql_app,False)
+                raise AssertionError("Foreign QuickLook extension was registered")
+            except RuntimeError:
+                pass
+            commands.assert_not_called()
         registration_regressions(installer, root)
         # Cleanup is confined to checked older artifacts of this independent app.
         installer.PROJECT = root / "project"

@@ -1,0 +1,37 @@
+Python runtime for the archive adapter
+
+Project: https://github.com/astral-sh/python-build-standalone
+Release: 20261009, CPython 3.13.16, aarch64-apple-darwin
+Archive: cpython-3.13.16+20261009-aarch64-apple-darwin-install_only.tar.gz
+Download: https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.13.16%2B20261009-aarch64-apple-darwin-install_only.tar.gz
+SHA-256: 11785155d0f70e634178219c20925d8f20be00a3da4684fc4f5019dd15602ef7
+
+The runtime is redistributed under the CPython/PSF license and the included
+third-party license notices. License texts and PYTHON.json were obtained from
+the same release's aarch64-apple-darwin-pgo+lto-full.tar.zst distribution.
+Only Python's interpreter and standard library required to run the adapter
+are retained from this distribution. Separately licensed pyzipper and
+PyCryptodome packages provide Unicode-password AES ZIP interoperability;
+their notices and download hashes are in ../pyzipper and ../pycryptodomex.
+pip, development headers, manuals, Tcl/Tk, GUI demos, and the
+unused shared libpython are removed. No FastZip or other proprietary framework
+has been copied. Interpreter source is available from the upstream CPython
+and python-build-standalone projects.
+
+The adapter uses /usr/lib/libarchive.2.dylib supplied by macOS. libarchive is
+not copied into the distribution. Its upstream source and license:
+https://github.com/libarchive/libarchive
+https://github.com/libarchive/libarchive/blob/master/COPYING
+
+acefile is separately redistributed in ArchiveBridge/acefile.py. See
+../acefile/LICENSE.md and ../acefile/SOURCE.txt.
+
+Additional notice audit (2026-10-12):
+CPython-RUNTIME-LICENSE.txt is an exact copy of the retained runtime standard
+library LICENSE.txt, including its incorporated-software acknowledgements.
+LICENSE.zlib-ng.txt is taken from the exact zlib-ng 2.2.4 source pinned by this
+release of python-build-standalone; see ZLIB-NG-SOURCE.json for source and hashes.
+The macOS PYTHON.json links zlib/binascii to the system z library; the license
+metadata reference does not mean a separate zlib-ng shared library is shipped.
+The unused config-3.13-darwin/python.o link object is removed. No interpreter
+or extension binary is changed by this notice audit.

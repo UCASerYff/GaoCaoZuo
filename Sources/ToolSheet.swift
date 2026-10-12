@@ -21,6 +21,9 @@ struct ToolSheet: View {
     @State private var split = false
     @State private var splitMB = 100
     @State private var solid = false
+    @State private var archiveCreation = ArchiveCreationOptions()
+    @State private var archiveExtraction = ArchiveExtractionOptions()
+    @State private var ignoredPatterns = ""
     @State private var entries: [ArchiveEntry] = []
     @State private var selectedPaths: Set<String> = []
     @State private var imageFormat = "png"
@@ -35,6 +38,9 @@ struct ToolSheet: View {
         let selected = request.files ?? store.selection
         self.store = store; self.archive = store.archive; self.request = request; self.items = selected
         _directory = State(initialValue:store.directory(for:selected).path)
+        _archiveCreation = State(initialValue: store.archiveEnhancements.preferences.creation)
+        _archiveExtraction = State(initialValue: store.archiveEnhancements.preferences.extraction)
+        _ignoredPatterns = State(initialValue: store.archiveEnhancements.preferences.creation.ignoredPatterns.joined(separator: "\n"))
         switch request.actionID {
         case "new.markdown": _filename = State(initialValue:"未命名.md"); _content = State(initialValue:"# 新文档\n\n")
         case "new.folder": _filename = State(initialValue:"新文件夹")
@@ -143,13 +149,18 @@ struct ToolSheet: View {
                 directoryPicker
                 HStack { TextField("压缩包名称",text:$filename).textFieldStyle(.roundedBorder); Picker("格式",selection:$format){ForEach(ArchiveFormat.allCases){Text($0.title).tag($0)}}.frame(width:170).onChange(of:format){_,value in filename=URL(fileURLWithPath:filename).deletingPathExtension().lastPathComponent+"."+value.rawValue;if value == .zip {solid=false}} }
                 SecureField("加密密码（留空不加密）",text:$password).textFieldStyle(.roundedBorder)
-                if format == .zip, !password.unicodeScalars.allSatisfy({ $0.value < 128 }) {
-                    Label("ZIP 加密不支持非 ASCII 密码；中文或其他 Unicode 密码请选择 7Z。",systemImage:"info.circle").font(.callout).foregroundStyle(.orange)
-                }
                 Toggle("将密码保存到系统钥匙串",isOn:$rememberPassword).disabled(password.isEmpty)
+                Picker("压缩等级", selection: $archiveCreation.level) { ForEach(ArchiveCompressionLevel.allCases) { Text($0.title).tag($0) } }
+                Stepper("CPU 线程：\(archiveCreation.threads == 0 ? "自动" : String(archiveCreation.threads))", value: $archiveCreation.threads, in: 0...256)
+                Toggle("每个项目分别压缩", isOn: $archiveCreation.separateItems).disabled(split)
+                Toggle("名称附加日期", isOn: $archiveCreation.appendDate)
+                Toggle("完成后显示结果", isOn: $archiveCreation.revealResults)
+                Toggle("核验完成后将原件移到废纸篓", isOn: $archiveCreation.trashOriginals)
+                DisclosureGroup("忽略文件模式") { Text("每行一条，支持 * 和 ?，例如 .DS_Store、*.tmp").font(.caption).foregroundStyle(.secondary); TextEditor(text: $ignoredPatterns).frame(height: 70) }
                 Toggle("分卷压缩",isOn:$split)
                 if split { Stepper("每卷 \(splitMB) MB",value:$splitMB,in:1...100000) }
-                if format == .sevenZip { Toggle("固实压缩",isOn:$solid); Text("7Z 设置密码时自动加密文件名；ZIP 使用 AES 加密，部分系统解压器可能不支持。").font(.caption).foregroundStyle(.secondary) }
+                if format == .sevenZip { Toggle("固实压缩",isOn:$solid); Toggle("加密文件名", isOn: $archiveCreation.encryptFileNames).disabled(password.isEmpty) }
+                Text("ZIP 使用 AES256，可使用中文密码；部分系统自带解压器不支持 AES。7Z 可分别选择文件名加密与固实压缩。").font(.caption).foregroundStyle(.secondary)
                 Button("开始压缩",action:createArchive).buttonStyle(.borderedProminent).disabled(running || filename.isEmpty || !store.dataHealthy)
             } else {
                 if items.count != 1 { Label("请仅选择一个压缩包或首个 .001 分卷。",systemImage:"exclamationmark.triangle").foregroundStyle(.orange) }
@@ -157,6 +168,14 @@ struct ToolSheet: View {
                 TextField("新的解压文件夹名称",text:$filename).textFieldStyle(.roundedBorder)
                 SecureField("压缩包密码（需要时填写）",text:$password).textFieldStyle(.roundedBorder)
                 Toggle("将密码保存到系统钥匙串",isOn:$rememberPassword).disabled(password.isEmpty)
+                DisclosureGroup("解压预算与编码") {
+                    Toggle("展开多层 TAR 容器", isOn: $archiveExtraction.recursiveContainers)
+                    Toggle("允许包内安全链接", isOn: $archiveExtraction.allowSafeLinks)
+                    Stepper("展开容量：\(archiveExtraction.maximumExpandedGiB) GiB", value: $archiveExtraction.maximumExpandedGiB, in: 1...16_384)
+                    Stepper("项目数：\(archiveExtraction.maximumEntries)", value: $archiveExtraction.maximumEntries, in: 1...5_000_000, step: 10_000)
+                    Stepper("时间：\(archiveExtraction.maximumMinutes) 分钟", value: $archiveExtraction.maximumMinutes, in: 1...1_440, step: 10)
+                    Picker("文件名编码", selection: $archiveExtraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? "自动" : $0).tag($0) } }
+                }
                 HStack { Button(request.actionID == "archive.list" ? "刷新列表" : "查看包内文件",action:listArchive).disabled(running || items.count != 1); Button("全部解压"){extractArchive(selected:nil)}.buttonStyle(.borderedProminent).disabled(running || items.count != 1 || !store.dataHealthy); if !selectedPaths.isEmpty { Button("提取勾选 \(selectedPaths.count) 项"){extractArchive(selected:Array(selectedPaths))}.disabled(running || !store.dataHealthy) } }
                 if !entries.isEmpty { HStack { Text("\(entries.count) 个项目").font(.caption); Spacer(); Button("全选文件"){selectedPaths=Set(entries.filter{!$0.isDirectory}.map(\.path))};Button("清除勾选"){selectedPaths=[]} }; ForEach(entries.prefix(2000)) { entry in HStack { Toggle(isOn:Binding(get:{selectedPaths.contains(entry.path)},set:{v in if v{selectedPaths.insert(entry.path)}else{selectedPaths.remove(entry.path)}})){Label(entry.path,systemImage:entry.isDirectory ? "folder" : "doc")}; Spacer(); Text(ByteCountFormatter.string(fromByteCount:Int64(clamping:entry.size),countStyle:.file)).font(.caption).foregroundStyle(.secondary) }.disabled(entry.isDirectory) }; if entries.count > 2000 {Text("列表仅展示前 2000 项；全部解压仍处理完整内容。").font(.caption).foregroundStyle(.secondary)} }
             }
@@ -176,18 +195,31 @@ struct ToolSheet: View {
     private func createArchive() {
         guard !running, store.dataHealthy else{return}
         guard filename == URL(fileURLWithPath:filename).lastPathComponent, !filename.contains(".."), !filename.isEmpty else{taskError="请输入有效的压缩包名称。";return}
-        guard format != .zip || password.unicodeScalars.allSatisfy({ $0.value < 128 }) else{taskError="ZIP 加密不支持非 ASCII 密码。请将格式改为 7Z，或使用英文字母、数字及 ASCII 符号。";return}
         let items=items,destination=URL(fileURLWithPath:directory).appendingPathComponent(filename),pw=password.isEmpty ? nil : password
         let selectedFormat=format,volumeSize=split ? splitMB : nil,solidMode=solid,remember=rememberPassword
+        var options = archiveCreation; options.ignoredPatterns = ignoredPatterns.components(separatedBy: .newlines).filter { !$0.isEmpty }
         working=true;store.busy=true;taskError=nil;resultURL=nil
         Task {
             defer {working=false;store.busy=false;store.drainQuickJobs()}
             do {
-                let output=try await archive.create(items:items,destination:destination,format:selectedFormat,password:pw,splitMB:volumeSize,solid:solidMode)
-                let records=archive.lastResultReceipts
-                guard !records.isEmpty else{throw DataFailure.message("压缩包已生成，但未取得恢复记录，请核验输出。")}
-                try store.record(records)
-                finishArchive(title:"压缩完成",outputs:records.map(\.destination),password:pw,remember:remember,account:output.path)
+                var outputs: [URL] = []
+                let groups = options.separateItems && volumeSize == nil ? items.map { [$0] } : [items]
+                for (index, group) in groups.enumerated() {
+                    let rawName = index == 0 ? destination.lastPathComponent : group[0].deletingPathExtension().lastPathComponent + "." + selectedFormat.rawValue
+                    let date = options.appendDate ? "-" + Date().formatted(.iso8601.year().month().day().dateSeparator(.omitted)) : ""
+                    let name = URL(fileURLWithPath: rawName).deletingPathExtension().lastPathComponent + date + "." + selectedFormat.rawValue
+                    let target = destination.deletingLastPathComponent().appendingPathComponent(name)
+                    let originals = try group.map { ($0, try FileTools.archiveFingerprint($0)) }
+                    let output = try await archive.create(items:group,destination:target,format:selectedFormat,password:pw,splitMB:volumeSize,solid:solidMode,options:options)
+                    let records=archive.lastResultReceipts
+                    guard !records.isEmpty else{throw DataFailure.message("压缩包已生成，但未取得恢复记录，请核验输出。")}
+                    try store.record(records); outputs += records.map(\.destination)
+                    if options.trashOriginals { try ArchiveEnhancementController.trashUnchanged(originals) }
+                    if remember, let pw { try PasswordVault.save(pw, account: output.path) }
+                }
+                if options.revealResults { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
+                if let pw, remember || store.archiveEnhancements.preferences.saveCompressionPasswords { try store.archiveEnhancements.addPassword(pw, label: destination.lastPathComponent, kind: .compression) }
+                finishArchive(title:"压缩完成",outputs:outputs,password:nil,remember:false,account:destination.path)
             } catch {taskError=error.localizedDescription}
         }
     }
@@ -197,7 +229,7 @@ struct ToolSheet: View {
         working=true;store.busy=true;taskError=nil;selectedPaths=[]
         Task {
             defer {working=false;store.busy=false;store.drainQuickJobs()}
-            do {entries=try await archive.list(archive:url,password:pw)}
+            do {entries=try await archive.list(archive:url,password:pw,options:archiveExtraction)}
             catch {entries=[];taskError=error.localizedDescription}
         }
     }
@@ -209,7 +241,7 @@ struct ToolSheet: View {
         Task {
             defer {working=false;store.busy=false;store.drainQuickJobs()}
             do {
-                _=try await archive.extract(archive:url,to:destination,password:pw,selected:selected)
+                _=try await archive.extract(archive:url,to:destination,password:pw,selected:selected,options:archiveExtraction)
                 let records=archive.lastResultReceipts
                 guard !records.isEmpty else{throw DataFailure.message("解压结果已生成，但未取得恢复记录，请核验输出。")}
                 try store.record(records)

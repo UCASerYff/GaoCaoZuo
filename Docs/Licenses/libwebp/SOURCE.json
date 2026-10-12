@@ -1,0 +1,10 @@
+{
+  "version": "1.6.0",
+  "project": "https://developers.google.com/speed/webp",
+  "download": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/",
+  "source_sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564",
+  "tool_sha256": "07ba910950253f18ca227d085848ff39be530f6ef22005e778cd48d4850734f2",
+  "license": "BSD-3-Clause and additional patent grant; see COPYING/PATENTS",
+  "architecture": "arm64; statically linked libwebp and image codecs; dynamically linked system libraries only",
+  "third_party_notices": "THIRD_PARTY-NOTICE.txt and THIRD_PARTY-SOURCE.json"
+}

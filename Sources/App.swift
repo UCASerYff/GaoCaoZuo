@@ -29,6 +29,7 @@ final class OperationPanel: NSPanel {
     private var feedbackDismiss: DispatchWorkItem?
     private var clipboardErrorObserver: AnyCancellable?
     private var statusItem: NSStatusItem!
+    private var enhancementObservers:Set<AnyCancellable>=[]
     private var activationObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
     private var earlyURLs: [URL] = []
@@ -51,13 +52,17 @@ final class OperationPanel: NSPanel {
         clipboardErrorObserver=store.clipboard.$error.compactMap{$0}.removeDuplicates().sink { [weak self] message in
             self?.store.notify(message,failed:true)
         }
-        store.onSettingsChanged={ [weak self] in self?.configureInput();self?.applyAppearance() }
+        store.onSettingsChanged={ [weak self] in self?.configureInput();self?.applyAppearance();self?.applyStatusVisibility();if let self{self.store.finderPreferences.publish(store:self.store)} }
+        store.finderPreferences.changed={ [weak self] in if let self{self.store.finderPreferences.publish(store:self.store)} }
+        store.fileEnhancements.$settings.dropFirst().sink { [weak self] _ in Task { @MainActor in if let self{self.store.finderPreferences.publish(store:self.store)} } }.store(in:&enhancementObservers)
+        store.finderPreferences.publish(store:store)
         NSApp.servicesProvider=self
         NSUpdateDynamicServices()
         mainWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1120,height:780),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
         mainWindow.title="搞操作 V\(store.version)";mainWindow.minSize=NSSize(width:960,height:680);mainWindow.isReleasedWhenClosed=false;mainWindow.delegate=self
         mainWindow.contentView=NSHostingView(rootView:OperationRootView(store:store));mainWindow.center();mainWindow.setFrameAutosaveName("GaoCaoZuo.main")
-        installMenu();configureStatus();configureInput();applyAppearance()
+        if let i=args.firstIndex(of:"--migration"),args.count>i+1,args[i+1].hasPrefix("/") {do{try store.importReplacementSettings(URL(fileURLWithPath:args[i+1]))}catch{store.notify(error.localizedDescription,failed:true)}}
+        installMenu();configureStatus();configureInput();applyAppearance();applyStatusVisibility()
         activationObserver=NSWorkspace.shared.notificationCenter.addObserver(forName:NSWorkspace.didActivateApplicationNotification,object:nil,queue:.main){[weak self]note in
             guard let app=note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,app.processIdentifier != ProcessInfo.processInfo.processIdentifier else{return}
             Task{@MainActor in self?.store.windows.captureTarget();self?.panel?.orderOut(nil);self?.clipboardPanel?.orderOut(nil)}
@@ -68,7 +73,7 @@ final class OperationPanel: NSPanel {
         if let i=args.firstIndex(of:"--open"),args.count>i+1 {store.selection=[URL(fileURLWithPath:args[i+1])]}
         if !earlyURLs.isEmpty {let urls=earlyURLs;earlyURLs=[];application(NSApp,open:urls)}
     }
-    private func configureInput(){store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
+    private func configureInput(){store.windows.configure(enhancements:store.settings.windowEnhancements);store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled,enhancements:store.settings.inputEnhancements){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
     private func applyAppearance(){NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)}
     func showMain(){store.windows.captureTarget();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func showPanel(){
@@ -86,7 +91,7 @@ final class OperationPanel: NSPanel {
     func showSettings(tab:Int=0){
         store.windows.captureTarget()
         if settingsWindow == nil {
-            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:820,height:660),styleMask:[.titled,.closable],backing:.buffered,defer:false)
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
             window.title="搞操作设置";window.isReleasedWhenClosed=false;window.contentView=NSHostingView(rootView:OperationSettingsView(store:store));window.center();settingsWindow=window
         }
         settingsWindow?.contentView=NSHostingView(rootView:OperationSettingsView(store:store,initialTab:tab))
@@ -152,16 +157,17 @@ final class OperationPanel: NSPanel {
     }
     private func item(_ title:String,_ selector:Selector,key:String="")->NSMenuItem{let value=NSMenuItem(title:title,action:selector,keyEquivalent:key);value.target=self;return value}
     private func configureStatus(){statusItem=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength);statusItem.button?.image=NSImage(systemSymbolName:"cursorarrow.motionlines",accessibilityDescription:"搞操作");statusItem.button?.toolTip="搞操作";statusItem.button?.target=self;statusItem.button?.action=#selector(statusClicked);statusItem.button?.sendAction(on:[.leftMouseUp,.rightMouseUp])}
+    private func applyStatusVisibility(){statusItem?.isVisible=store.settings.showMenuBarIcon}
     @objc private func statusClicked(){
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu=NSMenu();menu.addItem(item("打开操作面板",#selector(panelAction)));menu.addItem(item("显示主窗口",#selector(mainAction)));menu.addItem(item("剪贴板",#selector(clipboardAction)))
             let layouts=NSMenu()
-            for action in [WindowAction.leftHalf, .rightHalf, .maximize, .center] {let entry=item(action.title,#selector(quickMenuAction(_:)));entry.representedObject="window."+action.rawValue;layouts.addItem(entry)}
+            for action in WindowAction.allCases {let entry=item(action.title,#selector(quickMenuAction(_:)));entry.representedObject="window."+action.rawValue;layouts.addItem(entry)}
             menu.addItem(withTitle:"排列当前窗口",action:nil,keyEquivalent:"").submenu=layouts
             if !store.settings.workflows.isEmpty {let workflows=NSMenu();for workflow in store.settings.workflows {let entry=item(workflow.name,#selector(quickMenuAction(_:)));entry.representedObject="workflow.run."+workflow.id.uuidString;workflows.addItem(entry)};menu.addItem(withTitle:"运行组合操作",action:nil,keyEquivalent:"").submenu=workflows}
             menu.addItem(.separator());menu.addItem(item("检查权限…",#selector(permissionsAction)));menu.addItem(item(store.input.isPaused ? "恢复快捷键与手势" : "暂停快捷键与手势",#selector(pauseInput)));menu.addItem(item("设置…",#selector(settingsAction)));menu.addItem(.separator());menu.addItem(item("退出搞操作",#selector(quit)))
             statusItem.menu=menu;statusItem.button?.performClick(nil);statusItem.menu=nil
-        }else{showPanel()}
+        }else{switch store.settings.statusBarLeftClick {case "main":showMain();case "clipboard":showClipboard();default:showPanel()}}
     }
     @objc private func clipboardAction(){showClipboard()}
     @objc private func permissionsAction(){showSettings(tab:1)}
@@ -184,12 +190,19 @@ final class OperationPanel: NSPanel {
         guard !urls.isEmpty else{error?.pointee="请选择文件或文件夹。";return}
         store.windows.captureTarget();store.selection=urls;showPanel()
     }
+    @objc(receiveText:userData:error:) func receiveText(_ pasteboard:NSPasteboard,userData:String?,error:AutoreleasingUnsafeMutablePointer<NSString?>?) {
+        guard let text=pasteboard.string(forType:.string),!text.isEmpty,let action=userData else {error?.pointee="没有可处理的文字";return}
+        do {
+            if action == "text.baidu" || action == "text.google" {try store.fileEnhancements.translate(text,provider:action)}
+            else if action == "text.qrcode.clipboard" {let bytes=try FileTools.qrCode(text:text);let board=NSPasteboard.general;board.clearContents();board.setData(bytes,forType:.png);store.notify("二维码已复制")}
+        }catch let failure {error?.pointee=failure.localizedDescription as NSString}
+    }
     func application(_ application:NSApplication,open urls:[URL]){
         pendingInitialPresentation=false
         guard store != nil else{earlyURLs += urls;return}
         store.windows.captureTarget()
         let fileURLs=urls.filter(\.isFileURL)
-        if !fileURLs.isEmpty {store.selection=fileURLs;showPanel()}
+        if !fileURLs.isEmpty {store.selection=fileURLs;if fileURLs.allSatisfy({["zip","7z","rar","ace","lzh","lha","lz","lzip","tar","tgz","gz","bz2","xz","zst","cab","iso","xar","cpio","001"].contains($0.pathExtension.lowercased())}) {_ = store.archiveEnhancements.handle(id:"archive.open",files:fileURLs,store:store)}else{showPanel()}}
         for url in urls where url.scheme == "gaocaozuo" {
             if url.host == "finder" {
                 guard let request=FinderActionRequest.consume(url) else {store.notify("右键请求已过期，请重新从 Finder 选择操作",failed:true);continue}

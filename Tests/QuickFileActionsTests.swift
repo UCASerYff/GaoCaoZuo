@@ -61,6 +61,9 @@ import Foundation
         throw NSError(domain: "QuickFileActionsTests", code: 3, userInfo: [NSLocalizedDescriptionKey: "Real engine tests require --engine path"])
     }
     let service = ArchiveService(engineURL: URL(fileURLWithPath: enginePath))
+    try rejects("unrelated AppleDouble metadata is not ignored") { _ = try validatedArchivePayloadPaths([.init(path: "a.txt", size: 1, isDirectory: false), .init(path: "__MACOSX/._other.txt", size: 120, isDirectory: false)], expected: ["a.txt"]) }
+    try rejects("AppleDouble metadata link is not ignored") { _ = try validatedArchivePayloadPaths([.init(path: "a.txt", size: 1, isDirectory: false), .init(path: "__MACOSX/._a.txt", size: 120, isDirectory: false, symbolicLink: "a.txt")], expected: ["a.txt"]) }
+    try rejects("AppleDouble metadata wrong type is not ignored") { _ = try validatedArchivePayloadPaths([.init(path: "a.txt", size: 1, isDirectory: false), .init(path: "__MACOSX/._a.txt", size: 0, isDirectory: true)], expected: ["a.txt"]) }
     let source = try FileTools.createFile(in: root, name: "内容.txt", content: "archive contents")
     let firstZip = try await QuickFileActions.createZIP(items: [source], service: service)
     let firstZipReceipt = service.lastResultReceipts[0]
@@ -76,7 +79,7 @@ import Foundation
     let otherSource = try FileTools.createFile(in: otherParent, name: "other.txt", content: "second parent")
     let crossParentZip = try await QuickFileActions.createZIP(items: [source, otherSource], service: service)
     let crossEntries = try await service.list(archive: crossParentZip, password: nil)
-    try expect(crossParentZip.deletingLastPathComponent().path == root.path && Set(crossEntries.map(\.path)) == ["内容.txt", "other.txt"], "cross-parent selection saves in first parent and includes both files")
+    try expect(crossParentZip.deletingLastPathComponent().path == root.path && (try validatedArchivePayloadPaths(crossEntries, expected: ["内容.txt", "other.txt"])) == ["内容.txt", "other.txt"], "cross-parent selection saves in first parent and includes both files")
     try expect(service.lastResultReceipts.isEmpty, "new non-creating job clears old result receipts")
     let sameNamedSource = try FileTools.createFile(in: otherParent, name: "内容.txt", content: "different source with same basename")
     let beforeCollision = Set(try fm.contentsOfDirectory(atPath: root.path))

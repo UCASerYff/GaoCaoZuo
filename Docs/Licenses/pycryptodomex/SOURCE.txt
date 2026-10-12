@@ -1,0 +1,9 @@
+PyCryptodome 3.24.1 (Cryptodome namespace)
+https://github.com/Legrandin/pycryptodome
+https://www.pycryptodome.org/src/license
+Official PyPI wheel: pycryptodomex-3.24.1-cp37-abi3-macosx_10_9_universal2.whl
+SHA-256: 9bb353c764c144a9fc03302ef3763ad0c3e75bc7ca41f445cc98455f36da6c59
+https://pypi.org/project/pycryptodomex/3.24.1/
+The original public-domain/BSD-2-Clause license is included. Unneeded SelfTest
+files are removed and universal binary modules are thinned to arm64 with
+Apple lipo for the current application target. Source is unchanged.

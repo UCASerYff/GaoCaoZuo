@@ -13,14 +13,32 @@ struct FinderActionRequest: Codable {
     static let pasteboardPrefix = "com.gaoseries.GaoCaoZuo.finder."
     static let dataType = NSPasteboard.PasteboardType("com.gaoseries.GaoCaoZuo.finder-command")
     static let maximumBytes = 512_000
-    static let allowedActions: Set<String> = [
+    static let allowedActions: Set<String> = Set([
         "new.text", "new.markdown", "new.folder", "new.custom", "path.copy", "name.copy",
         "files.copy", "files.move", "files.rename", "terminal.open", "finder.reveal",
         "archive.create", "archive.7z", "archive.custom", "archive.extract", "archive.extract.custom", "archive.list",
         "images.png", "images.jpeg", "images.heic", "images.tiff", "images.convert", "hash.sha256",
         "files.copy.desktop", "files.copy.downloads", "files.copy.documents",
         "files.move.desktop", "files.move.downloads", "files.move.documents"
-    ]
+    ]).union([
+        "folder.favorite.add", "finder.popup", "file.hide", "file.unhide", "file.hideAll", "file.unhideAll",
+        "file.extension.hide", "file.extension.show", "file.write", "file.permissions", "file.info",
+        "file.alias", "file.cut", "file.paste", "file.folderNames", "file.dissolve", "file.delete",
+        "file.icon", "file.icon.clear", "file.airdrop", "file.mail", "file.wallpaper", "file.openApp",
+        "file.terminal", "file.path.real", "file.path.custom", "file.template.import", "file.template.create",
+        "file.new.office", "file.metadata.undo", "file.ishot", "file.ishot.markup", "file.diskmap",
+        "images.webp", "images.icns", "images.macicons", "images.iosicons", "file.fixNames", "file.icon.builtin",
+        "file.new.docx", "file.new.xlsx", "file.new.pptx", "file.new.rtf", "file.new.xml", "file.new.psd", "file.new.ai", "file.new.pages", "file.new.numbers", "file.new.key",
+        "archive.quick.zip", "archive.quick.7z", "archive.separate.zip", "archive.separate.7z", "archive.extract.here", "archive.create.trash", "archive.extract.trash", "archive.preferences", "archive.passwords"
+    ])
+
+    static func isAllowed(_ action:String)->Bool {
+        if allowedActions.contains(action) {return true}
+        for prefix in ["folder.open.","folder.copy.","folder.move.","template.","binaryTemplate.","file.open."] where action.hasPrefix(prefix) {
+            return UUID(uuidString:String(action.dropFirst(prefix.count))) != nil
+        }
+        return false
+    }
 
     static func validNonce(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
@@ -29,7 +47,7 @@ struct FinderActionRequest: Codable {
     static func decode(_ bytes: Data, nonce: String, now: Date = Date()) -> FinderActionRequest? {
         guard validNonce(nonce), bytes.count <= maximumBytes,
               let request = try? JSONDecoder().decode(Self.self, from: bytes), request.nonce == nonce,
-              allowedActions.contains(request.action), !request.paths.isEmpty, request.paths.count <= 1000,
+              isAllowed(request.action), !request.paths.isEmpty, request.paths.count <= 1000,
               request.paths.allSatisfy({ $0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 16_384 }),
               now.timeIntervalSince(request.issuedAt) >= 0, now.timeIntervalSince(request.issuedAt) <= 60 else { return nil }
         return request

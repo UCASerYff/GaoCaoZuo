@@ -1,0 +1,7 @@
+{
+  "file": "CPython-RUNTIME-LICENSE.txt",
+  "source_file": "Resources/Tools/ArchivePython/python/lib/python3.13/LICENSE.txt",
+  "source_distribution_url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.13.16%2B20261009-aarch64-apple-darwin-install_only.tar.gz",
+  "source_distribution_sha256": "11785155d0f70e634178219c20925d8f20be00a3da4684fc4f5019dd15602ef7",
+  "notice_sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb"
+}

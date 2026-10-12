@@ -152,12 +152,28 @@ def finder_extension(path):
     return extension
 
 
+def quicklook_extension(path):
+    plugins = path / "Contents/PlugIns"
+    extension = plugins / "GaoArchiveQuickLook.appex"
+    try:
+        extension.lstat()
+    except FileNotFoundError:
+        return None
+    if plugins.is_symlink() or extension.is_symlink() or not extension.is_dir() or extension.resolve() != path.resolve() / "Contents/PlugIns/GaoArchiveQuickLook.appex":
+        fail("压缩预览扩展路径不合法，停止登记。")
+    with (extension / "Contents/Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    if info.get("CFBundleIdentifier") != BUNDLE + ".QuickLook" or info.get("NSExtension", {}).get("NSExtensionPointIdentifier") != "com.apple.quicklook.preview" or info.get("CFBundleExecutable") != "GaoArchiveQuickLook" or not (extension / "Contents/MacOS/GaoArchiveQuickLook").is_file():
+        fail("压缩预览扩展标识无效，停止登记。")
+    return extension
+
+
 def register(path, simulate, remove=False):
     # Validate both identities before the first external mutation. LaunchServices
     # may rediscover private staging apps after they were moved, so remove their
     # exact old paths again during finalization, including their Finder extension.
     app_info(path)
-    extension = finder_extension(path)
+    extensions = [finder_extension(path), quicklook_extension(path)]
     if not simulate:
         command = [LSREGISTER, "-u" if remove else "-f", str(path)]
         try:
@@ -172,7 +188,7 @@ def register(path, simulate, remove=False):
                       any(outputs in (("", message), (message, "")) for message in diagnostics))
             if not absent:
                 raise
-        if extension is not None:
+        for extension in (value for value in extensions if value is not None):
             command = [PLUGIN_KIT, "-r" if remove else "-a", str(extension)]
             try:
                 run(command)
@@ -242,6 +258,8 @@ def installation_lock(backup_root):
 
 def protect_backup(path):
     """Backup content stays owner-only even if a source has permissive modes."""
+    if path.is_symlink():
+        return
     if not path.exists():
         return
     if path.is_dir():

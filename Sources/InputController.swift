@@ -55,7 +55,7 @@ struct InputBinding: Codable, Identifiable, Equatable {
 }
 
 enum InputRules {
-    static let modifierMask = UInt64(NSEvent.ModifierFlags([.command, .option, .control, .shift]).rawValue)
+    static let modifierMask = UInt64(NSEvent.ModifierFlags([.command, .option, .control, .shift, .function]).rawValue)
     static func signature(_ binding: InputBinding) -> String {
         let detail: String
         switch binding.trigger {
@@ -123,14 +123,22 @@ final class InputController: ObservableObject {
     private var lastWindowUpdate: TimeInterval = 0
     private var gestureStart: (point: CGPoint, flags: UInt64, app: String)?
     private var desiredRunning = false
+    private let enhanced = EnhancedInputEngine()
+    private var enhancementError: String?
+    @Published private(set) var enhancementStatus = "高级输入未启用"
+    @Published private(set) var touchDevices: [String] = []
 
     func configure(bindings: [InputBinding], excludedApps: [String] = [], windows: WindowManager? = nil,
-                   windowDragEnabled: Bool = false, windowSnapEnabled: Bool = false, handler: @escaping (String) -> Void) {
+                   windowDragEnabled: Bool = false, windowSnapEnabled: Bool = false, enhancements: InputEnhancementConfiguration = .init(), handler: @escaping (String) -> Void) {
         tearDownTap()
         let conflicting = InputRules.conflictingIDs(in: bindings)
         let invalid = bindings.filter { $0.enabled && InputRules.validationError($0) != nil }
         self.bindings = bindings.filter { $0.enabled && !conflicting.contains($0.id) && InputRules.validationError($0) == nil }
         self.handler = handler
+        enhancementError = nil
+        enhanced.configure(enhancements, excludedApps: Set(excludedApps), handler: handler) { [weak self] message in
+            self?.enhancementError = message; self?.updateCombinedError()
+        }
         self.excludedApps = Set(excludedApps)
         self.windows = windows
         self.windowDragEnabled = windowDragEnabled
@@ -178,13 +186,15 @@ final class InputController: ObservableObject {
     private func refreshPermission() {
         permissionGranted = CGPreflightListenEventAccess() || AXIsProcessTrusted()
         let needsWindows = windows != nil && (windowDragEnabled || windowSnapEnabled)
-        guard desiredRunning, !isPaused, !bindings.isEmpty || needsWindows else { tearDownTap(); lastError = configurationError; return }
+        guard desiredRunning, !isPaused, !bindings.isEmpty || needsWindows || enhanced.needsEvents else { tearDownTap(); lastError = configurationError; return }
         guard permissionGranted else {
             tearDownTap()
             lastError = [configurationError, "快捷键、鼠标按钮与绘图手势尚未获得输入监听权限，或权限已失效。"].compactMap { $0 }.joined(separator: "\n")
             return
         }
-        if tap == nil { installTap() }
+        if tap == nil { installTap(); if tap != nil { enhanced.startTouch() } }
+        enhancementStatus = enhanced.capabilityStatus
+        touchDevices = enhanced.touchDeviceNames
         if tap != nil {
             if IsSecureEventInputEnabled() {
                 lastError = [configurationError, windowInputError, "系统正处于安全输入状态，键盘快捷键可能暂时不可用；离开密码输入后会自动恢复。"].compactMap { $0 }.joined(separator: "\n")
@@ -196,17 +206,23 @@ final class InputController: ObservableObject {
 
     private func installTap() {
         var types: [CGEventType] = [.keyDown, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
+        if enhanced.needsEvents { types += [.keyUp,.flagsChanged,.leftMouseDown,.leftMouseUp,.leftMouseDragged,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
+        if enhanced.needsActiveTap && !AXIsProcessTrusted() { enhancementError = "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" }
         if windows != nil && (windowDragEnabled || windowSnapEnabled) { types += [.leftMouseDown, .leftMouseDragged, .leftMouseUp] }
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
-            MainActor.assumeIsolated { controller.receive(type: type, event: event) }
-            // Observe only. Even a recognized right-button gesture leaves the original event intact.
-            return Unmanaged.passUnretained(event)
+            let consume = MainActor.assumeIsolated { () -> Bool in
+                if event.getIntegerValueField(.eventSourceUserData) == EnhancedInputEngine.syntheticTag { return false }
+                let consumed = !controller.isPaused && controller.enhanced.receive(type:type,event:event)
+                if !consumed { controller.receive(type:type,event:event) }
+                return consumed
+            }
+            return consume ? nil : Unmanaged.passUnretained(event)
         }
         guard let created = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap,
-                                             options: .listenOnly, eventsOfInterest: mask, callback: callback,
+                                             options: enhanced.needsActiveTap && AXIsProcessTrusted() ? .defaultTap : .listenOnly, eventsOfInterest: mask, callback: callback,
                                              userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             lastError = "系统未能启动输入监听。请检查输入监控权限及其他输入工具的兼容性。"
             return
@@ -223,6 +239,7 @@ final class InputController: ObservableObject {
     }
 
     private func tearDownTap() {
+        enhanced.stop()
         gestureStart = nil
         cancelWindowInput()
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes); CFRunLoopSourceInvalidate(source) }
@@ -266,7 +283,7 @@ final class InputController: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.canContinueWindowInput(token), let windows = self.windows else { return }
                 do {
-                    guard try windows.beginWindowDrag(at: point, moveWithPointer: moveWithPointer) else {
+                    guard try windows.beginWindowDrag(at: point, moveWithPointer: moveWithPointer, snapEnabled: self.windowSnapEnabled) else {
                         self.cancelWindowInput(); return
                     }
                     self.windowInputError = nil; self.updateCombinedError()
@@ -277,7 +294,6 @@ final class InputController: ObservableObject {
             if movingWindowWithPointer, flags & UInt64(NSEvent.ModifierFlags.option.rawValue) == 0 {
                 cancelWindowInput(); return
             }
-            guard movingWindowWithPointer else { return }
             let point = event.location
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.canContinueWindowInput(token) else { return }
@@ -354,7 +370,7 @@ final class InputController: ObservableObject {
         updateCombinedError()
     }
     private func updateCombinedError() {
-        let messages = [configurationError, windowInputError].compactMap { $0 }
+        let messages = [configurationError, windowInputError, enhancementError].compactMap { $0 }
         lastError = messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
 

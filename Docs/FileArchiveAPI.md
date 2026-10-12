@@ -30,36 +30,33 @@
 - `makeExtractionBatch(archives:)` 预检并去重，返回 `QuickExtractionBatch`。调用 `@MainActor continueExtraction(_:service:password:stopAfterFirstSuccess:) async` 返回更新后的批次，遇首个需要密码、错误或取消即暂停。每项有 `archive`、`output`、`receipt` 和 `status`（pending / needsPassword(incorrect:) / completed / failed(message) / cancelled）。批次提供 `outputs`、`currentItem`、`isComplete`。`stopAfterFirstSuccess` 默认 false；正式调用方传 true，每完成一个压缩包就保存该项已有的 receipt，然后继续 pending 项。指纹在结果对用户可见前生成，不应事后对可编辑输出重新计算。调用方必须保存返回的批次并用于继续；已完成条目不再提交给引擎，密码只用于当前条目且不存入批次。每个包解压到同目录独立、唯一命名的新文件夹。
 - `convertImages(items:format:maxDimension:)` 同步返回 `[FileOperationReceipt]`，应在非主线程执行。结果放在各自原目录，自动避让原件、现有结果及批次内重名。整批先在各自父目录私有暂存完成，再提交；正常失败清除暂存并核验回滚，无法安全回滚时返回 `FileToolsPartialFailure.receipts`，调用方必须保留到恢复记录。
 
-## ArchiveService
+## ArchiveService（V1.03）
 
-`@MainActor ObservableObject`，发布 `isRunning`、`progress: Double?`、`output`、`lastResultURL`。`progress == nil` 表示真实的不确定进度阶段。`cancel()` 取消当前任务，必要时终止子进程，保留原始输入。
+`@MainActor ObservableObject` 发布任务状态、真实进度或不确定进度、输出与结果。`cancel()` 终止当前任务并保留输入。`lastResultReceipts` 在结果公开前生成，调用方先持久化记录，再执行可选的原件移到废纸篓步骤。
 
-`private(set) lastResultReceipts` 在隔离暂存内容验证后、移入用户目录前生成；全部提交成功后才发布。创建分卷时涵盖每个分卷，解压时包含新目录。每次任务 begin 清空。调用方应保存这些现成记录，不对已经公开的输出重新取指纹。
+- `create(items:destination:format:password:splitMB:solid:options:)`：创建 ZIP/7Z；参数包含等级、线程、文件名加密、忽略规则、日期及分别打包设置。分卷返回 `.001`，全部分卷分别登记恢复记录。忽略规则和删除原件不能同时开启。
+- `list(archive:password:options:)`：返回已通过路径、容量、重名与链接预检的条目，包含尺寸、权限、修改时间和可选链接目标。
+- `extract(archive:to:password:selected:options:)`：输出必须是不存在的新目录。可选择准确条目路径；默认递归展开支持的 TAR 容器。默认预算 20 GiB、10 万项、一小时，可配置。
+- `extractIntoDirectory(archive:to:password:selected:options:)`：在已存在目录展开，先完成全包隔离核验，再逐个提交顶层项目；任何重名停止，不合并或覆盖。返回所有顶层结果。
+- `edit(archive:password:adding:removing:removeHidden:saveTo:backupDirectory:options:extraction:)`：仅 ZIP/7Z，解压到私有工作副本，修改后重建并测试。保存原路径前核验源指纹、创建备份，再替换；保留原包 POSIX 权限。另存不会覆盖现有目标。
 
-- `ArchiveFormat.zip` / `.sevenZip`（rawValue 为 `zip` / `7z`）。
-- `create(items:destination:format:password:splitMB:solid:)` 的 destination 是完整输出文件名。支持 ZIP/7Z、多线程、AES 加密、分卷、7Z 固实及 7Z 文件名加密。返回输出文件，分卷时返回 `.001`。完整性测试成功后才提交结果。
-- `list(archive:password:)` 返回 `[ArchiveEntry]`，每项包含 `path`、`size`、`isDirectory`、`isEncrypted`、`id`，以及可选 `permissions`、`modifiedAt`。
-- `extract(archive:to:password:selected:)` 的 to 必须是不存在的新目录。selected 为目录列表中准确的路径，可为 nil（全部），不接受空数组。
-- 默认从应用 `Resources/Tools/7zz` 加载引擎。`init(engineURL:)` 只用于明确的开发/测试注入。
-- `ArchiveError.passwordRequired(incorrect:)` 供调用方仅在确需密码时显示输入框。已能列出的加密条目在写暂存前要求密码；加密目录头和错误密码通过明确的引擎诊断分类。普通损坏、取消和安全预算错误不作为密码提示。7-Zip 26.04 实测 ZIP 创建使用非 ASCII 密码会返回 `E_INVALIDARG`；需要中文密码时使用 7Z。
+随包引擎为官方 7-Zip 与独立 Python 格式桥接。中文密码 ZIP 使用 pyzipper/PyCryptodome；密码通过私有 stdin 提交，不进入命令行或日志。ACE/LZIP 等特殊格式按具体变体测试，不能据此推断所有变体支持。RAR 不创建，ACE 加密、LZ77 和多卷未完成验收。来源与许可见 `Docs/Licenses`。
 
-引擎为官方 7-Zip 26.04 的 macOS Universal 独立可执行程序。可读取该引擎支持的普通归档格式，例如 ZIP、7Z、RAR、TAR。RAR 只解压，不创建。压缩容器分层处理：例如 `.tar.gz` 先产生 `.tar`，再解压 TAR；此版不自动递归展开多层容器。具体格式、加密算法与变体仍受引擎能力及本应用安全预检限制。
+提取进程通过系统隔离限制网络与文件写入，内容经管道由主程序写入已校验的暂存路径；逐项限制实际字节数，并再次检查结构、类型、尺寸。允许包内安全相对软链接；危险、绝对、越界、循环及未核验目标拒绝。受支持的硬链接作为独立文件提取。普通文件动作仍拒绝含链接目录，压缩恢复记录使用 `FileTools.archiveFingerprint`，无链接目录与旧指纹格式兼容。
 
-解压先拒绝路径穿越、绝对路径、危险链接、特殊文件、大小写/规范化重名和文件/目录冲突。预算为展开总量 20 GiB、目录项 10 万个、目录信息 64 MiB、每个任务最多一小时。
+完整提取验证后恢复普通 rwx 位和修改时间，剥离特殊位及其他用户所有权，额外保证所有者可读、目录可进入；0444 文件保持只读。`ArchiveMacMetadata` 通过本应用标记的 AppleDouble 记录往返 xattr、资源分叉与 ACL，普通 `._` 文件名不自动删除。元数据受目标文件系统支持范围限制，不承诺每个应用包完整可运行。
 
-解码引擎通过系统隔离配置禁止网络和文件系统写入，仅将所选文件的内容输出到管道。主程序向私有暂存目录中的核验路径逐文件写入，并对每个文件的实际输出字节数实施上限；随后再次核验目录结构、类型、尺寸、链接数，成功后原子提交新目录。密码通过私有 stdin 管道提交，不写入命令行参数、日志或临时文件。日志还会执行密码脱敏。
+`ArchiveEnhancementController` 管理偏好、包内浏览和钥匙串密码本。普通压缩、解压进入统一可取消队列，已完成结果先保存，密码重试不会重做已完成包。主动导出密码本会生成明文普通文件，创建时即采用 0600，不覆盖已有文件。
 
-全部内容和路径通过核验后，才恢复目录元数据中可识别的普通 UNIX rwx 权限和修改时间。执行位保留，setuid/setgid/sticky 等特殊位不恢复；为保证用户始终能访问结果，额外保证文件所有者可读写、目录所有者可读写进入。因此，原本只读或无所有者权限的项目会获得所有者访问权限。无法识别的权限回退为文件 `0600`、目录 `0700`；无法识别的修改时间保留提取时的时间。不恢复 ACL、扩展属性、资源分叉、所有者/组身份或 Finder 标记。ZIP 时间精度受格式限制。
+## Finder 与 Quick Look
 
-此实现优先限制解码器写入范围。固实包逐文件提取可能反复解码同一固实块，大量文件时比单次批量解压慢。符号链接/硬链接不提取；有些应用包、开发依赖包因此会被拒绝。普通可执行脚本的执行位可保留，但不承诺含链接或依赖扩展元数据的 `.app` 完整可运行。此版不会执行解压内容，也不会覆盖目标目录。
+Finder 模块/主类为 `GaoFinderSync.GaoFinderSync`，监视用户主目录和可选外接卷。`FinderMenuPreferences` 保存开关、名称、顺序、图标、分组与排除目录；命名粘贴板发布只读菜单快照，主程序仍通过真实 UUID 解析目录、模板和应用。
 
-## Finder 扩展
+空白目录菜单支持当前目录路径、新建、粘贴等动作，选中文件菜单区分容器动作和选择动作。扩展与备用 Finder 菜单使用相同上下文判断和排除规则。工具栏入口由 Finder 自定义工具栏管理。
 
-模块及主类均为 `GaoFinderSync`。Principal class：`GaoFinderSync.GaoFinderSync`。
+扩展写入带随机 256 位 nonce 的独立本机票据，通过 `gaocaozuo://finder?ticket=<nonce>` 唤起所属主应用。主程序一次性读取并销毁，校验白名单、绝对路径、数量、大小与60秒时效。旧式 `perform?payload=` 只准备复核，不直接修改文件。票据防止网页仅构造链接执行文件操作，不提供本机恶意进程身份认证。
 
-监视真实账户的主目录，覆盖系统支持的普通项目、自定义文件夹以及 Desktop、Downloads、Documents；不监视整块磁盘。Finder 顶层菜单提供直接 ZIP / 解压，子菜单提供直接新建、格式转换、复制路径/名称/校验值及高级压缩选项。
-
-扩展将路径快照与动作写入带随机 256 位 nonce 的专用命名粘贴板，使用 `gaocaozuo://finder?ticket=<nonce>` 唤起其当前所属主应用。主程序读取后立即销毁票据，校验动作白名单、绝对路径、大小/数量与 60 秒时效，然后执行动作。通用剪贴板不承载票据；纯 URL 无法携带可直接执行的文件动作。这个机制防止网页仅构造链接触发操作，不作为对恶意本机程序的身份认证。旧式 `perform?payload=` 链接只选择文件并显示操作面板，须用户再次点击动作。扩展本身不修改文件；云盘等扩展不可用的上下文可用面板/系统服务入口。
+`GaoArchiveQuickLook` 为独立目录预览扩展，使用只读选择文件权限及独立7zz。加密或不支持的包显示原因，不能假装已读取内容。系统可能选择其他已注册扩展，源码编译和扩展注册不等于已完成 Finder 空格预览实机验收。
 
 ## 验证
 
@@ -68,3 +65,5 @@
 2026-10-08：56 项检查通过，包括真实 ZIP 往返、选择提取、7Z 加密/分卷/固实/中文密码、错误密码处理、取消保留原件、目录指纹、修改后拒绝恢复、改名恢复、图片批次回滚、二维码 PNG、安全路径/链接/容量预检和恢复记录序列化；还验证了 ZIP/7Z 执行位与历史修改时间、安全位剥离、已完成撤销重试和半批恢复继续。Finder 扩展及独立文件/压缩模块均编译通过。CoreImage 和嵌套系统隔离需在普通 macOS 进程环境测试，不能在额外限制的命令执行沙盒中代表真实应用行为。
 
 2026-10-11：核心 58 项和 `runQuickFileActionsTests()` 快捷 43 项通过，包括创建/模板/图片唯一命名和恢复、悬空链接占位、图片半批失败清理、收藏目录复制移动、真实单选/多选 ZIP 与 7Z、ZIP/7Z 缺密码及错密码、密码只用于当前项、已完成批次不重复解压、正常损坏不误报密码、取消。还验证跨父目录选择、同名来源拒绝且不留结果、逐项记录、半批取消不误报完成、分卷记录和用户编辑后拒绝恢复。两组测试均使用项目内正式 7zz 和随机临时文件。
+
+V1.03 新增专项：配置迁移中断恢复、动态菜单与目录上下文、真实文档模板、文件属性与剪切恢复、输入与窗口规则、中文密码 ZIP、编辑备份、分卷、安全链接、递归容器和 macOS 元数据。完整测试入口 `Scripts/test.sh`；历史测试记录不代表新版本已安装或全部硬件已验收。

@@ -11,21 +11,26 @@ STAGING=$(mktemp -d /private/tmp/gaocaozuo-build.XXXXXX)
 trap 'rm -rf "$STAGING"' EXIT
 APP="$STAGING/搞操作.app"
 EXT="$APP/Contents/PlugIns/GaoFinderSync.appex"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS"
+QL_EXT="$APP/Contents/PlugIns/GaoArchiveQuickLook.appex"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$QL_EXT/Contents/MacOS" "$QL_EXT/Contents/Resources/Tools"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
 ditto "$PROJECT_DIR/FinderExtension" "$STAGING/FinderExtension"
 ditto "$PROJECT_DIR/Shared" "$STAGING/Shared"
+ditto "$PROJECT_DIR/QuickLookExtension" "$STAGING/QuickLookExtension"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Assets/Lettering.png" -nt "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Scripts/ComposeIcon.swift" -nt "$PROJECT_DIR/Assets/AppIcon.png" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/ComposeIcon.swift" "$PROJECT_DIR/Assets/Lettering.png" "$PROJECT_DIR/Assets/AppIcon.png"
 fi
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   "$STAGING"/Sources/*.swift "$STAGING"/Shared/*.swift -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
   -framework CryptoKit -framework ApplicationServices -framework Carbon -framework CoreImage \
-  -framework ServiceManagement -framework IOKit -framework Security -framework ImageIO -o "$APP/Contents/MacOS/GaoCaoZuo"
+  -framework ServiceManagement -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -o "$APP/Contents/MacOS/GaoCaoZuo"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoFinderSync -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
   "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
+swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
+  -module-name GaoArchiveQuickLook -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
+  "$STAGING"/QuickLookExtension/*.swift -framework AppKit -framework QuickLookUI -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
@@ -36,11 +41,21 @@ cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/AppIcon.png"
 ditto "$PROJECT_DIR/Docs" "$APP/Contents/Resources/Docs"
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$APP/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER"
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$EXT/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER" --extension
-plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist"
+python3 "$PROJECT_DIR/Scripts/make_plist.py" "$QL_EXT/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER" --quicklook
+plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist" "$QL_EXT/Contents/Info.plist"
 if [[ -f "$APP/Contents/Resources/Tools/7zz" ]]; then
   chmod 755 "$APP/Contents/Resources/Tools/7zz"
   codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.7zz "$APP/Contents/Resources/Tools/7zz"
 fi
+cp "$APP/Contents/Resources/Tools/7zz" "$QL_EXT/Contents/Resources/Tools/7zz"
+codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook.7zz "$QL_EXT/Contents/Resources/Tools/7zz"
+# Sign nested native code before signing the containing application.
+while IFS= read -r -d '' native; do
+  if /usr/bin/file -b "$native" | /usr/bin/grep -q 'Mach-O'; then
+    codesign --force --sign - --timestamp=none "$native"
+  fi
+done < <(find "$APP/Contents/Resources/Tools" -type f -print0)
+codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook --entitlements "$PROJECT_DIR/QuickLookExtension/QuickLook.entitlements" "$QL_EXT"
 codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.FinderSync --entitlements "$PROJECT_DIR/Resources/FinderSync.entitlements" "$EXT"
 codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo "$APP"
 codesign --verify --deep --strict "$APP"

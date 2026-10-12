@@ -1,8 +1,13 @@
 import Foundation
 import AppKit
+import Darwin
 
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
+        setbuf(stdout,nil)
+        try runMigrationTests()
+        try runEnhancementIntegrationTests()
+        try runInputEnhancementTests()
         try runSystemTests()
         try runWindowDragTests()
         try runWindowFocusTests()
@@ -10,6 +15,8 @@ import AppKit
         print("系统几何与输入规则测试通过")
         try runDataTests()
         print("资料完整性与剪贴板附件测试通过")
+        try await runArchiveEnhancementTests()
+        try await runFileEnhancementTests()
         try await runFileToolsTests()
         try await runQuickFileActionsTests()
         try await runQuickQueueTests()

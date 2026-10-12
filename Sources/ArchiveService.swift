@@ -16,11 +16,13 @@ struct ArchiveEntry: Identifiable, Hashable {
     let isEncrypted: Bool
     let permissions: UInt16?
     let modifiedAt: Date?
+    let symbolicLink: String?
+    let hardLink: String?
     var id: String { path }
-    init(path: String, size: UInt64, isDirectory: Bool, permissions: UInt16? = nil, modifiedAt: Date? = nil, isEncrypted: Bool = false) {
+    init(path: String, size: UInt64, isDirectory: Bool, permissions: UInt16? = nil, modifiedAt: Date? = nil, isEncrypted: Bool = false, symbolicLink:String? = nil, hardLink:String? = nil) {
         self.path = path; self.size = size; self.isDirectory = isDirectory
         self.permissions = permissions; self.modifiedAt = modifiedAt
-        self.isEncrypted = isEncrypted
+        self.isEncrypted = isEncrypted; self.symbolicLink=symbolicLink;self.hardLink=hardLink
     }
 }
 
@@ -50,6 +52,7 @@ final class ArchiveService: ObservableObject {
     private var process: Process?
     private var cancellationRequested = false
     private var jobDeadline = Date.distantFuture
+    private var extractionOptions = ArchiveExtractionOptions()
     private let engineOverride: URL?
     private let fm = FileManager.default
     nonisolated static let maximumExpandedBytes: UInt64 = 20 * 1024 * 1024 * 1024
@@ -68,15 +71,21 @@ final class ArchiveService: ObservableObject {
     }
 
     /// destination is the exact output filename. Split archives return the first (.001) volume.
-    func create(items: [URL], destination: URL, format: ArchiveFormat, password: String?, splitMB: Int?, solid: Bool) async throws -> URL {
+    func create(items: [URL], destination: URL, format: ArchiveFormat, password: String?, splitMB: Int?, solid: Bool, options: ArchiveCreationOptions = .init()) async throws -> URL {
         try begin()
         defer { finish() }
         guard !items.isEmpty else { throw ArchiveError.invalid("请先选择需要压缩的文件。") }
         try validatePassword(password)
+        try options.validate()
         if let splitMB, !(1...1_048_576).contains(splitMB) { throw ArchiveError.invalid("分卷大小须为 1–1048576 MB。") }
         guard format == .sevenZip || !solid else { throw ArchiveError.invalid("固实压缩仅适用于 7Z。") }
         try requireDirectory(destination.deletingLastPathComponent())
         try requireAbsent(destination)
+        var sourceNames: Set<String> = []
+        for source in items {
+            let key = source.lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
+            guard sourceNames.insert(key).inserted else { throw FileToolsError.conflict(source) }
+        }
         let stage = try makeStage(in: destination.deletingLastPathComponent())
         defer { try? fm.removeItem(at: stage) }
         let input = stage.appendingPathComponent("input", isDirectory: true)
@@ -84,18 +93,31 @@ final class ArchiveService: ObservableObject {
         try fm.createDirectory(at: input, withIntermediateDirectories: false)
         try fm.createDirectory(at: packed, withIntermediateDirectories: false)
         output = "正在核验并准备文件…\n"
-        // FileTools rejects links/special files and verifies complete copies. Work runs away from the UI actor.
-        _ = try await Task.detached(priority: .userInitiated) { try FileTools.copy(items: items, to: input, move: false) }.value
+        // Archive-aware fingerprints validate safe links and complete copies away from the UI actor.
+        try await Task.detached(priority: .userInitiated) {
+            for source in items {
+                let target=input.appendingPathComponent(source.lastPathComponent)
+                if (try? FileManager.default.attributesOfItem(atPath: target.path)) != nil { throw FileToolsError.conflict(target) }
+                let fingerprint=try FileTools.archiveFingerprint(source)
+                do { try FileManager.default.copyItem(at:source,to:target) }
+                catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError { throw FileToolsError.conflict(target) }
+                guard try FileTools.archiveFingerprint(target) == fingerprint, try FileTools.archiveFingerprint(source) == fingerprint else {throw ArchiveError.invalid("待压缩文件在准备期间发生变化。")}
+            }
+        }.value
         try checkCancellation()
+        let hasMacMetadata = try await Task.detached(priority: .userInitiated) {
+            try ArchiveMacMetadata.prepare(in: input, roots: items.map(\.lastPathComponent), options: options)
+        }.value
         let packedURL = packed.appendingPathComponent(destination.lastPathComponent)
-        var args = ["a", "-t\(format.rawValue)", "-mx=5", "-mmt=on", "-y", "-spd"]
+        var args = ["a", "-t\(format.rawValue)", "-mx=\(options.level.rawValue)", options.threads == 0 ? "-mmt=on" : "-mmt=\(options.threads)", "-y", "-spd", "-snl"]
+        args += options.ignoredPatterns.map { "-xr!" + $0 }
         if format == .sevenZip { args.append(solid ? "-ms=on" : "-ms=off") }
         if let password, !password.isEmpty {
             args.append("-p")
-            args.append(format == .sevenZip ? "-mhe=on" : "-mem=AES256")
+            args.append(format == .sevenZip ? (options.encryptFileNames ? "-mhe=on" : "-mhe=off") : "-mem=AES256")
         }
         if let splitMB { args.append("-v\(splitMB)m") }
-        args += ["--", packedURL.path] + items.map(\.lastPathComponent)
+        args += ["--", packedURL.path] + items.map(\.lastPathComponent) + (hasMacMetadata ? ["__MACOSX"] : [])
         _ = try await run(args, currentDirectory: input, password: password, writeRoot: packed)
         let volumes = try fm.contentsOfDirectory(at: packed, includingPropertiesForKeys: nil).sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !volumes.isEmpty else { throw ArchiveError.invalid("压缩引擎没有生成结果。") }
@@ -130,21 +152,119 @@ final class ArchiveService: ObservableObject {
         return result
     }
 
-    func list(archive: URL, password: String?) async throws -> [ArchiveEntry] {
-        try begin(); defer { finish() }
+    func list(archive: URL, password: String?, options: ArchiveExtractionOptions = .init()) async throws -> [ArchiveEntry] {
+        try begin(options:options); defer { finish() }
         try validatePassword(password)
-        let entries = try await checkedEntries(archive: archive, password: password)
+        let opened = try await openedContainer(archive:archive,password:password)
+        defer { opened.temporaryRoots.forEach { try? fm.removeItem(at:$0) } }
+        let entries = try await checkedEntries(archive: opened.url, password: password)
         output = "已读取 \(entries.count) 个项目，路径与容量预检通过。"
         progress = 1
         return entries
     }
 
+    /// Publish each top-level item into an existing directory only after the whole archive is verified.
+    /// Existing names (including dangling links) are never merged or overwritten.
+    func extractIntoDirectory(archive: URL, to directory: URL, password: String?, selected: [String]? = nil,
+                              options: ArchiveExtractionOptions = .init()) async throws -> [URL] {
+        try requireDirectory(directory)
+        let temporary = directory.appendingPathComponent(".gaocaozuo-expand-" + UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: temporary) }
+        _ = try await extract(archive: archive, to: temporary, password: password, selected: selected, options: options)
+        let children = try ArchiveMacMetadata.allURLs(in: temporary).filter { $0.deletingLastPathComponent().standardizedFileURL == temporary.standardizedFileURL }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let targets = children.map { directory.appendingPathComponent($0.lastPathComponent) }
+        for target in targets { try requireAbsent(target) }
+        let receipts = try await Task.detached(priority: .userInitiated) {
+            try zip(children, targets).map { source, target in
+                FileOperationReceipt(kind: .create, destination: target, fingerprint: try FileTools.archiveFingerprint(source))
+            }
+        }.value
+        var committed: [(URL, URL)] = []
+        do {
+            for (source, target) in zip(children, targets) {
+                try requireAbsent(target)
+                try fm.moveItem(at: source, to: target)
+                committed.append((source, target))
+            }
+        } catch {
+            for (source, target) in committed.reversed() { try? fm.moveItem(at: target, to: source) }
+            throw error
+        }
+        lastResultReceipts = receipts; lastResultURL = targets.first
+        return targets
+    }
+
+    /// Editing is rebuilt and verified in isolation. Saving over the original always creates a verified backup.
+    func edit(archive: URL, password: String?, adding: [URL], removing: [String], removeHidden: Bool,
+              saveTo destination: URL, backupDirectory: URL, options: ArchiveCreationOptions = .init(),
+              extraction: ArchiveExtractionOptions = .init()) async throws -> (result: URL, backup: URL?) {
+        guard ["zip", "7z"].contains(archive.pathExtension.lowercased()) else {
+            throw ArchiveError.invalid("仅 ZIP 与 7Z 支持重新保存；其他格式可提取后新建 ZIP/7Z。")
+        }
+        let before = try FileTools.fingerprint(archive)
+        let root = try makeStage(in: fm.temporaryDirectory)
+        defer { try? fm.removeItem(at: root) }
+        let tree = root.appendingPathComponent("contents", isDirectory: true)
+        _ = try await extract(archive: archive, to: tree, password: password, selected: nil, options: extraction)
+        let listed = try ArchiveMacMetadata.allURLs(in: tree).map { String($0.path.dropFirst(tree.path.count + 1)) }
+        for path in removing { try Self.validateArchivePath(path); guard listed.contains(path) else { throw ArchiveError.invalid("待删除项目已不在压缩包中。") } }
+        var deletions = Set(removing)
+        if removeHidden { deletions.formUnion(listed.filter { $0.split(separator: "/").contains(where: { $0.hasPrefix(".") || $0 == "__MACOSX" }) }) }
+        for path in deletions.sorted(by: { $0.count < $1.count }) {
+            let url = tree.appendingPathComponent(path)
+            if (try? fm.attributesOfItem(atPath: url.path)) != nil { try fm.removeItem(at: url) }
+        }
+        for source in adding {
+            let target = tree.appendingPathComponent(source.lastPathComponent)
+            try requireAbsent(target)
+            let hash = try FileTools.archiveFingerprint(source)
+            try fm.copyItem(at: source, to: target)
+            guard try FileTools.archiveFingerprint(target) == hash, try FileTools.archiveFingerprint(source) == hash else { throw ArchiveError.invalid("新增文件在复制期间发生变化。") }
+        }
+        let children = try ArchiveMacMetadata.allURLs(in: tree).filter { $0.deletingLastPathComponent().standardizedFileURL == tree.standardizedFileURL }
+        guard !children.isEmpty else { throw ArchiveError.invalid("编辑会产生空压缩包，请保留至少一个项目。") }
+        let format: ArchiveFormat = archive.pathExtension.lowercased() == "7z" ? .sevenZip : .zip
+        let rebuilt = root.appendingPathComponent("edited." + format.rawValue)
+        _ = try await create(items: children, destination: rebuilt, format: format, password: password, splitMB: nil, solid: false, options: options)
+        if destination.standardizedFileURL == archive.standardizedFileURL,
+           let mode = try fm.attributesOfItem(atPath: archive.path)[.posixPermissions] {
+            // Editing must not turn a private 0600 archive into a world-readable default file.
+            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: rebuilt.path)
+        }
+        let hash = try FileTools.fingerprint(rebuilt)
+        guard try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
+        var backup: URL?
+        if destination.standardizedFileURL == archive.standardizedFileURL {
+            try fm.createDirectory(at: backupDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let saved = backupDirectory.appendingPathComponent(UUID().uuidString + "." + format.rawValue)
+            try fm.copyItem(at: archive, to: saved)
+            guard try FileTools.fingerprint(saved) == before, try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
+            backup = saved
+            // Rebuild is on a potentially different volume; copy beside original before atomic replacement.
+            let candidate = archive.deletingLastPathComponent().appendingPathComponent(".gaocaozuo-edit-" + UUID().uuidString)
+            defer { try? fm.removeItem(at: candidate) }
+            try fm.copyItem(at: rebuilt, to: candidate)
+            guard try FileTools.fingerprint(candidate) == hash, try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
+            _ = try fm.replaceItemAt(archive, withItemAt: candidate, backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
+            try requireAbsent(destination)
+            try fm.copyItem(at: rebuilt, to: destination)
+        }
+        guard try FileTools.fingerprint(destination) == hash else { throw ArchiveError.invalid("保存结果核验失败；原包安全备份已保留。") }
+        lastResultURL = destination
+        lastResultReceipts = backup == nil ? [.init(kind: .create, destination: destination, fingerprint: hash)] : []
+        return (destination, backup)
+    }
+
     /// to is a NEW directory. Existing directories are refused, including an empty one.
-    func extract(archive: URL, to destination: URL, password: String?, selected: [String]?) async throws -> URL {
-        try begin(); defer { finish() }
+    func extract(archive originalArchive: URL, to destination: URL, password: String?, selected: [String]?, options: ArchiveExtractionOptions = .init()) async throws -> URL {
+        try begin(options:options); defer { finish() }
         try validatePassword(password)
         try requireDirectory(destination.deletingLastPathComponent())
         try requireAbsent(destination)
+        let opened = try await openedContainer(archive:originalArchive,password:password)
+        defer { opened.temporaryRoots.forEach { try? fm.removeItem(at:$0) } }
+        let archive = opened.url
         let entries = try await checkedEntries(archive: archive, password: password)
         let selected = try validateSelection(selected, entries: entries)
         let expected = entries.filter { entry in selected == nil || selected!.contains(where: { entry.path == $0 || entry.path.hasPrefix($0 + "/") }) }
@@ -156,7 +276,8 @@ final class ArchiveService: ObservableObject {
         let payload = stage.appendingPathComponent("payload", isDirectory: true)
         try fm.createDirectory(at: payload, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         output = "路径与容量预检通过，正在隔离解压…\n"
-        let files = expected.filter { !$0.isDirectory }
+        try Self.validateLinks(expected)
+        let files = expected.filter { !$0.isDirectory && $0.symbolicLink == nil && $0.hardLink == nil }
         for entry in expected where entry.isDirectory {
             try fm.createDirectory(at: payload.appendingPathComponent(entry.path, isDirectory: true), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
@@ -169,9 +290,21 @@ final class ArchiveService: ObservableObject {
             progress = Double(index + 1) / Double(max(1, files.count))
         }
         try checkCancellation()
+        for entry in expected where entry.hardLink != nil {
+            let target=try Self.resolvedLink(entry.hardLink!,from:entry.path,hard:true)
+            let result=payload.appendingPathComponent(entry.path)
+            try fm.createDirectory(at:result.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            try fm.copyItem(at:payload.appendingPathComponent(target),to:result)
+        }
+        for entry in expected where entry.symbolicLink != nil {
+            let result=payload.appendingPathComponent(entry.path)
+            try fm.createDirectory(at:result.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            try fm.createSymbolicLink(atPath:result.path,withDestinationPath:entry.symbolicLink!)
+        }
         try Self.verifyExtractedTree(payload, expected: expected)
+        try ArchiveMacMetadata.restore(in: payload)
         let receipt = try await Task.detached(priority: .userInitiated) {
-            FileOperationReceipt(kind: .create, destination: destination, fingerprint: try FileTools.fingerprint(payload))
+            FileOperationReceipt(kind: .create, destination: destination, fingerprint: try FileTools.archiveFingerprint(payload))
         }.value
         try checkCancellation()
         try requireAbsent(destination)
@@ -181,15 +314,17 @@ final class ArchiveService: ObservableObject {
         return destination
     }
 
-    private func begin() throws {
+    private func begin(options:ArchiveExtractionOptions = .init()) throws {
+        try options.validate()
         guard !isRunning else { throw ArchiveError.invalid("已有压缩任务正在运行，请等待或取消。") }
+        extractionOptions=options
         cancellationRequested = false; isRunning = true; progress = nil; output = ""; lastResultURL = nil; lastResultReceipts = []
-        jobDeadline = Date().addingTimeInterval(60 * 60)
+        jobDeadline = Date().addingTimeInterval(Double(options.maximumMinutes * 60))
     }
     private func finish() { process = nil; isRunning = false }
     private func checkCancellation() throws {
         if cancellationRequested || Task.isCancelled { throw ArchiveError.cancelled }
-        if Date() > jobDeadline { throw ArchiveError.invalid("任务超过一小时的安全时间预算。") }
+        if Date() > jobDeadline { throw ArchiveError.invalid("任务超过当前设定的安全时间预算。") }
     }
     private func validatePassword(_ password: String?) throws {
         if let password, password.contains("\0") || password.contains("\n") || password.contains("\r") || password.utf8.count > 1024 { throw ArchiveError.invalid("密码过长或含有换行/空字符。") }
@@ -219,12 +354,57 @@ final class ArchiveService: ObservableObject {
 
     private func checkedEntries(archive: URL, password: String?) async throws -> [ArchiveEntry] {
         guard (try fm.attributesOfItem(atPath: archive.path)[.type] as? FileAttributeType) == .typeRegular else { throw ArchiveError.invalid("请选择普通压缩文件；不接受链接或特殊文件。") }
-        let listing = try await run(["l", "-slt", "-ba", "-sccUTF-8"] + passwordArguments(password) + ["--", archive.path], password: password, captureLimit: 64 * 1024 * 1024)
-        return try Self.parseListing(listing)
+        let encoding = extractionOptions.filenameEncoding
+        let codepages = ["UTF-8":"65001", "GB18030":"54936", "CP932":"932", "CP437":"437", "CP850":"850", "CP1252":"1252"]
+        let encodingArgs = codepages[encoding].map { ["-mcp=" + $0] } ?? []
+        let listing = try await run(["l", "-slt", "-ba", "-sccUTF-8"] + encodingArgs + passwordArguments(password) + ["--", archive.path], password: password, captureLimit: 64 * 1024 * 1024)
+        // 7Z encodes a symbolic target as the member's data but omits its target from -slt.
+        // Read only that bounded member into private staging before validating the whole graph.
+        var blocks = listing.components(separatedBy: "\n\n")
+        for index in blocks.indices {
+            var fields: [String: String] = [:]
+            for line in blocks[index].components(separatedBy: .newlines) {
+                guard let separator = line.range(of: " = ") else { continue }
+                let key = String(line[..<separator.lowerBound])
+                guard fields[key] == nil else { throw ArchiveError.invalid("压缩包目录信息重复。") }
+                fields[key] = String(line[separator.upperBound...])
+            }
+            let mode = (fields["Attributes"] ?? "") + " " + (fields["Mode"] ?? "")
+            guard mode.split(separator: " ").contains(where: { $0.first == "l" }), fields["Symbolic Link"]?.isEmpty != false else { continue }
+            guard extractionOptions.allowSafeLinks, let path = fields["Path"], let size = UInt64(fields["Size"] ?? ""), (1...4_096).contains(size) else { throw ArchiveError.invalid("压缩包链接类型或长度无效。") }
+            try Self.validateArchivePath(path)
+            if fields["Encrypted"] == "+", password?.isEmpty != false { throw ArchiveError.passwordRequired(incorrect: false) }
+            let stage = try makeStage(in: fm.temporaryDirectory)
+            defer { try? fm.removeItem(at: stage) }
+            let link = stage.appendingPathComponent("target")
+            _ = try await run(["x", "-so", "-y", "-spd"] + passwordArguments(password) + ["--", archive.path, path], password: password, streamTo: link, expectedBytes: size)
+            let data = try Data(contentsOf: link)
+            guard UInt64(data.count) == size, let target = String(data: data, encoding: .utf8), !target.isEmpty, !target.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ArchiveError.invalid("压缩包链接目标不是有效路径。") }
+            blocks[index] += "\nSymbolic Link = " + target
+        }
+        return try Self.parseListing(blocks.joined(separator: "\n\n"),options:extractionOptions)
+    }
+
+    private func openedContainer(archive:URL,password:String?) async throws -> (url:URL,temporaryRoots:[URL]) {
+        guard extractionOptions.recursiveContainers else{return(archive,[])}
+        var current=archive, roots:[URL]=[]
+        do {
+            for _ in 0..<8 {
+                guard ["gz","gzip","tgz","bz2","bzip2","tbz","tbz2","xz","txz","lz","lzip","zst","tzst"].contains(current.pathExtension.lowercased()) else {break}
+                let entries=try await checkedEntries(archive:current,password:password)
+                guard entries.count == 1,let entry=entries.first,!entry.isDirectory,entry.path.lowercased().hasSuffix(".tar") else {break}
+                let root=try makeStage(in:fm.temporaryDirectory);roots.append(root)
+                let child=root.appendingPathComponent("contents.tar")
+                _=try await run(["x","-so","-y","-spd","--",current.path,entry.path],password:password,streamTo:child,expectedBytes:entry.size)
+                current=child
+            }
+            return(current,roots)
+        } catch {roots.forEach{try? fm.removeItem(at:$0)};throw error}
     }
 
     /// Public to module tests: malformed, ambiguous and link-bearing metadata is rejected.
-    nonisolated static func parseListing(_ text: String) throws -> [ArchiveEntry] {
+    nonisolated static func parseListing(_ text: String, options:ArchiveExtractionOptions = .strict) throws -> [ArchiveEntry] {
+        try options.validate()
         var entries: [ArchiveEntry] = []
         var fields: [String: String] = [:]
         var paths = Set<String>()
@@ -240,21 +420,23 @@ final class ArchiveService: ObservableObject {
             try validateArchivePath(path)
             let attributes = (fields["Attributes"] ?? "") + " " + (fields["Mode"] ?? "")
             let nonemptyKeys = fields.filter { !$0.value.isEmpty }.keys.map { $0.lowercased() }
-            if nonemptyKeys.contains(where: { $0.contains("symbolic link") || $0.contains("hard link") || $0 == "link" }) ||
-                attributes.split(separator: " ").contains(where: { $0.first == "l" || $0.first == "b" || $0.first == "c" || $0.first == "p" || $0.first == "s" }) ||
-                (fields["Characteristics"] ?? "").lowercased().contains("link") {
-                throw ArchiveError.invalid("压缩包含有链接或特殊文件，为避免越界写入已拒绝。")
-            }
+            let symbolic = fields["Symbolic Link"].flatMap { $0.isEmpty ? nil : $0 }
+            let hard = fields["Hard Link"].flatMap { $0.isEmpty ? nil : $0 }
+            let unknownLink = nonemptyKeys.contains { ($0.contains("link") && $0 != "symbolic link" && $0 != "hard link") }
+            let special = attributes.split(separator:" ").contains { ["b","c","p","s"].contains($0.first.map(String.init) ?? "") }
+            let modeLink = attributes.split(separator:" ").contains { $0.first == "l" }
+            guard !special, !unknownLink, !(symbolic != nil && hard != nil), !modeLink || symbolic != nil else {throw ArchiveError.invalid("压缩包含有不支持的特殊文件或链接元数据。")}
+            if !options.allowSafeLinks && (symbolic != nil || hard != nil) {throw ArchiveError.invalid("压缩包含有链接；当前解压设置不允许链接。")}
             let directory = fields["Folder"] == "+" || attributes.hasPrefix("D") || attributes.split(separator: " ").contains(where: { $0.first == "d" }) || path.hasSuffix("/")
             let clean = path.hasSuffix("/") ? String(path.dropLast()) : path
             let comparison = clean.precomposedStringWithCanonicalMapping.lowercased()
             guard paths.insert(comparison).inserted else { throw ArchiveError.invalid("压缩包含有重名或大小写冲突项目：\(clean)") }
-            guard size <= maximumExpandedBytes, expanded <= maximumExpandedBytes - size else { throw ArchiveError.invalid("压缩包展开内容超过 20 GiB 安全预算。") }
+            guard size <= options.maximumBytes, expanded <= options.maximumBytes - size else { throw ArchiveError.invalid("压缩包展开内容超过当前 \(options.maximumExpandedGiB) GiB 安全预算。") }
             expanded += size
             entries.append(.init(path: clean, size: size, isDirectory: directory,
                                  permissions: parsePermissions(attributes), modifiedAt: parseModifiedDate(fields["Modified"]),
-                                 isEncrypted: fields["Encrypted"] == "+"))
-            guard entries.count <= maximumEntries else { throw ArchiveError.invalid("压缩包超过 10 万个项目的安全预算。") }
+                                 isEncrypted: fields["Encrypted"] == "+",symbolicLink:symbolic,hardLink:hard))
+            guard entries.count <= options.maximumEntries else { throw ArchiveError.invalid("压缩包超过当前 \(options.maximumEntries) 个项目的安全预算。") }
         }
         for line in text.components(separatedBy: .newlines) {
             if line == "Enter password:" { continue }
@@ -279,6 +461,17 @@ final class ArchiveService: ObservableObject {
                 guard !files.contains(components.joined(separator: "/")) else { throw ArchiveError.invalid("压缩包内文件和目录路径发生冲突。") }
             }
         }
+        try validateLinks(entries)
+        // Hard links are materialized as independent files, so account for their copied bytes.
+        let lookup = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
+        var actualExpanded: UInt64 = 0
+        for entry in entries where !entry.isDirectory {
+            let amount: UInt64
+            if let target = entry.hardLink { amount = lookup[try resolvedLink(target, from: entry.path, hard: true)]?.size ?? entry.size }
+            else { amount = entry.size }
+            guard amount <= options.maximumBytes, actualExpanded <= options.maximumBytes - amount else { throw ArchiveError.invalid("解压内容（含硬链接副本）超过当前容量预算。") }
+            actualExpanded += amount
+        }
         return entries
     }
 
@@ -289,6 +482,35 @@ final class ArchiveService: ObservableObject {
         }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard !parts.contains(".."), !parts.contains("."), !parts.dropLast().contains(""), parts.allSatisfy({ $0.utf8.count <= 255 }) else { throw ArchiveError.invalid("压缩包含有越界或异常路径。") }
+    }
+
+    nonisolated static func resolvedLink(_ target:String, from path:String, hard:Bool) throws -> String {
+        guard !target.isEmpty,!target.hasPrefix("/"),!target.contains("\\"),!target.contains(":"),!target.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains) else {throw ArchiveError.invalid("压缩包含有绝对或非法链接。")}
+        var parts = hard ? [] : path.split(separator:"/").dropLast().map(String.init)
+        for part in target.split(separator:"/") {
+            if part == "." {continue}
+            if part == ".." {guard !parts.isEmpty else {throw ArchiveError.invalid("压缩包链接指向解压目录之外。")};parts.removeLast()}
+            else {parts.append(String(part))}
+        }
+        return parts.joined(separator:"/")
+    }
+    nonisolated static func validateLinks(_ entries:[ArchiveEntry]) throws {
+        let lookup=Dictionary(uniqueKeysWithValues:entries.map{($0.path,$0)})
+        var directories=Set([""])
+        for e in entries {var c=e.path.split(separator:"/").map(String.init);if e.isDirectory{directories.insert(e.path)};while c.count>1{c.removeLast();directories.insert(c.joined(separator:"/"))}}
+        for entry in entries where entry.symbolicLink != nil || entry.hardLink != nil {
+            var seen=Set([entry.path]), current=entry
+            for _ in 0...entries.count {
+                guard let target=current.symbolicLink ?? current.hardLink else {break}
+                let resolved=try resolvedLink(target,from:current.path,hard:current.hardLink != nil)
+                guard seen.insert(resolved).inserted else {throw ArchiveError.invalid("压缩包包含循环链接。")}
+                if let next=lookup[resolved] {
+                    if entry.hardLink != nil && (next.isDirectory || next.symbolicLink != nil || next.hardLink != nil) {throw ArchiveError.invalid("硬链接目标必须是包内普通文件。")}
+                    current=next
+                } else if directories.contains(resolved), entry.hardLink == nil {break}
+                else {throw ArchiveError.invalid("链接目标不存在或未包含在所选内容中。")}
+            }
+        }
     }
 
     /// Only rwx bits are retained. Lowercase s/t includes an executable bit but never its special-ID bit.
@@ -335,7 +557,7 @@ final class ArchiveService: ObservableObject {
         let available = Set(entries.map(\.path))
         for path in selection {
             try Self.validateArchivePath(path)
-            guard available.contains(path) else { throw ArchiveError.invalid("选中项目不在已核验目录中：\(path)") }
+            guard available.contains(path) || entries.contains(where: { $0.path.hasPrefix(path + "/") }) else { throw ArchiveError.invalid("选中项目不在已核验目录中：\(path)") }
         }
         return Array(Set(selection)).sorted()
     }
@@ -352,26 +574,32 @@ final class ArchiveService: ObservableObject {
             }
         }
         var seen = Set<String>()
-        var failure: Error?
-        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: nil, errorHandler: { _, error in failure = error; return false }) else { throw ArchiveError.invalid("无法核验解压结果。") }
-        for case let url as URL in enumerator {
+        for url in try ArchiveMacMetadata.allURLs(in: root) {
             let relative = String(url.path.dropFirst(root.path.count + 1))
             guard let entry = allowed[relative] else { throw ArchiveError.invalid("解压结果含有目录清单之外的项目：\(relative)") }
             let attributes = try fm.attributesOfItem(atPath: url.path)
             let type = attributes[.type] as? FileAttributeType
+            if let target=entry.symbolicLink {
+                guard type == .typeSymbolicLink,try fm.destinationOfSymbolicLink(atPath:url.path) == target else {throw ArchiveError.invalid("解压链接核验失败。")}
+                seen.insert(relative);continue
+            }
             guard (entry.isDirectory && type == .typeDirectory) || (!entry.isDirectory && type == .typeRegular) else { throw ArchiveError.invalid("解压结果包含链接、特殊文件或类型不一致项目。") }
             if !entry.isDirectory {
-                guard (attributes[.size] as? NSNumber)?.uint64Value == entry.size,
+                let expectedSize:UInt64
+                if let link=entry.hardLink,let target=allowed[try resolvedLink(link,from:entry.path,hard:true)] {expectedSize=target.size} else {expectedSize=entry.size}
+                guard (attributes[.size] as? NSNumber)?.uint64Value == expectedSize,
                       (attributes[.referenceCount] as? NSNumber)?.intValue == 1 else { throw ArchiveError.invalid("解压结果大小不符或包含硬链接。") }
             }
             seen.insert(relative)
         }
-        if let failure { throw failure }
-        guard expected.allSatisfy({ seen.contains($0.path) }) else { throw ArchiveError.invalid("解压结果不完整，未保存到目标目录。") }
+        guard expected.allSatisfy({ seen.contains($0.path) }) else { throw ArchiveError.invalid("解压结果不完整，未保存到目标目录：" + expected.filter { !seen.contains($0.path) }.prefix(5).map(\.path).joined(separator: "、")) }
         // Apply metadata only after all bytes/types/paths verify. Descendants first preserves directory mtimes.
         for entry in allowed.values.sorted(by: { $0.path.split(separator: "/").count > $1.path.split(separator: "/").count }) {
+            if entry.symbolicLink != nil {continue}
             let url = root.appendingPathComponent(entry.path)
-            let ownerAccess: UInt16 = entry.isDirectory ? 0o700 : 0o600
+            // Keep the owner able to verify/read results without making read-only archives writable.
+            // Never restore setuid/setgid/sticky bits or another user's ownership.
+            let ownerAccess: UInt16 = entry.isDirectory ? 0o500 : 0o400
             let safeMode = ((entry.permissions ?? ownerAccess) & 0o777) | ownerAccess
             var attributes: [FileAttributeKey: Any] = [.posixPermissions: Int(safeMode)]
             if let modifiedAt = entry.modifiedAt { attributes[.modificationDate] = modifiedAt }
@@ -384,21 +612,41 @@ final class ArchiveService: ObservableObject {
                      streamTo: URL? = nil, expectedBytes: UInt64? = nil) async throws -> String {
         try checkCancellation()
         let engineURL = try engine()
+        let marker = arguments.firstIndex(of:"--")
+        let archivePath = marker.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } ?? ""
+        let lowerPath = archivePath.lowercased()
+        let unicodeZIP = password?.unicodeScalars.contains(where: { $0.value >= 128 }) == true && (lowerPath.hasSuffix(".zip") || lowerPath.hasSuffix(".zip.001"))
+        let zipRead = arguments.first != "a" && (lowerPath.hasSuffix(".zip") || lowerPath.hasSuffix(".zip.001"))
+        let useBridge = unicodeZIP || zipRead || [".ace", ".lz", ".lzip", ".lzop", ".gz", ".gzip", ".tgz", ".bz2", ".bzip2", ".tbz", ".tbz2", ".xz", ".txz", ".zst", ".tzst"].contains(where:lowerPath.hasSuffix)
+        var executable = engineURL
+        var prefix: [String] = []
+        if useBridge {
+            let tools = engineURL.deletingLastPathComponent()
+            executable = tools.appendingPathComponent("ArchivePython/python/bin/python3")
+            let bridge = tools.appendingPathComponent("ArchiveBridge/archive_bridge.py")
+            guard fm.isExecutableFile(atPath:executable.path), fm.fileExists(atPath:bridge.path) else {throw ArchiveError.invalid("扩展压缩引擎不完整，请重新安装完整发行包。")}
+            prefix = ["-I", "-B", bridge.path]
+        }
         let task = Process()
         var allArguments = arguments
+        if useBridge { allArguments.insert(contentsOf:["--gao-encoding="+extractionOptions.filenameEncoding,"--gao-limit=\(extractionOptions.maximumBytes)"],at:1) }
+        else if arguments.first == "x", extractionOptions.filenameEncoding != "auto" {
+            let pages=["UTF-8":"65001","GB18030":"54936","CP932":"932","CP437":"437","CP850":"850","CP1252":"1252"]
+            if let page=pages[extractionOptions.filenameEncoding] {allArguments.insert("-mcp="+page,at:1)}
+        }
         allArguments.insert(contentsOf: streamTo == nil ? ["-bso1", "-bse1", arguments.first == "l" ? "-bsp0" : "-bsp1"] : ["-bso0", "-bse2", "-bsp2"], at: 1)
         if arguments.first == "a" {
             // Creation only sees previously copied, fingerprint-verified ordinary input files.
-            task.executableURL = engineURL
+            task.executableURL = executable
             if let writeRoot { allArguments.insert("-w\(writeRoot.path)", at: 1) }
-            task.arguments = allArguments
+            task.arguments = prefix + allArguments
         } else {
             guard fm.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
                 throw ArchiveError.invalid("当前系统缺少隔离提取能力；为保护文件，未启动解压。")
             }
             let profile = "(version 1)(allow default)(deny network*)(deny file-write*)"
             task.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            task.arguments = ["-p", profile, engineURL.path] + allArguments
+            task.arguments = ["-p", profile, executable.path] + prefix + allArguments
         }
         task.currentDirectoryURL = currentDirectory
         var environment = ProcessInfo.processInfo.environment

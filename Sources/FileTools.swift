@@ -181,12 +181,12 @@ enum FileTools {
         for receipt in receipts {
             if try isMissing(receipt.destination) {
                 if receipt.kind == .move || receipt.kind == .rename {
-                    guard let source = receipt.source, try fingerprint(source) == receipt.fingerprint else { throw FileToolsError.changed(receipt.source ?? receipt.destination) }
+                    guard let source = receipt.source, try receiptFingerprint(source, expected:receipt.fingerprint) == receipt.fingerprint else { throw FileToolsError.changed(receipt.source ?? receipt.destination) }
                 }
                 // A previous interrupted attempt already restored/moved this item. Continue the remaining batch.
                 continue
             }
-            guard try fingerprint(receipt.destination) == receipt.fingerprint else { throw FileToolsError.changed(receipt.destination) }
+            guard try receiptFingerprint(receipt.destination, expected:receipt.fingerprint) == receipt.fingerprint else { throw FileToolsError.changed(receipt.destination) }
             if receipt.kind == .move || receipt.kind == .rename {
                 guard let source = receipt.source else { throw FileToolsError.invalid("恢复记录缺少原始路径。") }
                 try absent(source)
@@ -197,10 +197,10 @@ enum FileTools {
         do {
             for receipt in pending.reversed() {
                 // Recheck immediately before mutation in case a different process has edited the file.
-                guard try fingerprint(receipt.destination) == receipt.fingerprint else { throw FileToolsError.changed(receipt.destination) }
+                guard try receiptFingerprint(receipt.destination, expected:receipt.fingerprint) == receipt.fingerprint else { throw FileToolsError.changed(receipt.destination) }
                 if receipt.kind == .move || receipt.kind == .rename, let source = receipt.source {
                     try fm.moveItem(at: receipt.destination, to: source)
-                    guard try fingerprint(source) == receipt.fingerprint else { throw FileToolsError.changed(source) }
+                    guard try receiptFingerprint(source, expected:receipt.fingerprint) == receipt.fingerprint else { throw FileToolsError.changed(source) }
                 } else if trashCreated {
                     try fm.trashItem(at: receipt.destination, resultingItemURL: nil)
                 } else { try fm.removeItem(at: receipt.destination) }
@@ -310,14 +310,17 @@ enum FileTools {
         if type == .typeRegular { return "file:\(try sha256(url)):\(attributes[.posixPermissions] ?? 0)" }
         guard type == .typeDirectory else { throw FileToolsError.unsupported(url) }
         let canonicalRoot = try canonicalURL(url)
-        var enumerationError: Error?
-        guard let enumerator = fm.enumerator(at: canonicalRoot, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [], errorHandler: { _, error in enumerationError = error; return false }) else { throw FileToolsError.unsupported(url) }
-        var entries: [URL] = []
-        for case let child as URL in enumerator {
-            entries.append(child)
-            guard entries.count <= 100_000 else { throw FileToolsError.invalid("目录超过 10 万个项目的操作预算。") }
+        var entries:[URL]=[]
+        func walk(_ directory:URL) throws {
+            for child in try directoryChildren(directory) {
+                let type=try fm.attributesOfItem(atPath:child.path)[.type] as? FileAttributeType
+                guard type == .typeRegular || type == .typeDirectory else {throw FileToolsError.unsupported(child)}
+                entries.append(child)
+                guard entries.count<=100_000 else {throw FileToolsError.invalid("目录超过 10 万个项目的操作预算。")}
+                if type == .typeDirectory {try walk(child)}
+            }
         }
-        if let error = enumerationError { throw error }
+        try walk(canonicalRoot)
         var hash = SHA256()
         hash.update(data: Data("directory:\(attributes[.posixPermissions] ?? 0)\n".utf8))
         for child in entries.sorted(by: { $0.path < $1.path }) {
@@ -329,6 +332,82 @@ enum FileTools {
             hash.update(data: Data("\(relative.utf8.count):\(relative):\(content):\(a[.posixPermissions] ?? 0)\n".utf8))
         }
         return "directory:" + hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// POSIX enumeration includes AppleDouble records Foundation may hide automatically.
+    static func directoryChildren(_ directory:URL) throws -> [URL] {
+        guard let stream=opendir(directory.path) else {throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno))}
+        defer{closedir(stream)}
+        var urls:[URL]=[]
+        while true {
+            errno=0
+            guard let entry=readdir(stream) else {if errno != 0 {throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno))};break}
+            let count=Int(entry.pointee.d_namlen)
+            guard let name=withUnsafeBytes(of:entry.pointee.d_name,{String(bytes:$0.prefix(count),encoding:.utf8)}) else {throw FileToolsError.invalid("目录包含无法无损表示的文件名，已停止操作。")}
+            if name == "." || name == ".." {continue}
+            urls.append(directory.appendingPathComponent(name))
+            guard urls.count<=100_000 else {throw FileToolsError.invalid("单个目录超过 10 万项预算。")}
+        }
+        return urls
+    }
+
+    /// Archive receipts may contain internal symbolic links. Ordinary file operations keep rejecting links.
+    static func archiveFingerprint(_ root: URL) throws -> String {
+        let a = try fm.attributesOfItem(atPath:root.path)
+        if a[.type] as? FileAttributeType == .typeRegular {return try fingerprint(root)}
+        guard a[.type] as? FileAttributeType == .typeDirectory else { throw FileToolsError.unsupported(root) }
+        let base = try canonicalURL(root)
+        var entries: [(String,URL,FileAttributeType,UInt32)] = []
+        func walk(_ directory:URL) throws {
+            for child in try directoryChildren(directory).sorted(by:{$0.lastPathComponent < $1.lastPathComponent}) {
+                let attrs=try fm.attributesOfItem(atPath:child.path)
+                guard let type=attrs[.type] as? FileAttributeType,[.typeRegular,.typeDirectory,.typeSymbolicLink].contains(type) else {throw FileToolsError.unsupported(child)}
+                let relative=String(child.path.dropFirst(base.path.count+1))
+                entries.append((relative,child,type,(attrs[.posixPermissions] as? NSNumber)?.uint32Value ?? 0))
+                guard entries.count<=100_000 else {throw FileToolsError.invalid("压缩目录超过 10 万项预算。")}
+                if type == .typeDirectory {try walk(child)}
+            }
+        }
+        try walk(base)
+        if !entries.contains(where:{$0.2 == .typeSymbolicLink}) {return try fingerprint(root)}
+        let kinds=Dictionary(uniqueKeysWithValues:entries.map{($0.0,$0.2)})
+        func checkLink(_ relative:String) throws -> String {
+            let value=try fm.destinationOfSymbolicLink(atPath:base.appendingPathComponent(relative).path)
+            guard !value.isEmpty,!value.hasPrefix("/"),!value.contains("\0") else {throw FileToolsError.invalid("压缩目录包含危险链接。")}
+            var parts=Array(relative.split(separator:"/").dropLast()).map(String.init)
+            for piece in value.split(separator:"/",omittingEmptySubsequences:true).map(String.init) {
+                if piece == "." {continue}
+                if piece == ".." {guard !parts.isEmpty else {throw FileToolsError.invalid("链接越出解压目录。")};parts.removeLast()}
+                else {parts.append(piece)}
+            }
+            guard !parts.isEmpty else {throw FileToolsError.invalid("链接指向目录根，可能产生循环。")}
+            // Reject link chains and symlink ancestors. This also rejects cycles without following links.
+            for n in 1...parts.count {if kinds[parts.prefix(n).joined(separator:"/")] == .typeSymbolicLink {throw FileToolsError.invalid("压缩目录不允许链接链或循环。")}}
+            guard kinds[parts.joined(separator:"/")] != nil else {throw FileToolsError.invalid("压缩目录包含悬空链接。")}
+            return value
+        }
+        var hash=SHA256()
+        hash.update(data:Data("root:\(a[.posixPermissions] ?? 0)\n".utf8))
+        for (relative,url,type,mode) in entries.sorted(by:{$0.0<$1.0}) {
+            let content:String
+            if type == .typeSymbolicLink {content="link:"+(try checkLink(relative))}
+            else if type == .typeDirectory {content="directory"}
+            else {
+                let fd=open(url.path,O_RDONLY|O_NOFOLLOW)
+                guard fd>=0 else {throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno))}
+                let handle=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
+                defer{try? handle.close()}
+                var info=stat();guard fstat(fd,&info)==0,info.st_mode & S_IFMT == S_IFREG else {throw FileToolsError.unsupported(url)}
+                var digest=SHA256()
+                while let bytes=try handle.read(upToCount:1_048_576),!bytes.isEmpty {digest.update(data:bytes)}
+                content=digest.finalize().map{String(format:"%02x",$0)}.joined()
+            }
+            hash.update(data:Data("\(relative.utf8.count):\(relative):\(type.rawValue):\(mode):\(content.utf8.count):\(content)\n".utf8))
+        }
+        return "archive-tree-v1:"+hash.finalize().map{String(format:"%02x",$0)}.joined()
+    }
+    private static func receiptFingerprint(_ url:URL,expected:String) throws -> String {
+        try expected.hasPrefix("archive-tree-v1:") ? archiveFingerprint(url) : fingerprint(url)
     }
 
     private static func validateName(_ name: String) throws {

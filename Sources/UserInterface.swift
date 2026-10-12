@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 struct OperationRootView: View {
     @ObservedObject var store: OperationStore
+    @ObservedObject private var fileEnhancements:FileEnhancementController
+    init(store:OperationStore){self.store=store;self.fileEnhancements=store.fileEnhancements}
     var body: some View {
         NavigationSplitView {
             List(selection: $store.section) {
@@ -30,6 +32,7 @@ struct OperationRootView: View {
             }.frame(minWidth:740,minHeight:640)
         }
         .sheet(item:$store.sheet) { request in ToolSheet(store:store,request:request) }
+        .sheet(item:$fileEnhancements.request) { _ in FileEnhancementToolView(controller:store.fileEnhancements,store:store) }
         .alert("操作提示",isPresented:Binding(get:{store.error != nil},set:{if !$0 {store.error = nil}})) { Button("知道了"){store.error = nil} } message: { Text(store.error ?? "") }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { providers in acceptDrop(providers,store:store) }
     }

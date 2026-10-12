@@ -1,0 +1,11 @@
+{
+  "component": "zlib-ng",
+  "version": "2.2.4",
+  "source_url": "https://github.com/python/cpython-source-deps/archive/refs/tags/zlib-ng-2.2.4.tar.gz",
+  "source_sha256": "00bbd88709bc416cb96160ab61d3e1c8f76e106799af7328d0fe434dc7dd5004",
+  "license_source_path": "LICENSE.md",
+  "license_sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee",
+  "version_and_hash_manifest_url": "https://raw.githubusercontent.com/astral-sh/python-build-standalone/20261009/pythonbuild/downloads.json",
+  "version_and_hash_manifest_sha256": "79f0c8ef6fb96601fa4689d80d42bc081ac0201a6dfb3cb8fd14cf156eeddc27",
+  "scope": "This notice is referenced by the same-release PYTHON.json. That macOS metadata links zlib/binascii to the system z library; this notice does not claim that a separate zlib-ng binary is shipped."
+}

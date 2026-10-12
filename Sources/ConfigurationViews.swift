@@ -36,7 +36,7 @@ import UniformTypeIdentifiers
                             store.update { settings in if let i = settings.bindings.firstIndex(where: { $0.id == binding.id }) { settings.bindings[i].enabled = enabled } }
                         })).labelsHidden().toggleStyle(.switch).disabled(!store.dataHealthy)
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(OperationAction.all.first(where: { $0.id == binding.actionID })?.title ?? binding.actionID).fontWeight(.medium)
+                            Text(store.actionChoices.first(where: { $0.id == binding.actionID })?.title ?? binding.actionID).fontWeight(.medium)
                             Text(binding.triggerDescription + " · " + (binding.appBundleID.isEmpty ? "所有应用" : binding.appBundleID))
                                 .font(.caption).foregroundStyle(.secondary)
                             if InputRules.conflictingIDs(in: store.settings.bindings).contains(binding.id) {
@@ -49,7 +49,7 @@ import UniformTypeIdentifiers
                     }.padding(.vertical, 5).disabled(!store.dataHealthy)
                 }
             }.listStyle(.inset).overlay { if store.settings.bindings.isEmpty { ContentUnavailableView("还没有输入规则", systemImage: "keyboard", description: Text("添加一个快捷键来打开操作面板。")) } }
-            Text("绘图手势使用 Option＋右键向一个方向拖动。事件只作监听，原应用可能同时显示右键菜单。当前版本不提供自由多点触控板手势。")
+            Text("绘图手势使用 Option＋右键向一个方向拖动。事件只作监听，原应用可能同时显示右键菜单。高级规则与实验多点触控可在设置的“输入”页配置；实验功能默认关闭，需实机验证。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("已排除 \(store.settings.inputExcludedApps.count) 个应用；可在设置中管理。").font(.caption).foregroundStyle(.secondary)
@@ -83,7 +83,7 @@ import UniformTypeIdentifiers
     init(store: OperationStore, original: InputBinding) { self.store = store; _draft = State(initialValue: original) }
     private var validation: String? {
         if let error = InputRules.validationError(draft) { return error }
-        guard OperationAction.all.contains(where: { $0.id == draft.actionID }) else { return "请选择一个有效动作。" }
+        guard store.actionChoices.contains(where: { $0.id == draft.actionID }) else { return "请选择一个有效动作。" }
         if !draft.appBundleID.isEmpty && (!draft.appBundleID.contains(".") || draft.appBundleID.contains(where: \.isWhitespace)) { return "应用标识应为有效 Bundle ID，可使用选择应用按钮。" }
         let candidate = store.settings.bindings.filter { $0.id != draft.id } + [draft]
         return InputRules.conflictingIDs(in: candidate).contains(draft.id) ? "同一应用已有相同触发方式，请更换按键或停用冲突规则。" : nil
@@ -92,7 +92,7 @@ import UniformTypeIdentifiers
         VStack(alignment: .leading, spacing: 16) {
             Text("编辑输入规则").font(.title2.bold())
             Form {
-                Picker("执行动作", selection: $draft.actionID) { ForEach(OperationAction.all) { Text($0.title).tag($0.id) } }
+                Picker("执行动作", selection: $draft.actionID) { ForEach(store.actionChoices) { Text($0.title).tag($0.id) } }
                 Picker("触发方式", selection: $draft.trigger) { ForEach(InputTrigger.allCases) { Text($0.title).tag($0) } }
                     .onChange(of: draft.trigger) { _, type in
                         if type == .gesture { draft.modifiers = UInt64(NSEvent.ModifierFlags.option.rawValue) }
@@ -332,17 +332,48 @@ private struct WorkflowActionChoice: Identifiable {
     @State private var backupMessage: String?
     init(store: OperationStore, initialTab: Int = 0) {
         self.store = store
-        _selectedTab = State(initialValue: (0...4).contains(initialTab) ? initialTab : 0)
+        _selectedTab = State(initialValue: (0...9).contains(initialTab) ? initialTab : 0)
     }
     var body: some View {
-        TabView(selection:$selectedTab) {
-            general.tabItem { Label("外观与剪贴板",systemImage:"slider.horizontal.3") }.tag(0)
-            SettingsWindowBehaviorView(store:store).tabItem { Label("窗口",systemImage:"rectangle.3.group") }.tag(4)
-            SettingsPermissionsView(input:store.input).tabItem { Label("权限",systemImage:"hand.raised") }.tag(1)
-            data.tabItem { Label("数据",systemImage:"externaldrive") }.tag(2)
-            about.tabItem { Label("关于",systemImage:"info.circle") }.tag(3)
-        }.padding(16).frame(width:660,height:580)
+        HStack(spacing:0) {
+            VStack(alignment:.leading,spacing:4) {
+                settingsItem(0,"外观与剪贴板","slider.horizontal.3")
+                settingsItem(9,"输入","hand.draw")
+                settingsItem(7,"压缩","archivebox")
+                settingsItem(5,"右键","cursorarrow.click")
+                settingsItem(6,"文件","folder")
+                settingsItem(8,"布局","rectangle.split.2x2")
+                settingsItem(4,"窗口","rectangle.3.group")
+                settingsItem(1,"权限","hand.raised")
+                settingsItem(2,"数据","externaldrive")
+                settingsItem(3,"关于","info.circle")
+                Spacer()
+            }.padding(12).frame(width:164).background(.quaternary.opacity(0.3))
+            Divider()
+            Group {
+                switch selectedTab {
+                case 9: InputAdvancedSettingsContainer(store:store)
+                case 7: ArchivePreferencesView(controller:store.archiveEnhancements,store:store)
+                case 5: FinderPreferenceView(controller:store.finderPreferences)
+                case 6: FileEnhancementSettingsView(controller:store.fileEnhancements)
+                case 8: WindowEnhancementSettingsView(configuration:setting(\.windowEnhancements))
+                case 4: SettingsWindowBehaviorView(store:store)
+                case 1: SettingsPermissionsView(input:store.input)
+                case 2: data
+                case 3: about
+                default: general
+                }
+            }.frame(maxWidth:.infinity,maxHeight:.infinity).padding(12)
+        }.frame(width:1000,height:680)
     }
+    private func settingsItem(_ id:Int,_ title:String,_ icon:String)->some View {
+        Button { selectedTab=id } label: {
+            Label(title,systemImage:icon).frame(maxWidth:.infinity,alignment:.leading).padding(10)
+                .background(selectedTab == id ? Color.accentColor.opacity(0.16) : Color.clear,in:RoundedRectangle(cornerRadius:8))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(selectedTab == id ? .isSelected : [])
+    }
+
     private func setting<T>(_ keyPath: WritableKeyPath<OperationSettings,T>) -> Binding<T> {
         Binding(get:{store.settings[keyPath:keyPath]},set:{ value in store.update {$0[keyPath:keyPath]=value} })
     }
@@ -351,6 +382,9 @@ private struct WorkflowActionChoice: Identifiable {
             Section("外观") {
                 Picker("界面模式",selection:setting(\.appearance)) { Text("跟随系统").tag("system");Text("浅色").tag("light");Text("深色").tag("dark") }
                     .onChange(of:store.settings.appearance) { _, value in NSApp.appearance = value == "light" ? NSAppearance(named:.aqua) : value == "dark" ? NSAppearance(named:.darkAqua) : nil }
+                Toggle("显示菜单栏图标",isOn:setting(\.showMenuBarIcon))
+                Picker("菜单栏左键",selection:setting(\.statusBarLeftClick)){Text("操作面板").tag("panel");Text("主窗口").tag("main");Text("剪贴板").tag("clipboard")}
+                Toggle("新建文件提示音",isOn:setting(\.playNewFileSound))
                 Toggle("登录时启动",isOn:Binding(get:{store.settings.loginAtStartup},set:{ setLogin($0) })).disabled(loginBusy)
                 if let loginMessage { Text(loginMessage).font(.caption).foregroundStyle(.orange) }
             }
@@ -515,7 +549,7 @@ private struct WorkflowActionChoice: Identifiable {
                 Section("文件与文件夹") {
                     Text("文件访问由 macOS 按实际目录管理。遇到访问提示时允许所需目录，或用“选择文件”“选择目录”指定项目。")
                         .font(.callout).foregroundStyle(.secondary)
-                    Text("现有功能不要求屏幕录制、完全磁盘访问或自动化权限。系统授权需要在系统界面完成；此页仅请求授权并检测结果。")
+                    Text("文件菜单备用入口和终端标签页会按需请求自动化权限；第三方配置迁移可能需要完全磁盘访问。系统授权需要在系统界面完成。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped)
@@ -539,4 +573,11 @@ private struct WorkflowActionChoice: Identifiable {
             Button(granted ? "查看设置" : "去开启", action: action)
         }.padding(.vertical, 3)
     }
+}
+
+@MainActor private struct InputAdvancedSettingsContainer:View {
+    @ObservedObject var store:OperationStore
+    @ObservedObject var input:InputController
+    init(store:OperationStore){self.store=store;self.input=store.input}
+    var body:some View {InputEnhancementSettingsView(configuration:Binding(get:{store.settings.inputEnhancements},set:{next in store.update{$0.inputEnhancements=next}}),actions:store.actionChoices.map{InputActionChoice(id:$0.id,title:$0.title)},status:input.enhancementStatus,devices:input.touchDevices)}
 }

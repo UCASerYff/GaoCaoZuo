@@ -1,0 +1,6 @@
+pyzipper 0.4.0 — https://github.com/danifus/pyzipper
+Official PyPI wheel: pyzipper-0.4.0-py3-none-any.whl
+SHA-256: aa7b8a0fe741d67aac36ead85f6e735af107b72f84e0775f2ed565fc0d3a2f02
+https://pypi.org/project/pyzipper/0.4.0/
+Redistributed unchanged under the included MIT and PSF/Python license notices.
+Provides WinZip AES256 ZIP creation/reading and password authentication.

@@ -1,0 +1,15 @@
+acefile: https://github.com/droe/acefile
+Source file: https://raw.githubusercontent.com/droe/acefile/master/acefile.py
+Version in source: 0.6.15-dev
+SHA-256 of vendored acefile.py:
+d25f2d06f15ce1f10b22bbeb735d6f07fcbda3b2932e4e5ce233fccc1d39682b
+
+Copyright 2017-2026 Daniel Roethlisberger.
+Redistributed unchanged under the included two-clause BSD license, with its
+included warranty disclaimer. The source does not depend on FastZip.
+The host adapter preserves original raw member names for security checks;
+it does not rely on acefile's convenience filename sanitization.
+
+Acceptance fixtures are generated from scratch by Tests/ArchiveFixtures.py.
+The developer's public 125-byte CP437 sample was read during investigation,
+but is not redistributed because its per-file license was not specified.

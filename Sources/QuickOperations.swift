@@ -47,6 +47,7 @@ struct QueuedQuickOperation {
     }
     func cancelWaitingJobs() {quickJobs.removeAll();queuedCount=0;message="已清除等待任务"}
     func cancelQuickArchive() {quickCancellationRequested=true;archive.cancel();cancelWaitingJobs();cancelPasswordRequest?()}
+    func completeNewFile(_ url:URL) {if fileEnhancements.settings.autoOpenNew {NSWorkspace.shared.open(url)};if settings.playNewFileSound {NSSound(named:"Pop")?.play()}}
     func transfer(_ files:[URL],to directory:URL,move:Bool) {
         guard !files.isEmpty else {notify("请先选择文件",failed:true);return}
         enqueueQuick(move ? "移动文件" : "复制文件") {
@@ -63,13 +64,13 @@ struct QueuedQuickOperation {
         if let kind=QuickNewItemKind(rawValue:String(id.dropFirst(4))),id.hasPrefix("new.") {
             enqueueQuick(kind == .folder ? "新建文件夹" : "新建文件") {
                 let receipt=try await Task.detached{try QuickFileActions.create(in:directory,kind:kind)}.value
-                try self.record([receipt]);return [receipt.destination]
+                try self.record([receipt]);self.completeNewFile(receipt.destination);return [receipt.destination]
             };return true
         }
         if id.hasPrefix("template."),let uuid=UUID(uuidString:String(id.dropFirst(9))),let template=settings.templates.first(where:{$0.id == uuid}) {
             enqueueQuick("从\(template.name)新建") {
                 let receipt=try await Task.detached{try QuickFileActions.createTemplate(in:directory,filename:template.filename,content:template.content)}.value
-                try self.record([receipt]);return [receipt.destination]
+                try self.record([receipt]);self.completeNewFile(receipt.destination);return [receipt.destination]
             };return true
         }
         if id == "archive.create" || id == "archive.7z" {

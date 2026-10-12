@@ -61,6 +61,10 @@ struct OperationAction: Identifiable {
             .init(id:"system.sleep",title:"电脑睡眠",detail:"发送系统睡眠请求",icon:"moon",section:.tools),
             .init(id:"workflow.show",title:"查看组合操作",detail:"编辑并运行多个动作",icon:"square.stack.3d.up",section:.workflows)
         ]
+        actions += EnhancedSystemPreset.allCases.map{OperationAction(id:"system."+$0.rawValue,title:$0.title,detail:"系统控制",icon:"keyboard",section:.tools)}
+        actions += ArchiveEnhancementController.actions
+        actions += FileEnhancements.actions
+        actions += [OperationAction(id:"finder.popup",title:"弹出访达操作菜单",detail:"在当前访达目录选择动作",icon:"cursorarrow.click",section:.files),OperationAction(id:"folder.favorite.add",title:"添加到常用目录",detail:"收藏当前目录",icon:"heart",section:.files)]
         actions += WindowAction.allCases.map { .init(id:"window."+$0.rawValue,title:$0.title,detail:$0 == .restore ? "恢复本次运行保存的位置" : "调整前台目标窗口",icon:$0.icon,section:.windows,keywords:"分屏 布局 窗口") }
         return actions
     }
@@ -83,6 +87,8 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     @Published var feedback = OperationFeedback()
     @Published var lastOutputs: [URL] = []
     @Published var awaitingArchivePassword = false
+    var finderPopupContainer:URL?
+    var finderPopupSelection:[URL]=[]
     var quickCancellationRequested = false
     var cancelPasswordRequest: (() -> Void)?
     var quickJobs: [QueuedQuickOperation] = []
@@ -93,6 +99,9 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     let windows = WindowManager()
     let input = InputController()
     let archive = ArchiveService()
+    let archiveEnhancements: ArchiveEnhancementController
+    let fileEnhancements: FileEnhancementController
+    let finderPreferences: FinderPreferenceController
     var showPanel: (() -> Void)?
     var showMain: (() -> Void)?
     var showSettings: (() -> Void)?
@@ -106,9 +115,12 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     private var workflowTask: Task<Void,Never>?
     private var workflowProcess: Process?
     var version: String { Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "1.00" }
-    var dataHealthy: Bool { data.failure == nil }
+    var dataHealthy: Bool { data.failure == nil && archiveEnhancements.failure == nil && fileEnhancements.healthy && finderPreferences.data.failure == nil }
     init(directory: URL) {
         data = LocalData(directory: directory)
+        archiveEnhancements = ArchiveEnhancementController(directory:directory.appendingPathComponent("ArchiveEnhancements",isDirectory:true))
+        fileEnhancements = FileEnhancementController(directory:directory)
+        finderPreferences = FinderPreferenceController(directory:directory)
         clipboard = ClipboardService(directory: directory)
         do {
             if let saved = try data.load("settings.json", as: OperationSettings.self) {
@@ -123,6 +135,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             try data.save(settings, name:"settings.json")
             try data.save(ReceiptDocument(records:receipts), name:"receipts.json")
         } catch { data.block(error.localizedDescription); self.error = error.localizedDescription; ready = true }
+        do{try recoverInterruptedMigration()}catch{data.block(error.localizedDescription);self.error=error.localizedDescription}
         clipboard.configure(settings)
         archiveObserver = archive.$isRunning.dropFirst().sink { [weak self] running in
             if !running { Task { @MainActor in self?.drainQuickJobs() } }
@@ -134,8 +147,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     }
     func update(_ body: (inout OperationSettings) -> Void) { var value = settings; body(&value); settings = value }
     func toggleFavorite(_ id: String) { update { if $0.favorites.contains(id) { $0.favorites.removeAll {$0 == id} } else { $0.favorites.append(id) } } }
+    var actionChoices:[OperationAction] {
+        OperationAction.all + settings.windowEnhancements.customLayouts.map{OperationAction(id:"window.custom."+$0.id.uuidString,title:$0.name,detail:"自定义窗口布局",icon:"rectangle.split.2x2",section:.windows)} + fileEnhancements.settings.apps.map{OperationAction(id:"file.open."+$0.id.uuidString,title:"用"+$0.name+"打开",detail:"打开所选文件或目录",icon:"app",section:.files,files:true)}
+    }
     var visibleActions: [OperationAction] {
-        let all = OperationAction.all.filter {$0.matches(query)}
+        let all = actionChoices.filter {$0.matches(query)}
         if !query.isEmpty { return all }
         if section == .home { return all.filter {settings.favorites.contains($0.id)} }
         return all.filter {$0.section == section}
@@ -157,6 +173,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     func openFolder(_ folder: FavoriteFolder) { if !NSWorkspace.shared.open(URL(fileURLWithPath:folder.path)) { error = "无法打开目录：\(folder.path)" } }
     func prepare(_ id: String) { prepare(id, files: selection) }
     func prepare(_ id: String, files: [URL]) {
+        if id == "finder.popup" { showFinderPopup(); return }
         if id == "panel.show" { showPanel?(); return }
         if id == "clipboard.show" { showClipboard?(); return }
         if id == "workflow.show" { section = .workflows; showMain?(); return }
@@ -174,9 +191,30 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             guard let text=NSPasteboard.general.string(forType:.string) else {notify("剪贴板没有文字",failed:true);return}
             clipboard.copyText(text);notify("已复制为纯文本");return
         }
+        if (id.hasPrefix("window.layout.") || id.hasPrefix("window.custom.")),let uuid=UUID(uuidString:String(id.dropFirst(14))) {
+            do {try windows.performCustomLayout(uuid);notify("已应用自定义布局")}catch{notify(error.localizedDescription,failed:true)};return
+        }
         var selected=files
-        let fileAction=OperationAction.all.first(where:{$0.id == id})?.files == true || id.hasPrefix("files.copy.") || id.hasPrefix("files.move.")
+        let fileAction=actionChoices.first(where:{$0.id == id})?.files == true || id.hasPrefix("files.copy.") || id.hasPrefix("files.move.") || id.hasPrefix("folder.copy.") || id.hasPrefix("folder.move.")
         if fileAction && selected.isEmpty { activateForDialog?();chooseFiles();selected=selection;if selected.isEmpty{return} }
+        if id == "folder.favorite.add" {
+            let target=directory(for:selected)
+            guard dataHealthy else {notify("资料保护模式，无法收藏目录",failed:true);return}
+            if !settings.folders.contains(where:{$0.path == target.path}) {update{$0.folders.append(.init(name:target.lastPathComponent,path:target.path))}}
+            notify("已添加到常用目录");return
+        }
+        for (prefix,move) in [("folder.copy.",false),("folder.move.",true)] where id.hasPrefix(prefix) {
+            guard let uuid=UUID(uuidString:String(id.dropFirst(prefix.count))),let folder=settings.folders.first(where:{$0.id==uuid}) else {notify("常用目录已失效",failed:true);return}
+            let destination=URL(fileURLWithPath:folder.path,isDirectory:true)
+            work(move ? "移动到常用目录" : "复制到常用目录"){try FileTools.copy(items:selected,to:destination,move:move)};return
+        }
+        if id.hasPrefix("folder.open."),let uuid=UUID(uuidString:String(id.dropFirst(12))),let folder=settings.folders.first(where:{$0.id==uuid}) {openFolder(folder);return}
+        if id.hasPrefix("binaryTemplate."),let uuid=UUID(uuidString:String(id.dropFirst(15))) {
+            do{let receipt=try fileEnhancements.createTemplate(uuid,directory:directory(for:selected));try record([receipt]);notify("已创建模板文件",outputs:[receipt.destination])}catch{notify(error.localizedDescription,failed:true)};return
+        }
+        let archiveID=["archive.create":"archive.create.enhanced","archive.7z":"archive.7z.enhanced","archive.extract":"archive.extract.enhanced"][id] ?? id
+        if archiveEnhancements.handle(id:archiveID,files:selected,store:self) {return}
+        if fileEnhancements.handle(id:id,files:selected,store:self) {return}
         if id == "path.copy" || id == "name.copy" {
             clipboard.copyText(selected.map{id == "path.copy" ? $0.path : $0.lastPathComponent}.joined(separator:"\n"));notify("已复制 \(selected.count) 项");return
         }

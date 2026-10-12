@@ -7,3 +7,7 @@ tmp/
 *.log
 *.xcuserstate
 TestResults/
+
+__pycache__/
+*.pyc
+*.pyo

@@ -32,6 +32,9 @@ struct OperationWorkflow: Codable, Identifiable, Equatable {
 struct OperationSettings: Codable {
     var schema = 1
     var appearance = "system"
+    var showMenuBarIcon = true
+    var playNewFileSound = false
+    var statusBarLeftClick = "panel"
     var favorites = ["new.text", "path.copy", "archive.create", "window.leftHalf", "window.rightHalf", "clipboard.show"]
     var folders: [FavoriteFolder] = []
     var templates: [TextTemplate] = [
@@ -44,6 +47,8 @@ struct OperationSettings: Codable {
     var inputExcludedApps: [String] = []
     var windowDragEnabled = false
     var windowSnapEnabled = false
+    var windowEnhancements = WindowEnhancementConfiguration()
+    var inputEnhancements = InputEnhancementConfiguration()
     var workflows = [OperationWorkflow(name: "左右阅读", steps: [WorkflowStep(actionID: "window.leftHalf")])]
     var clipboardEnabled = false
     var clipboardDays = 7
@@ -56,11 +61,16 @@ struct OperationSettings: Codable {
         case schema, appearance, favorites, folders, templates, snippets, bindings, inputExcludedApps, workflows
         case clipboardEnabled, clipboardDays, clipboardLimit, clipboardExcludedApps, loginAtStartup
         case windowDragEnabled, windowSnapEnabled
+        case windowEnhancements, inputEnhancements
+        case showMenuBarIcon,playNewFileSound,statusBarLeftClick
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schema = try container.decode(Int.self, forKey: .schema)
         appearance = try container.decode(String.self, forKey: .appearance)
+        showMenuBarIcon = try container.decodeIfPresent(Bool.self,forKey:.showMenuBarIcon) ?? true
+        playNewFileSound = try container.decodeIfPresent(Bool.self,forKey:.playNewFileSound) ?? false
+        statusBarLeftClick = try container.decodeIfPresent(String.self,forKey:.statusBarLeftClick) ?? "panel"
         favorites = try container.decode([String].self, forKey: .favorites)
         folders = try container.decode([FavoriteFolder].self, forKey: .folders)
         templates = try container.decode([TextTemplate].self, forKey: .templates)
@@ -70,6 +80,8 @@ struct OperationSettings: Codable {
         inputExcludedApps = container.contains(.inputExcludedApps) ? try container.decode([String].self, forKey: .inputExcludedApps) : []
         windowDragEnabled = container.contains(.windowDragEnabled) ? try container.decode(Bool.self, forKey: .windowDragEnabled) : false
         windowSnapEnabled = container.contains(.windowSnapEnabled) ? try container.decode(Bool.self, forKey: .windowSnapEnabled) : false
+        windowEnhancements = try container.decodeIfPresent(WindowEnhancementConfiguration.self, forKey: .windowEnhancements) ?? .init()
+        inputEnhancements = try container.decodeIfPresent(InputEnhancementConfiguration.self, forKey: .inputEnhancements) ?? .init()
         workflows = try container.decode([OperationWorkflow].self, forKey: .workflows)
         clipboardEnabled = try container.decode(Bool.self, forKey: .clipboardEnabled)
         clipboardDays = try container.decode(Int.self, forKey: .clipboardDays)

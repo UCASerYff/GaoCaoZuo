@@ -102,7 +102,10 @@ struct FileToolsTests {
             try fm.setAttributes([.posixPermissions: 0o755, .modificationDate: historicalDate], ofItemAtPath: file.path)
             let zip = try await service.create(items: [file, other], destination: root.appendingPathComponent("test.zip"), format: .zip, password: nil, splitMB: nil, solid: false)
             let zipEntries = try await service.list(archive: zip, password: nil)
-            try expect(Set(zipEntries.map(\.path)) == ["中文.txt", "other.txt"], "real ZIP listing")
+            let payloadPaths: Set<String> = ["中文.txt", "other.txt"]
+            // macOS may attach ACLs/xattrs during the preceding copy/rename operations.
+            // Portable AppleDouble metadata is now intentionally archived alongside payloads.
+            try expect(try validatedArchivePayloadPaths(zipEntries, expected: payloadPaths) == payloadPaths, "real ZIP listing includes only payloads and their macOS metadata")
             let extracted = try await service.extract(archive: zip, to: root.appendingPathComponent("expanded"), password: nil, selected: nil)
             try expect(try FileTools.sha256(extracted.appendingPathComponent("中文.txt")) == FileTools.sha256(file), "real ZIP roundtrip")
             let zipAttributes = try fm.attributesOfItem(atPath: extracted.appendingPathComponent("中文.txt").path)
@@ -117,7 +120,7 @@ struct FileToolsTests {
             try expect(!volumeReceipts.isEmpty && volumeReceipts.contains(where: { $0.destination == encrypted }), "split archive publishes recovery receipts")
             for receipt in volumeReceipts { try expect(try FileTools.fingerprint(receipt.destination) == receipt.fingerprint, "volume receipt matches prepublication fingerprint") }
             let encryptedEntries = try await service.list(archive: encrypted, password: secret)
-            try expect(encryptedEntries.first?.path == file.lastPathComponent, "encrypted 7Z stdin password listing")
+            try expect(try validatedArchivePayloadPaths(encryptedEntries, expected: [file.lastPathComponent]) == [file.lastPathComponent], "encrypted 7Z stdin password listing")
             let decrypted = try await service.extract(archive: encrypted, to: root.appendingPathComponent("decrypted"), password: secret, selected: nil)
             try expect(try FileTools.sha256(decrypted.appendingPathComponent("中文.txt")) == FileTools.sha256(file), "encrypted 7Z roundtrip")
             let sevenZipAttributes = try fm.attributesOfItem(atPath: decrypted.appendingPathComponent("中文.txt").path)
