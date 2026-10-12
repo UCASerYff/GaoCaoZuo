@@ -280,6 +280,9 @@ final class WindowManager: ObservableObject {
         var snapEnabled = true
     }
     private var dragSession: DragSession?
+    private var dragGeneration: UInt64 = 0
+    private let layoutTransaction = WindowLayoutTransaction()
+    private var windowOperationBusy = false
     private var configuration = WindowEnhancementConfiguration()
     private let snapPreview = WindowSnapPreview()
     private var snappedFrames: [OriginalFrame] = []
@@ -339,8 +342,14 @@ final class WindowManager: ObservableObject {
         lastError = isTrusted ? nil : "请在系统设置的“隐私与安全性 → 辅助功能”中允许搞操作。"
     }
 
-    func perform(_ action: WindowAction) throws {
+    func perform(_ action: WindowAction) async throws -> WindowOperationOutcome {
+        guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
+        windowOperationBusy = true
+        defer { windowOperationBusy = false }
         do {
+            try Task.checkCancellation()
+            guard !layoutTransaction.isBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
+            cancelWindowDrag()
             isTrusted = AXIsProcessTrusted()
             guard isTrusted else { throw SystemControlError.message("窗口操作需要辅助功能权限，请先在设置中授权。") }
             // Direct shortcuts act on the current foreground app; the panel keeps its captured target.
@@ -348,9 +357,10 @@ final class WindowManager: ObservableObject {
             guard let window = target, let pid = targetPID, let application = targetApplication else {
                 throw SystemControlError.message("没有可操作的目标窗口。请先切换到需要调整的窗口，再打开操作面板。")
             }
+            AXUIElementSetMessagingTimeout(window,0.15)
             let launchDate = targetLaunchDate
             try validateTarget(window, pid: pid, application: application, launchDate: launchDate)
-            if try performStateAction(action,window:window,pid:pid,application:application) { lastError = nil; return }
+            if try performStateAction(action,window:window,pid:pid,application:application) { lastError = nil; return WindowOperationOutcome(message: "已发送窗口请求：" + action.title, isExact: true) }
             let requestedAction = action
             var action = action
             if configuration.cycleRepeatedLayouts {
@@ -366,13 +376,13 @@ final class WindowManager: ObservableObject {
             }
             let current = try readFrame(window)
             let originalIndex = originalFrames.firstIndex { $0.pid == pid && CFEqual($0.element, window) }
+            let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+            let screens = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:primaryTop),configuration:configuration) }
             let desired: CGRect
             if action == .restore {
                 guard let originalIndex else { throw SystemControlError.message("这个窗口还没有可恢复的位置记录。") }
                 desired = originalFrames[originalIndex].frame
             } else {
-                let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-                let screens = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:primaryTop),configuration:configuration) }
                 var frame = try WindowGeometry.targetFrame(action: action, current: current, visibleFrames: screens)
                 if action == .nearMaximize, let index = WindowGeometry.screenIndex(for:current,in:screens) {
                     let inset = min(max(0,configuration.nearMaximizeInset),min(screens[index].width,screens[index].height)/4)
@@ -382,46 +392,21 @@ final class WindowManager: ObservableObject {
                 desired = preserveSize.contains(action) ? frame : WindowEnhancementGeometry.inset(frame,gap:configuration.windowGap)
             }
             try checkSettable(window, attribute: kAXPositionAttribute)
-            if abs(desired.width - current.width) > 1 || abs(desired.height - current.height) > 1 {
+            if action == .restore || abs(desired.width - current.width) > 1 || abs(desired.height - current.height) > 1 {
                 try checkSettable(window, attribute: kAXSizeAttribute)
             }
-            do {
-                try apply(desired, to: window, resize: desired.size != current.size)
-                let actual = try readFrame(window)
-                guard abs(actual.minX - desired.minX) <= 4, abs(actual.minY - desired.minY) <= 4,
-                      abs(actual.width - desired.width) <= 4, abs(actual.height - desired.height) <= 4 else {
-                    throw SystemControlError.message("目标应用限制了窗口尺寸或位置，无法完成此布局；已尝试恢复操作前的位置。")
-                }
-            } catch {
-                try? apply(current, to: window, resize: desired.size != current.size)
-                throw error
-            }
-            if action == .restore, let originalIndex { originalFrames.remove(at: originalIndex) }
-            else if originalIndex == nil {
-                originalFrames.removeAll { NSRunningApplication(processIdentifier: $0.pid)?.isTerminated != false }
-                originalFrames.append(OriginalFrame(element: window, pid: pid, frame: current))
-            }
-            try WindowFocusRestoration.perform(
-                targetPID: pid, ownPID: ProcessInfo.processInfo.processIdentifier,
-                frontmostPID: {
-                    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                    return self.configuration.targetUnderPointer && front == self.capturedForegroundPID ? pid : front
-                },
-                validateTarget: { try self.validateTarget(window, pid: pid, application: application, launchDate: launchDate) },
-                raiseTarget: {
-                    guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
-                        throw SystemControlError.message("窗口布局已调整，但目标应用不支持将这个窗口带到前台。请手动切回查看。")
-                    }
-                },
-                activateTarget: {
-                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
-                    NSApp.yieldActivation(to: application)
-                    return application.activate(from: .current, options: [])
-                })
+            // Capture foreground identity too: workspace notifications may capture a new target while awaiting AX.
+            let capturedPID = capturedForegroundPID
+            try await restoreFocus(window, pid: pid, application: application, launchDate: launchDate, capturedPID: capturedPID)
+            let outcome = try await applyLayout(desired, original: current, window: window, pid: pid,
+                application: application, launchDate: launchDate, capturedPID: capturedPID,
+                workArea: WindowGeometry.screenIndex(for: desired, in: screens).map { screens[$0] },
+                restoring: action == .restore)
             if configuration.movePointerWithWindow && [.nextDisplay,.previousDisplay].contains(action) {
-                CGWarpMouseCursorPosition(CGPoint(x:desired.midX,y:desired.midY))
+                CGWarpMouseCursorPosition(CGPoint(x:outcome.actual.midX,y:outcome.actual.midY))
             }
-            lastError = nil
+            lastError = outcome.isExact ? nil : outcomeMessage(outcome, title: action.title, application: application)
+            return WindowOperationOutcome(message: outcomeMessage(outcome, title: action.title, application: application), isExact: outcome.isExact)
         } catch {
             lastError = error.localizedDescription
             throw error
@@ -431,6 +416,8 @@ final class WindowManager: ObservableObject {
     /// Returns false for an ordinary click outside the focused window or on our own application.
     @discardableResult
     func beginWindowDrag(at pointer: CGPoint, moveWithPointer: Bool, snapEnabled: Bool = true) throws -> Bool {
+        guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
+        dragGeneration &+= 1
         dragSession = nil
         do {
             guard let front = NSWorkspace.shared.frontmostApplication,
@@ -454,6 +441,7 @@ final class WindowManager: ObservableObject {
     }
 
     func updateWindowDrag(to pointer: CGPoint) throws {
+        guard !windowOperationBusy else { return }
         guard var drag = dragSession else { return }
         let distance = hypot(pointer.x-drag.initialPointer.x,pointer.y-drag.initialPointer.y)
         if configuration.restoreWhenUnsnapped, distance >= 8,
@@ -496,10 +484,13 @@ final class WindowManager: ObservableObject {
         }
     }
 
-    func endWindowDrag(at pointer: CGPoint, snap: Bool) throws {
+    func endWindowDrag(at pointer: CGPoint, snap: Bool) async throws {
         guard let drag = dragSession else { return }
-        defer { dragSession = nil; snapPreview.hide() }
+        let generation = dragGeneration
+        defer { if generation == dragGeneration { dragSession = nil }; snapPreview.hide() }
         do {
+            try Task.checkCancellation()
+            guard !windowOperationBusy, !layoutTransaction.isBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
             try checkDragApplication(drag)
             if drag.moveWithPointer { try updateWindowDrag(to: pointer) }
             guard snap else { return }
@@ -509,33 +500,32 @@ final class WindowManager: ObservableObject {
             let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
             let visible = NSScreen.screens.map { WindowGeometry.accessibilityRect(fromAppKit: $0.visibleFrame, primaryTop: primaryTop) }
             let physical = NSScreen.screens.map { WindowGeometry.accessibilityRect(fromAppKit: $0.frame, primaryTop: primaryTop) }
-            guard let target = WindowDragGeometry.snapTarget(pointer: pointer, visibleFrames: visible, screenFrames: physical, threshold: CGFloat(max(8,min(80,configuration.snapThreshold)))) else { return }
+            guard let snapTarget = WindowDragGeometry.snapTarget(pointer: pointer, visibleFrames: visible, screenFrames: physical, threshold: CGFloat(max(8,min(80,configuration.snapThreshold)))) else { return }
             try ensureNotFullScreen(drag.window)
             try checkSettable(drag.window, attribute: kAXPositionAttribute)
             try checkSettable(drag.window, attribute: kAXSizeAttribute)
-            let desired = WindowEnhancementGeometry.inset(try WindowGeometry.targetFrame(action:target.action,current:current,visibleFrames:[WindowEnhancementGeometry.workArea(target.visibleFrame,configuration:configuration)]),gap:configuration.windowGap)
-            do {
-                try apply(desired, to: drag.window, resize: true)
-                let actual = try readFrame(drag.window)
-                guard abs(actual.minX - desired.minX) <= 4, abs(actual.minY - desired.minY) <= 4,
-                      abs(actual.width - desired.width) <= 4, abs(actual.height - desired.height) <= 4 else {
-                    throw SystemControlError.message("目标应用限制了窗口尺寸或位置，无法完成边缘吸附。")
-                }
-            } catch {
-                try? apply(current, to: drag.window, resize: true)
-                throw error
-            }
-            rememberOriginal(drag)
+            guard let application = NSRunningApplication(processIdentifier: drag.pid) else { throw SystemControlError.message("原目标应用已经退出。") }
+            let workArea = WindowEnhancementGeometry.workArea(snapTarget.visibleFrame, configuration: configuration)
+            let desired = WindowEnhancementGeometry.inset(try WindowGeometry.targetFrame(action:snapTarget.action,current:current,visibleFrames:[workArea]),gap:configuration.windowGap)
+            windowOperationBusy = true
+            defer { windowOperationBusy = false }
+            dragSession = nil // Pending pointer events must not modify a window during final verification.
+            snapPreview.hide()
+            let outcome = try await applyLayout(desired, original: current, window: drag.window, pid: drag.pid,
+                application: application, launchDate: application.launchDate, capturedPID: drag.pid,
+                workArea: workArea, restoring: false, saveFrame: drag.initialFrame,
+                additionalValidation: {
+                    guard self.dragGeneration == generation else { throw CancellationError() }
+                })
             snappedFrames.removeAll { $0.pid == drag.pid && CFEqual($0.element,drag.window) }
-            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,frame:desired))
+            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,frame:outcome.actual))
             self.target = drag.window; targetPID = drag.pid
-            targetApplication = NSRunningApplication(processIdentifier: drag.pid)
-            targetLaunchDate = targetApplication?.launchDate
-            lastError = nil
+            targetApplication = application; targetLaunchDate = application.launchDate
+            lastError = outcome.isExact ? nil : outcomeMessage(outcome,title:snapTarget.action.title,application:application)
         } catch { lastError = error.localizedDescription; throw error }
     }
 
-    func cancelWindowDrag() { dragSession = nil; snapPreview.hide() }
+    func cancelWindowDrag() { dragGeneration &+= 1; dragSession = nil; snapPreview.hide() }
 
     private func updateSnapPreview(pointer: CGPoint, drag: DragSession) throws {
         guard configuration.showSnapPreview,drag.snapEnabled else { return }
@@ -549,26 +539,100 @@ final class WindowManager: ObservableObject {
         snapPreview.show(frame:frame,title:snap.action.title,animated:configuration.animatePreview,haptic:configuration.hapticFeedback)
     }
 
-    func performCustomLayout(_ id: UUID) throws {
-        guard let layout = configuration.customLayouts.first(where: { $0.id == id }) else { throw SystemControlError.message("自定义窗口布局不存在。") }
-        guard AXIsProcessTrusted() else { throw SystemControlError.message("自定义布局需要辅助功能权限。") }
-        captureTarget()
-        guard let window = target,let pid = targetPID,let app = targetApplication else { throw SystemControlError.message("没有可操作的目标窗口。") }
-        try validateTarget(window,pid:pid,application:app,launchDate:targetLaunchDate)
-        try ensureNotFullScreen(window)
-        let original = try readFrame(window)
-        let top = NSScreen.screens.first?.frame.maxY ?? 0
-        let frames = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:top),configuration:configuration) }
-        guard let index = WindowGeometry.screenIndex(for:original,in:frames) else { throw SystemControlError.message("没有可用显示器。") }
-        let desired = WindowEnhancementGeometry.inset(try layout.frame(in:frames[index]),gap:configuration.windowGap)
-        try checkSettable(window,attribute:kAXPositionAttribute); try checkSettable(window,attribute:kAXSizeAttribute)
+    func performCustomLayout(_ id: UUID) async throws -> WindowOperationOutcome {
+        guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
+        windowOperationBusy = true
+        defer { windowOperationBusy = false }
         do {
-            try apply(desired,to:window,resize:true)
-            let actual = try readFrame(window)
-            guard abs(actual.width-desired.width)<5,abs(actual.height-desired.height)<5,abs(actual.minX-desired.minX)<5,abs(actual.minY-desired.minY)<5 else { throw SystemControlError.message("目标应用拒绝自定义布局。") }
-        } catch { try? apply(original,to:window,resize:true); lastError = error.localizedDescription; throw error }
-        rememberOriginal(DragSession(window:window,pid:pid,initialFrame:original,initialPointer:.zero,moveWithPointer:false))
-        try raise(window,application:app)
+            try Task.checkCancellation()
+            guard !layoutTransaction.isBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
+            cancelWindowDrag()
+            guard let layout = configuration.customLayouts.first(where: { $0.id == id }) else { throw SystemControlError.message("自定义窗口布局不存在。") }
+            guard AXIsProcessTrusted() else { throw SystemControlError.message("自定义布局需要辅助功能权限。") }
+            captureTarget()
+            guard let window = target,let pid = targetPID,let app = targetApplication else { throw SystemControlError.message("没有可操作的目标窗口。") }
+            AXUIElementSetMessagingTimeout(window,0.15)
+            let launchDate = targetLaunchDate, capturedPID = capturedForegroundPID
+            try validateTarget(window,pid:pid,application:app,launchDate:launchDate)
+            try ensureNotFullScreen(window)
+            let original = try readFrame(window)
+            let top = NSScreen.screens.first?.frame.maxY ?? 0
+            let frames = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:top),configuration:configuration) }
+            guard let index = WindowGeometry.screenIndex(for:original,in:frames) else { throw SystemControlError.message("没有可用显示器。") }
+            let desired = WindowEnhancementGeometry.inset(try layout.frame(in:frames[index]),gap:configuration.windowGap)
+            try checkSettable(window,attribute:kAXPositionAttribute); try checkSettable(window,attribute:kAXSizeAttribute)
+            try await restoreFocus(window,pid:pid,application:app,launchDate:launchDate,capturedPID:capturedPID)
+            let outcome = try await applyLayout(desired,original:original,window:window,pid:pid,
+                application:app,launchDate:launchDate,capturedPID:capturedPID,workArea:frames[index],restoring:false)
+            let message = outcomeMessage(outcome,title:layout.name,application:app)
+            lastError = outcome.isExact ? nil : message
+            return WindowOperationOutcome(message:message,isExact:outcome.isExact)
+        } catch { lastError = error.localizedDescription; throw error }
+    }
+
+    private func outcomeMessage(_ outcome: WindowLayoutOutcome, title: String, application: NSRunningApplication) -> String {
+        if outcome.isExact { return "已完成：" + title }
+        let name = application.localizedName ?? "目标应用"
+        let width = Int(outcome.actual.width.rounded()), height = Int(outcome.actual.height.rounded())
+        let requestedWidth = Int(outcome.requested.width.rounded()), requestedHeight = Int(outcome.requested.height.rounded())
+        let heightMessage = abs(outcome.actual.height - outcome.requested.height) <= 4 ? "，已铺满目标高度" : "，高度也受应用限制"
+        return "已按\(name)允许的尺寸调整：\(title)，实际 \(width)×\(height) pt（目标 \(requestedWidth)×\(requestedHeight) pt）\(heightMessage)；未达到精确布局，可用“恢复原位置”返回。"
+    }
+
+    private func restoreFocus(_ window: AXUIElement, pid: pid_t, application: NSRunningApplication,
+                              launchDate: Date?, capturedPID: pid_t?) async throws {
+        let underPointer = configuration.targetUnderPointer
+        try await WindowFocusTransaction.perform(targetPID:pid,ownPID:ProcessInfo.processInfo.processIdentifier,
+            allowedInitialPID:underPointer ? capturedPID : nil,
+            frontmostPID:{NSWorkspace.shared.frontmostApplication?.processIdentifier},
+            validateTarget: {
+                guard AXIsProcessTrusted() else { throw SystemControlError.message("辅助功能权限已失效，已停止窗口操作。") }
+                try self.validateTarget(window,pid:pid,application:application,launchDate:launchDate)
+            },
+            isTargetFocused: {
+                let element = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(element,0.15)
+                var focused: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(element,kAXFocusedWindowAttribute as CFString,&focused) == .success,
+                      let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+                return CFEqual(focused,window)
+            },
+            raiseTarget: {
+                guard AXUIElementPerformAction(window,kAXRaiseAction as CFString) == .success else {
+                    throw SystemControlError.message("目标应用不支持将这个窗口带到前台。请手动切回后重试。")
+                }
+            },
+            activateTarget: {
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+                NSApp.yieldActivation(to:application)
+                return application.activate(from:.current,options:[])
+            })
+    }
+
+    private func applyLayout(_ desired: CGRect, original: CGRect, window: AXUIElement, pid: pid_t,
+                             application: NSRunningApplication, launchDate: Date?, capturedPID: pid_t?,
+                             workArea: CGRect?, restoring: Bool, saveFrame: CGRect? = nil,
+                             additionalValidation: () throws -> Void = {}) async throws -> WindowLayoutOutcome {
+        func validateIdentity() throws {
+            guard AXIsProcessTrusted() else { throw SystemControlError.message("辅助功能权限已失效，已停止窗口操作。") }
+            try validateTarget(window,pid:pid,application:application,launchDate:launchDate)
+        }
+        return try await layoutTransaction.execute(requested:desired,original:original,workArea:workArea,
+            resize:restoring || desired.size != original.size,allowConstrained:!restoring,
+            validate: {
+                try validateIdentity(); try additionalValidation()
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                guard front == pid else {
+                    throw SystemControlError.message("前台应用已变化，已停止这次窗口布局。")
+                }
+            }, validateRollback:validateIdentity, read:{try self.readFrame(window)},
+            setSize:{try self.setSize($0,to:window)},setPosition:{try self.setPosition($0,to:window)},
+            saveOriginal: {
+                if !restoring { self.rememberOriginal(DragSession(window:window,pid:pid,initialFrame:saveFrame ?? original,initialPointer:.zero,moveWithPointer:false)) }
+            }, didRestore: {
+                self.originalFrames.removeAll { $0.pid == pid && CFEqual($0.element,window) }
+                self.snappedFrames.removeAll { $0.pid == pid && CFEqual($0.element,window) }
+            })
     }
 
     private func raise(_ window: AXUIElement, application: NSRunningApplication) throws {
@@ -668,7 +732,8 @@ final class WindowManager: ObservableObject {
         var position = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(rawPosition as! AXValue, .cgPoint, &position),
-              AXValueGetValue(rawSize as! AXValue, .cgSize, &size), size.width > 0, size.height > 0 else {
+              AXValueGetValue(rawSize as! AXValue, .cgSize, &size),
+              [position.x,position.y,size.width,size.height].allSatisfy(\.isFinite), size.width > 0, size.height > 0 else {
             throw SystemControlError.message("目标窗口的位置数据无效。")
         }
         return CGRect(origin: position, size: size)
@@ -681,26 +746,26 @@ final class WindowManager: ObservableObject {
         }
     }
 
-    private func apply(_ frame: CGRect, to window: AXUIElement, resize: Bool) throws {
-        var size = frame.size
-        var position = frame.origin
-        if resize {
-            guard let value = AXValueCreate(.cgSize, &size),
-                  AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success else {
-                throw SystemControlError.message("目标应用拒绝调整窗口尺寸。")
-            }
-        }
-        guard let value = AXValueCreate(.cgPoint, &position),
-              AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value) == .success else {
-            throw SystemControlError.message("目标应用拒绝移动窗口。")
-        }
-        // A move to another screen can alter the size because the screens have different scale factors.
-        if resize, let sizeValue = AXValueCreate(.cgSize, &size) {
-            guard AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue) == .success else {
-                throw SystemControlError.message("目标应用拒绝调整跨屏后的窗口尺寸。")
-            }
+    private func setSize(_ size: CGSize, to window: AXUIElement) throws {
+        var size = size
+        guard let value = AXValueCreate(.cgSize,&size),
+              AXUIElementSetAttributeValue(window,kAXSizeAttribute as CFString,value) == .success else {
+            throw SystemControlError.message("目标应用拒绝调整窗口尺寸。")
         }
     }
+    private func setPosition(_ position: CGPoint, to window: AXUIElement) throws {
+        var position = position
+        guard let value = AXValueCreate(.cgPoint,&position),
+              AXUIElementSetAttributeValue(window,kAXPositionAttribute as CFString,value) == .success else {
+            throw SystemControlError.message("目标应用拒绝移动窗口。")
+        }
+    }
+    private func apply(_ frame: CGRect, to window: AXUIElement, resize: Bool) throws {
+        if resize { try setSize(frame.size,to:window) }
+        try setPosition(frame.origin,to:window)
+        if resize { try setSize(frame.size,to:window) }
+    }
+
 }
 
 @MainActor

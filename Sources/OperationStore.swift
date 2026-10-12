@@ -179,7 +179,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         if id == "workflow.show" { section = .workflows; showMain?(); return }
         if id.hasPrefix("workflow.run."), let uuid=UUID(uuidString:String(id.dropFirst(13))),let workflow=settings.workflows.first(where:{$0.id == uuid}) { runWorkflow(workflow); return }
         if id.hasPrefix("window."), let action = WindowAction(rawValue:String(id.dropFirst(7))) {
-            do { try windows.perform(action); notify("已执行：\(action.title)") } catch { notify(error.localizedDescription, failed:true) }; return
+            Task {
+                do { let outcome = try await windows.perform(action); notify(outcome.message) }
+                catch { notify(error.localizedDescription, failed:true) }
+            }
+            return
         }
         if id.hasPrefix("system.") {
             do { try SystemActions.perform(id:id); awake = SystemActions.isPreventingSleep; notify(id == "system.preventSleep.toggle" ? (awake ? "保持唤醒已开启" : "保持唤醒已关闭") : "已发送系统请求") } catch { notify(error.localizedDescription,failed:true) }; return
@@ -192,7 +196,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             clipboard.copyText(text);notify("已复制为纯文本");return
         }
         if (id.hasPrefix("window.layout.") || id.hasPrefix("window.custom.")),let uuid=UUID(uuidString:String(id.dropFirst(14))) {
-            do {try windows.performCustomLayout(uuid);notify("已应用自定义布局")}catch{notify(error.localizedDescription,failed:true)};return
+            Task {
+                do { let outcome = try await windows.performCustomLayout(uuid); notify(outcome.message) }
+                catch { notify(error.localizedDescription,failed:true) }
+            }
+            return
         }
         var selected=files
         let fileAction=actionChoices.first(where:{$0.id == id})?.files == true || id.hasPrefix("files.copy.") || id.hasPrefix("files.move.") || id.hasPrefix("folder.copy.") || id.hasPrefix("folder.move.")
@@ -312,7 +320,10 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             guard let seconds = Double(step.argument), seconds >= 0, seconds <= 30 else { throw DataFailure.message("等待时间应为 0–30 秒。") }
             try await Task.sleep(nanoseconds:UInt64(seconds * 1_000_000_000))
         default:
-            if step.actionID.hasPrefix("window."), let action = WindowAction(rawValue:String(step.actionID.dropFirst(7))) { try windows.perform(action) }
+            if step.actionID.hasPrefix("window."), let action = WindowAction(rawValue:String(step.actionID.dropFirst(7))) {
+                let outcome = try await windows.perform(action)
+                guard outcome.isExact else { throw DataFailure.message(outcome.message) }
+            }
             else if step.actionID == "system.preventSleep.toggle" { try SystemActions.perform(id:step.actionID); awake = SystemActions.isPreventingSleep }
             else { throw DataFailure.message("组合操作包含不支持的步骤，请重新选择动作。") }
         }

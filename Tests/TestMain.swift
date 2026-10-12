@@ -11,6 +11,8 @@ import Darwin
         try runSystemTests()
         try runWindowDragTests()
         try runWindowFocusTests()
+        try await runWindowFocusTransactionTests()
+        try await runWindowLayoutTransactionTests()
         try runFinderCommandTests()
         print("系统几何与输入规则测试通过")
         try runDataTests()

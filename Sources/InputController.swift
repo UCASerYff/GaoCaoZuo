@@ -364,11 +364,18 @@ final class InputController: ObservableObject {
             // Let the target app process the final ordinary title-bar mouse event before reading its frame.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
                 guard let self, self.canContinueWindowInput(token) else { return }
-                do {
-                    try self.windows?.endWindowDrag(at: point, snap: self.windowSnapEnabled)
-                    self.windowInputError = nil; self.updateCombinedError()
-                    self.cancelWindowInput()
-                } catch { self.failWindowInput(error) }
+                Task { @MainActor in
+                    guard self.canContinueWindowInput(token) else { return }
+                    do {
+                        try await self.windows?.endWindowDrag(at: point, snap: self.windowSnapEnabled)
+                        guard self.canContinueWindowInput(token) else { return }
+                        self.windowInputError = self.windows?.lastError; self.updateCombinedError()
+                        self.cancelWindowInput()
+                    } catch {
+                        guard self.canContinueWindowInput(token) else { return }
+                        self.failWindowInput(error)
+                    }
+                }
             }
         case .keyDown:
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
