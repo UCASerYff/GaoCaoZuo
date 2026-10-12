@@ -101,6 +101,33 @@ enum InputRules {
     }
 }
 
+struct InputListenerAuthorization:Equatable {
+    var monitoring:Bool
+    var accessibility:Bool
+    var available:Bool {monitoring || accessibility}
+}
+struct InputTapState {
+    var authorization:InputListenerAuthorization?
+    var active:Bool
+    var portValid:Bool
+    var sourceValid:Bool
+    var enabled:Bool
+}
+enum InputTapLifecycle {
+    enum Decision {case stop,install,keep,rebuild}
+    static func shouldRecoverDisabledTap(triggerGeneration:UInt64,currentGeneration:UInt64,hasTap:Bool)->Bool {
+        hasTap && triggerGeneration == currentGeneration
+    }
+    static func decision(running:Bool,paused:Bool,hasWork:Bool,authorization:InputListenerAuthorization,
+                         wantsActive:Bool,tap:InputTapState?)->Decision {
+        guard running,!paused,hasWork,authorization.available else{return .stop}
+        guard let tap else{return .install}
+        guard tap.portValid,tap.sourceValid,tap.enabled,tap.authorization == authorization,
+              tap.active == wantsActive else{return .rebuild}
+        return .keep
+    }
+}
+
 @MainActor
 final class InputController: ObservableObject {
     @Published private(set) var permissionGranted = CGPreflightListenEventAccess() || AXIsProcessTrusted()
@@ -110,6 +137,9 @@ final class InputController: ObservableObject {
     private var handler: ((String) -> Void)?
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+    private var installedAuthorization:InputListenerAuthorization?
+    private var installedActiveTap=false
+    private var tapGeneration:UInt64=0
     private var timer: Timer?
     private var configurationError: String?
     private var windowInputError: String?
@@ -125,6 +155,7 @@ final class InputController: ObservableObject {
     private var desiredRunning = false
     private let enhanced = EnhancedInputEngine()
     private var enhancementError: String?
+    private var tapModeError:String?
     @Published private(set) var enhancementStatus = "高级输入未启用"
     @Published private(set) var touchDevices: [String] = []
 
@@ -184,30 +215,47 @@ final class InputController: ObservableObject {
     }
 
     private func refreshPermission() {
-        permissionGranted = CGPreflightListenEventAccess() || AXIsProcessTrusted()
+        let authorization=InputListenerAuthorization(monitoring:CGPreflightListenEventAccess(),accessibility:AXIsProcessTrusted())
+        permissionGranted = authorization.available
         let needsWindows = windows != nil && (windowDragEnabled || windowSnapEnabled)
-        guard desiredRunning, !isPaused, !bindings.isEmpty || needsWindows || enhanced.needsEvents else { tearDownTap(); lastError = configurationError; return }
-        guard permissionGranted else {
-            tearDownTap()
-            lastError = [configurationError, "快捷键、鼠标按钮与绘图手势尚未获得输入监听权限，或权限已失效。"].compactMap { $0 }.joined(separator: "\n")
-            return
+        let hasWork = !bindings.isEmpty || needsWindows || enhanced.needsEvents
+        let wantsActive=enhanced.needsActiveTap && authorization.accessibility
+        let state:InputTapState?=tap.map {port in
+            let valid=CFMachPortIsValid(port)
+            return InputTapState(authorization:installedAuthorization,active:installedActiveTap,portValid:valid,
+                                 sourceValid:source.map{CFRunLoopSourceIsValid($0)} ?? false,
+                                 enabled:valid && CGEvent.tapIsEnabled(tap:port))
         }
-        if tap == nil { installTap(); if tap != nil { enhanced.startTouch() } }
+        switch InputTapLifecycle.decision(running:desiredRunning,paused:isPaused,hasWork:hasWork,
+                                          authorization:authorization,wantsActive:wantsActive,tap:state) {
+        case .stop:
+            tearDownTap()
+            lastError = desiredRunning && !isPaused && hasWork && !permissionGranted
+                ? [configurationError,"快捷键、鼠标按钮与绘图手势尚未获得输入监听权限，或权限已失效。"].compactMap{$0}.joined(separator:"\n")
+                : configurationError
+            return
+        case .rebuild:
+            tearDownTap();installTap(authorization:authorization)
+        case .install:installTap(authorization:authorization)
+        case .keep:break
+        }
+        if let tap,CFMachPortIsValid(tap),CGEvent.tapIsEnabled(tap:tap) {enhanced.startMonitoring()}
         enhancementStatus = enhanced.capabilityStatus
         touchDevices = enhanced.touchDeviceNames
         if tap != nil {
             if IsSecureEventInputEnabled() {
                 lastError = [configurationError, windowInputError, "系统正处于安全输入状态，键盘快捷键可能暂时不可用；离开密码输入后会自动恢复。"].compactMap { $0 }.joined(separator: "\n")
-            } else if needsWindows, !AXIsProcessTrusted() {
+            } else if needsWindows, !authorization.accessibility {
                 lastError = [configurationError, "窗口拖动与边缘吸附需要辅助功能权限；其他已授权输入规则仍可使用。"].compactMap { $0 }.joined(separator: "\n")
             } else { updateCombinedError() }
         }
     }
 
-    private func installTap() {
+    private func installTap(authorization:InputListenerAuthorization) {
         var types: [CGEventType] = [.keyDown, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
         if enhanced.needsEvents { types += [.keyUp,.flagsChanged,.leftMouseDown,.leftMouseUp,.leftMouseDragged,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
-        if enhanced.needsActiveTap && !AXIsProcessTrusted() { enhancementError = "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" }
+        let active=enhanced.needsActiveTap && authorization.accessibility
+        tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
         if windows != nil && (windowDragEnabled || windowSnapEnabled) { types += [.leftMouseDown, .leftMouseDragged, .leftMouseUp] }
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let callback: CGEventTapCallBack = { _, type, event, context in
@@ -222,7 +270,7 @@ final class InputController: ObservableObject {
             return consume ? nil : Unmanaged.passUnretained(event)
         }
         guard let created = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap,
-                                             options: enhanced.needsActiveTap && AXIsProcessTrusted() ? .defaultTap : .listenOnly, eventsOfInterest: mask, callback: callback,
+                                             options: active ? .defaultTap : .listenOnly, eventsOfInterest: mask, callback: callback,
                                              userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             lastError = "系统未能启动输入监听。请检查输入监控权限及其他输入工具的兼容性。"
             return
@@ -233,27 +281,34 @@ final class InputController: ObservableObject {
             return
         }
         tap = created; source = createdSource
+        installedAuthorization=authorization;installedActiveTap=active
         CFRunLoopAddSource(CFRunLoopGetMain(), createdSource, .commonModes)
         CGEvent.tapEnable(tap: created, enable: true)
         lastError = configurationError
     }
 
     private func tearDownTap() {
+        tapGeneration &+= 1
         enhanced.stop()
         gestureStart = nil
         cancelWindowInput()
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes); CFRunLoopSourceInvalidate(source) }
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         source = nil; tap = nil
+        installedAuthorization=nil;installedActiveTap=false;tapModeError=nil
+        enhancementStatus=enhanced.capabilityStatus;touchDevices=enhanced.touchDeviceNames
     }
 
     private func receive(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             gestureStart = nil
             cancelWindowInput()
-            if let tap, desiredRunning, !isPaused, CGPreflightListenEventAccess() || AXIsProcessTrusted() {
-                CGEvent.tapEnable(tap: tap, enable: true)
-                lastError = "输入监听被系统暂停，已请求恢复；如快捷键无响应，请检查权限与安全输入状态。"
+            guard tap != nil else{return}
+            let failedGeneration=tapGeneration
+            // Rebuild outside the callback, releasing held replacements and restoring every monitor.
+            DispatchQueue.main.async { [weak self] in
+                guard let self,InputTapLifecycle.shouldRecoverDisabledTap(triggerGeneration:failedGeneration,currentGeneration:self.tapGeneration,hasTap:self.tap != nil) else{return}
+                self.tearDownTap();self.refreshPermission()
             }
             return
         }
@@ -370,7 +425,7 @@ final class InputController: ObservableObject {
         updateCombinedError()
     }
     private func updateCombinedError() {
-        let messages = [configurationError, windowInputError, enhancementError].compactMap { $0 }
+        let messages = [configurationError, windowInputError, enhancementError,tapModeError].compactMap { $0 }
         lastError = messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
 

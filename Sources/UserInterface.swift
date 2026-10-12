@@ -181,7 +181,7 @@ struct OperationPanelView: View {
                             detail: "运行组合操作 · \(workflow.steps.count) 个步骤", icon: "square.stack.3d.up",
                             section: .workflows, keywords: "组合 工作流 workflow")
         }
-        let all = (OperationAction.all + workflows).filter { $0.id != "panel.show" && $0.matches(query) }
+        let all = (store.actionChoices + workflows).filter { $0.id != "panel.show" && $0.matches(query) }
         return query.isEmpty ? all.sorted { a,b in
             let af = store.settings.favorites.contains(a.id), bf = store.settings.favorites.contains(b.id)
             if af != bf { return af }

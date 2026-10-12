@@ -12,7 +12,7 @@ trap 'rm -rf "$STAGING"' EXIT
 APP="$STAGING/搞操作.app"
 EXT="$APP/Contents/PlugIns/GaoFinderSync.appex"
 QL_EXT="$APP/Contents/PlugIns/GaoArchiveQuickLook.appex"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$QL_EXT/Contents/MacOS" "$QL_EXT/Contents/Resources/Tools"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$QL_EXT/Contents/MacOS"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
 ditto "$PROJECT_DIR/FinderExtension" "$STAGING/FinderExtension"
@@ -47,8 +47,6 @@ if [[ -f "$APP/Contents/Resources/Tools/7zz" ]]; then
   chmod 755 "$APP/Contents/Resources/Tools/7zz"
   codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.7zz "$APP/Contents/Resources/Tools/7zz"
 fi
-cp "$APP/Contents/Resources/Tools/7zz" "$QL_EXT/Contents/Resources/Tools/7zz"
-codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook.7zz "$QL_EXT/Contents/Resources/Tools/7zz"
 # Sign nested native code before signing the containing application.
 while IFS= read -r -d '' native; do
   if /usr/bin/file -b "$native" | /usr/bin/grep -q 'Mach-O'; then

@@ -5,6 +5,16 @@ import Combine
 
 struct InputActionChoice:Identifiable {let id:String;let title:String}
 
+@MainActor struct InputPressureMonitorBackend {
+    var addGlobal:(@escaping(NSEvent)->Void)->Any?
+    var addLocal:(@escaping(NSEvent)->NSEvent?)->Any?
+    var remove:(Any)->Void
+    static var system:Self {
+        Self(addGlobal:{NSEvent.addGlobalMonitorForEvents(matching:.pressure,handler:$0)},
+             addLocal:{NSEvent.addLocalMonitorForEvents(matching:.pressure,handler:$0)},remove:{NSEvent.removeMonitor($0)})
+    }
+}
+
 @MainActor final class EnhancedInputEngine {
     static let syntheticTag:Int64 = 0x47414F43414F
     var configuration = InputEnhancementConfiguration()
@@ -27,6 +37,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var activeScript:Process?
     private var pressureMonitor:Any?
     private var localPressureMonitor:Any?
+    private let pressureBackend:InputPressureMonitorBackend
+    private var deviceMonitoringStarted=false
     private var pressureLatched=false
     private(set) var observedPressureEvents=0
     private let touch = RawTouchInput()
@@ -34,6 +46,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var touchDrag:(device:String,pid:pid_t,origin:CGPoint,pointer:CGPoint,ruleID:UUID)?
     private var lastTouchTap:(device:String,fingers:Int,time:Double)?
     private var touchSession:[String:TouchSequence] = [:]
+    init(pressureBackend:InputPressureMonitorBackend?=nil) {self.pressureBackend=pressureBackend ?? .system}
     var needsActiveTap:Bool {
         configuration.enabled && (configuration.rules.contains { $0.enabled && ($0.consume || $0.trigger == .keyReplacement) } || configuration.scrollProfiles.contains(where: \.enabled))
     }
@@ -43,7 +56,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         var details=["高级输入已配置：\(configuration.rules.filter(\.enabled).count)条规则"]
         if configuration.hidProfiles.contains(where: \.enabled) {details.append(hid.status)}
         if configuration.experimentalRawTouch {details.append(touch.status+"；实际触点帧：\(touch.observedFrames)")}
-        if configuration.rules.contains(where:{$0.enabled && $0.trigger == .pressure}) {details.append("实际全局/局部压力事件：\(observedPressureEvents)；需要在目标应用中验收")}
+        if configuration.rules.contains(where:{$0.enabled && $0.trigger == .pressure}) {details.append("压力监听：全局\(pressureMonitor == nil ? "未安装":"已安装")、局部\(localPressureMonitor == nil ? "未安装":"已安装")；实际压力事件：\(observedPressureEvents)；需要在目标应用中验收")}
         return details.joined(separator:"\n")
     }
     var touchDeviceNames:[String] {touch.deviceNames}
@@ -54,22 +67,27 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         do {try EnhancedInputValidation.validate(configuration)} catch {self.configuration.enabled=false;report?(error.localizedDescription);return}
         let conflicts=Dictionary(grouping:configuration.rules.filter { $0.enabled && $0.trigger != .drawing && !($0.trigger == .touch && $0.touchGesture == "drawing") },by:EnhancedInputValidation.signature).values.filter{$0.count>1}.flatMap{$0.map(\.id)}
         if !conflicts.isEmpty {self.configuration.rules.removeAll {conflicts.contains($0.id)};report?("高级输入存在相同触发冲突，相关规则已暂停。")}
-        if configuration.rules.contains(where:{$0.enabled && $0.trigger == .pressure}) {
-            pressureMonitor=NSEvent.addGlobalMonitorForEvents(matching:.pressure) { [weak self] event in MainActor.assumeIsolated { self?.receivePressure(event) } }
-            localPressureMonitor=NSEvent.addLocalMonitorForEvents(matching:.pressure) { [weak self] event in MainActor.assumeIsolated { self?.receivePressure(event) };return event }
-        }
         if configuration.scrollProfiles.contains(where:{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}) {report?("逐个物理鼠标滚轮规则尚不可用：公开 CGEvent 不提供可靠设备标识。该配置不会退化为修改所有鼠标。")}
     }
-    func startTouch() {
+    func startMonitoring() {
+        guard configuration.enabled else{return}
+        if configuration.rules.contains(where:{$0.enabled && $0.trigger == .pressure}) {
+            if pressureMonitor == nil {pressureMonitor=pressureBackend.addGlobal { [weak self] event in MainActor.assumeIsolated {self?.receivePressure(event)} }}
+            if localPressureMonitor == nil {localPressureMonitor=pressureBackend.addLocal { [weak self] event in MainActor.assumeIsolated {self?.receivePressure(event)};return event }}
+        }
+        // The permission poll may call this repeatedly; device sessions must stay intact.
+        guard !deviceMonitoringStarted else{return}
+        deviceMonitoringStarted=true
         if configuration.enabled,configuration.hidProfiles.contains(where: \.enabled) {hid.onButton={ [weak self] observation in self?.receiveHIDButton(observation) };hid.start()}
         guard configuration.enabled,configuration.experimentalRawTouch,configuration.rules.contains(where:{$0.enabled && $0.trigger == .touch}) else {return}
         touch.start { [weak self] frame in self?.receiveTouch(frame) }
         if !touch.isRunning {report?(touch.status)}
     }
     func stop() {
+        deviceMonitoringStarted=false
         finishTouchDrag();touch.stop();hid.stop();touchSession.removeAll()
-        if let pressureMonitor {NSEvent.removeMonitor(pressureMonitor)};pressureMonitor=nil
-        if let localPressureMonitor {NSEvent.removeMonitor(localPressureMonitor)};localPressureMonitor=nil;pressureLatched=false
+        if let pressureMonitor {pressureBackend.remove(pressureMonitor)};pressureMonitor=nil
+        if let localPressureMonitor {pressureBackend.remove(localPressureMonitor)};localPressureMonitor=nil;pressureLatched=false
         timers.values.forEach{$0.invalidate()};timers.removeAll();smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero
         for (_,value) in replacements {try? sendKey(value.0,down:false,pid:value.1)}
         replacements.removeAll();keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll();drawing=nil;corner=nil
