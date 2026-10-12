@@ -29,7 +29,8 @@ import AppKit
         guard !urls.isEmpty,urls.count<=1000 else {notify("访达没有可操作的位置",failed:true);return}
         finderPopupContainer=container;finderPopupSelection=selected;selection=urls
         let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
-        guard !FinderMenuContext.isExcluded(urls+[container],preferences:snapshot.preferences) else {notify("此目录已排除访达菜单",failed:true);return}
+        let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard !FinderMenuContext.isExcluded(urls+[container],appBundleID:frontApp,preferences:snapshot.preferences) else {notify("此目录或当前应用已排除访达菜单",failed:true);return}
         let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:hasSelection,target:self,selector:#selector(finderPopupAction(_:)))
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
     }

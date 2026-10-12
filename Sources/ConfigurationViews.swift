@@ -379,9 +379,17 @@ private struct WorkflowActionChoice: Identifiable {
     }
     private var general: some View {
         Form {
-            Section("外观") {
+            Section("外观与语言") {
                 Picker("界面模式",selection:setting(\.appearance)) { Text("跟随系统").tag("system");Text("浅色").tag("light");Text("深色").tag("dark") }
                     .onChange(of:store.settings.appearance) { _, value in NSApp.appearance = value == "light" ? NSAppearance(named:.aqua) : value == "dark" ? NSAppearance(named:.darkAqua) : nil }
+                Picker("界面语言 (Language)",selection:setting(\.language)) {
+                    ForEach(GaoLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang.rawValue)
+                    }
+                }
+                .onChange(of:store.settings.language) { _, val in
+                    if let lang = GaoLanguage(rawValue: val) { GaoLocale.shared.setLanguage(lang) }
+                }
                 Toggle("显示菜单栏图标",isOn:setting(\.showMenuBarIcon))
                 Picker("菜单栏左键",selection:setting(\.statusBarLeftClick)){Text("操作面板").tag("panel");Text("主窗口").tag("main");Text("剪贴板").tag("clipboard")}
                 Toggle("新建文件提示音",isOn:setting(\.playNewFileSound))

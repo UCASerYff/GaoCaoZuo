@@ -74,7 +74,10 @@ final class OperationPanel: NSPanel {
         if !earlyURLs.isEmpty {let urls=earlyURLs;earlyURLs=[];application(NSApp,open:urls)}
     }
     private func configureInput(){store.windows.configure(enhancements:store.settings.windowEnhancements);store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled,enhancements:store.settings.inputEnhancements){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
-    private func applyAppearance(){NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)}
+    private func applyAppearance(){
+        NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)
+        if let lang=GaoLanguage(rawValue:store.settings.language) {GaoLocale.shared.setLanguage(lang)}
+    }
     func showMain(){store.windows.captureTarget();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func showPanel(){
         store.windows.captureTarget()

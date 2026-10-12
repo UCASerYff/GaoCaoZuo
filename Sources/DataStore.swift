@@ -32,6 +32,7 @@ struct OperationWorkflow: Codable, Identifiable, Equatable {
 struct OperationSettings: Codable {
     var schema = 1
     var appearance = "system"
+    var language = "system"
     var showMenuBarIcon = true
     var playNewFileSound = false
     var statusBarLeftClick = "panel"
@@ -58,7 +59,7 @@ struct OperationSettings: Codable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case schema, appearance, favorites, folders, templates, snippets, bindings, inputExcludedApps, workflows
+        case schema, appearance, language, favorites, folders, templates, snippets, bindings, inputExcludedApps, workflows
         case clipboardEnabled, clipboardDays, clipboardLimit, clipboardExcludedApps, loginAtStartup
         case windowDragEnabled, windowSnapEnabled
         case windowEnhancements, inputEnhancements
@@ -68,6 +69,7 @@ struct OperationSettings: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schema = try container.decode(Int.self, forKey: .schema)
         appearance = try container.decode(String.self, forKey: .appearance)
+        language = try container.decodeIfPresent(String.self, forKey: .language) ?? "system"
         showMenuBarIcon = try container.decodeIfPresent(Bool.self,forKey:.showMenuBarIcon) ?? true
         playNewFileSound = try container.decodeIfPresent(Bool.self,forKey:.playNewFileSound) ?? false
         statusBarLeftClick = try container.decodeIfPresent(String.self,forKey:.statusBarLeftClick) ?? "panel"

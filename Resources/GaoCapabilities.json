@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "bundleID": "com.gaoseries.GaoCaoZuo",
+  "appVersion": "1.04",
+  "actions": [
+    {
+      "action": "files.reveal",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "supportsReferences": true,
+      "supportsItems": false
+    },
+    {
+      "action": "documents.open",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "supportsReferences": true,
+      "supportsItems": true
+    },
+    {
+      "action": "documents.newText",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "suggestedTitle": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false
+      },
+      "supportsReferences": false,
+      "supportsItems": true
+    }
+  ]
+}

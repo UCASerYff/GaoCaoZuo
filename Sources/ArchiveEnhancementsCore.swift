@@ -88,3 +88,139 @@ struct ArchiveTreeNode: Identifiable {
         return sorted(result)
     }
 }
+
+public struct ArchiveFormatCapability: Codable, Identifiable, Equatable {
+    public var id: String { format }
+    public var format: String
+    public var canRead: Bool
+    public var canList: Bool
+    public var canPreview: Bool
+    public var canRandomExtract: Bool
+    public var canExtractAll: Bool
+    public var canCreate: Bool
+    public var canEdit: Bool
+    public var canEncrypt: Bool
+    public var canMultiVolume: Bool
+    public var backend: String
+    public var statusNote: String
+
+    public init(
+        format: String,
+        canRead: Bool,
+        canList: Bool,
+        canPreview: Bool,
+        canRandomExtract: Bool,
+        canExtractAll: Bool,
+        canCreate: Bool,
+        canEdit: Bool,
+        canEncrypt: Bool,
+        canMultiVolume: Bool,
+        backend: String,
+        statusNote: String
+    ) {
+        self.format = format
+        self.canRead = canRead
+        self.canList = canList
+        self.canPreview = canPreview
+        self.canRandomExtract = canRandomExtract
+        self.canExtractAll = canExtractAll
+        self.canCreate = canCreate
+        self.canEdit = canEdit
+        self.canEncrypt = canEncrypt
+        self.canMultiVolume = canMultiVolume
+        self.backend = backend
+        self.statusNote = statusNote
+    }
+}
+
+public enum ArchiveCapabilities {
+    public static var matrix: [ArchiveFormatCapability] {
+        [
+            ArchiveFormatCapability(
+                format: "ZIP",
+                canRead: true,
+                canList: true,
+                canPreview: true,
+                canRandomExtract: true,
+                canExtractAll: true,
+                canCreate: true,
+                canEdit: true,
+                canEncrypt: true,
+                canMultiVolume: true,
+                backend: "7zz 26.04 / pyzipper",
+                statusNote: "全量实测通过：支持 AES-256 加密、分卷（.001）、中文/Emoji 密码、包内条目增删与原包恢复"
+            ),
+            ArchiveFormatCapability(
+                format: "7Z",
+                canRead: true,
+                canList: true,
+                canPreview: true,
+                canRandomExtract: true,
+                canExtractAll: true,
+                canCreate: true,
+                canEdit: true,
+                canEncrypt: true,
+                canMultiVolume: true,
+                backend: "7zz 26.04",
+                statusNote: "全量实测通过：支持 AES-256、文件名加密（-mhe）、固实压缩、分卷与完整性自检"
+            ),
+            ArchiveFormatCapability(
+                format: "TAR / TAR.GZ / TAR.BZ2 / TAR.XZ / TAR.LZ",
+                canRead: true,
+                canList: true,
+                canPreview: true,
+                canRandomExtract: true,
+                canExtractAll: true,
+                canCreate: true,
+                canEdit: false,
+                canEncrypt: false,
+                canMultiVolume: false,
+                backend: "7zz 26.04 / 系统 libarchive",
+                statusNote: "全量实测通过：支持递归展开容器，自动多层提取，单层 LZIP 提取"
+            ),
+            ArchiveFormatCapability(
+                format: "RAR / RAR5",
+                canRead: true,
+                canList: true,
+                canPreview: true,
+                canRandomExtract: true,
+                canExtractAll: true,
+                canCreate: false,
+                canEdit: false,
+                canEncrypt: false,
+                canMultiVolume: true,
+                backend: "7zz 26.04 (非自由反汇编/只读解码)",
+                statusNote: "只读解压支持；RAR 属专有商业格式，FastZip 本身不创建 RAR，本项目亦明确不提供 RAR 创建"
+            ),
+            ArchiveFormatCapability(
+                format: "ACE",
+                canRead: true,
+                canList: true,
+                canPreview: false,
+                canRandomExtract: false,
+                canExtractAll: true,
+                canCreate: false,
+                canEdit: false,
+                canEncrypt: false,
+                canMultiVolume: false,
+                backend: "acefile (Python 安全隔离后端)",
+                statusNote: "部分实测：自建 Stored 及 CP437 名称解压通过；ACE 2.x/LZ77/加密/固实变体因缺乏合法无侵权样本未验收"
+            ),
+            ArchiveFormatCapability(
+                format: "CAB / ISO / AR / CPIO",
+                canRead: true,
+                canList: true,
+                canPreview: true,
+                canRandomExtract: true,
+                canExtractAll: true,
+                canCreate: false,
+                canEdit: false,
+                canEncrypt: false,
+                canMultiVolume: false,
+                backend: "7zz 26.04",
+                statusNote: "7zz 解码器支持读取与提取；未进行全规格真实样本基准测试"
+            )
+        ]
+    }
+}
+

@@ -6,6 +6,7 @@ import Darwin
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
         try runMigrationTests()
+        try await runGaoActionTests()
         try runEnhancementIntegrationTests()
         try runInputEnhancementTests()
         try runSystemTests()

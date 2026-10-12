@@ -60,11 +60,24 @@ struct FinderPreferenceView:View {
                     }
                 }
             }.frame(minHeight:260)
-            HStack {TextField("排除目录的绝对路径",text:$excluded).textFieldStyle(.roundedBorder);Button("添加排除"){guard excluded.hasPrefix("/"),!excluded.contains("\0") else{return};controller.update{$0.excludedPaths.append(excluded)};excluded=""}}
-            ForEach(controller.preferences.excludedPaths,id:\.self){path in HStack{Text(path).font(.caption).lineLimit(1);Spacer();Button("移除"){controller.update{$0.excludedPaths.removeAll{$0==path}}}}}
+            HStack {TextField("排除目录的绝对路径",text:$excluded).textFieldStyle(.roundedBorder);Button("添加目录排除"){guard excluded.hasPrefix("/"),!excluded.contains("\0") else{return};controller.update{$0.excludedPaths.append(excluded)};excluded=""}}
+            ForEach(controller.preferences.excludedPaths,id:\.self){path in HStack{Text("📁 "+path).font(.caption).lineLimit(1);Spacer();Button("移除"){controller.update{$0.excludedPaths.removeAll{$0==path}}}}}
+            HStack {
+                TextField("排除应用的 Bundle ID (如 com.apple.finder)",text:$excludedApp).textFieldStyle(.roundedBorder)
+                Button("添加应用排除"){guard !excludedApp.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,!excludedApp.contains(" ") else{return};controller.update{$0.excludedApps.append(excludedApp.trimmingCharacters(in:.whitespacesAndNewlines))};excludedApp=""}
+                Button("选择应用…"){chooseApp()}
+            }
+            ForEach(controller.preferences.excludedApps,id:\.self){app in HStack{Text("🚫 "+app).font(.caption).lineLimit(1);Spacer();Button("移除"){controller.update{$0.excludedApps.removeAll{$0==app}}}}}
             if let error=controller.error {Text(error).foregroundStyle(.red).font(.caption)}
             Text("访达工具栏按钮由系统的“自定工具栏”管理；此开关控制按钮内的菜单。").font(.caption).foregroundStyle(.secondary)
         }.padding().disabled(controller.data.failure != nil)
+    }
+    @State private var excludedApp = ""
+    private func chooseApp() {
+        let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message="选择要排除右键菜单的应用程序"
+        if p.runModal() == .OK,let url=p.url,let bundle=Bundle(url:url),let id=bundle.bundleIdentifier {
+            controller.update{if !$0.excludedApps.contains(id){$0.excludedApps.append(id)}}
+        }
     }
     private func flag(_ key:WritableKeyPath<FinderMenuPreferences,Bool>)->Binding<Bool>{Binding(get:{controller.preferences[keyPath:key]},set:{value in controller.update{$0[keyPath:key]=value}})}
 }

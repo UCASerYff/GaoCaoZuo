@@ -65,15 +65,28 @@ extension FileEnhancementController {
     }
     func terminal(_ directory:URL,newWindow:Bool) throws {
         _ = try EnhancedFileTools.checked(directory)
+        guard let terminalApp=NSWorkspace.shared.urlForApplication(withBundleIdentifier:"com.apple.Terminal") else {
+            throw FileToolsError.invalid("找不到系统终端应用。")
+        }
+        if newWindow {
+            let config=NSWorkspace.OpenConfiguration()
+            config.activates=true
+            NSWorkspace.shared.open([directory],withApplicationAt:terminalApp,configuration:config){_,failure in
+                if let failure {Task{@MainActor in self.error=failure.localizedDescription}}
+            }
+            return
+        }
         func literal(_ value:String)->String {"\""+value.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"\"",with:"\\\"").replacingOccurrences(of:"\n",with:"\\n").replacingOccurrences(of:"\r",with:"\\r")+"\""}
         let command="cd -- '"+directory.path.replacingOccurrences(of:"'",with:"'\\''")+"'"
-        let script:String
-        if newWindow {script="tell application id \"com.apple.Terminal\"\nactivate\ndo script "+literal(command)+"\nend tell"}
-        else {script="tell application id \"com.apple.Terminal\"\nactivate\nif (count of windows) is 0 then\ndo script "+literal(command)+"\nelse\ntell application \"System Events\" to keystroke \"t\" using command down\ndo script "+literal(command)+" in selected tab of front window\nend if\nend tell"}
+        let script="tell application id \"com.apple.Terminal\"\nactivate\nif (count of windows) is 0 then\ndo script "+literal(command)+"\nelse\ntell application \"System Events\" to keystroke \"t\" using command down\ndo script "+literal(command)+" in selected tab of front window\nend if\nend tell"
         var error:NSDictionary?
         guard let apple=NSAppleScript(source:script) else{throw FileToolsError.invalid("终端脚本无效。")}
         apple.executeAndReturnError(&error)
-        if let error {throw FileToolsError.invalid("终端操作被系统拒绝，请检查自动化权限。\n\(error[NSAppleScript.errorMessage] ?? "")")}
+        if let error {
+            let config=NSWorkspace.OpenConfiguration();config.activates=true
+            NSWorkspace.shared.open([directory],withApplicationAt:terminalApp,configuration:config,completionHandler:nil)
+            throw FileToolsError.invalid("终端新标签页需要系统自动化权限（已在独立窗口打开）：\(error[NSAppleScript.errorMessage] ?? "")")
+        }
     }
     func addApplication() throws {
         let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message="选择用来打开当前文件或目录的应用"

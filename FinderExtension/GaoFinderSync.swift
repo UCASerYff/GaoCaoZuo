@@ -90,7 +90,8 @@ final class GaoFinderSync: FIFinderSync {
         if menuKind == .toolbarItemMenu && !snapshot.preferences.showToolbar {return nil}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
         let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
-        guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,preferences:snapshot.preferences) else{return nil}
+        let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences) else{return nil}
         let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
         guard registry.assignTags(in:menu,selector:#selector(openAction(_:))) else {return nil}
         return menu

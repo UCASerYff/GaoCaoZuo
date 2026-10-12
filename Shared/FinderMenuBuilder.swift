@@ -47,7 +47,8 @@ enum FinderMenuContext {
     static func usesContainer(_ action:String)->Bool {
         action.hasPrefix("new.") || action.hasPrefix("template.") || action.hasPrefix("binaryTemplate.") || action.hasPrefix("file.new.") || ["file.paste","file.hideAll","file.unhideAll","file.template.create"].contains(action)
     }
-    static func isExcluded(_ urls:[URL],preferences:FinderMenuPreferences)->Bool {
-        urls.contains {url in preferences.excludedPaths.contains {path in url.path == path || url.path.hasPrefix(path.hasSuffix("/") ? path:path+"/")}}
+    static func isExcluded(_ urls:[URL],appBundleID:String?=nil,preferences:FinderMenuPreferences)->Bool {
+        if let appBundleID,!appBundleID.isEmpty,preferences.excludedApps.contains(appBundleID) {return true}
+        return urls.contains {url in preferences.excludedPaths.contains {path in url.path == path || url.path.hasPrefix(path.hasSuffix("/") ? path:path+"/")}}
     }
 }
