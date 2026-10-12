@@ -7,6 +7,7 @@ import Darwin
 final class ArchiveQuickLook: NSViewController, QLPreviewingController {
     private let textView = NSTextView()
     override func loadView() {
+        NSLog("GaoArchiveQuickLook phase=load-view")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 760, height: 580))
         textView.isEditable = false; textView.isSelectable = true; textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textContainerInset = NSSize(width: 20, height: 20); textView.autoresizingMask = [.width]
@@ -15,10 +16,12 @@ final class ArchiveQuickLook: NSViewController, QLPreviewingController {
     }
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         let access = url.startAccessingSecurityScopedResource()
-        let resource = Bundle(for: Self.self).resourceURL!
-        // Keep one shared decoder distribution in the containing app.
-        let application = Bundle(for: Self.self).bundleURL.deletingLastPathComponent().deletingLastPathComponent()
-        let tools = application.appendingPathComponent("Resources/Tools", isDirectory: true)
+        let classBundle=Bundle(for: Self.self)
+        let resources:ArchiveQuickLookResources
+        do {resources=try ArchiveQuickLookResources.resolve(classBundle:classBundle,mainBundle:Bundle.main)}
+        catch {if access {url.stopAccessingSecurityScopedResource()};handler(error);return}
+        NSLog("GaoArchiveQuickLook phase=prepare bundle-main=%@ bundle-class=%@",Bundle.main.bundleIdentifier ?? "missing",classBundle.bundleIdentifier ?? "missing")
+        let resource=resources.resource,tools=resources.tools
         DispatchQueue.global(qos: .userInitiated).async {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             do {
@@ -27,10 +30,23 @@ final class ArchiveQuickLook: NSViewController, QLPreviewingController {
                 let executable = extra ? tools.appendingPathComponent("ArchivePython/python/bin/python3") : decoder
                 let arguments = (extra ? ["-I", "-B", tools.appendingPathComponent("ArchiveBridge/archive_bridge.py").path] : []) + ["l", "-slt", "-ba", "-sccUTF-8", "-bsp0", "--", url.path]
                 let process = Process(); process.executableURL = executable; process.arguments = arguments
+                // Quick Look may reuse a service after its former working directory
+                // disappears. Always launch from an existing, readable bundle path.
+                process.currentDirectoryURL=resource
                 process.standardInput = FileHandle.nullDevice
                 let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
                 var environment = ProcessInfo.processInfo.environment; environment["LC_ALL"] = "en_US.UTF-8"; process.environment = environment
-                try process.run()
+                let exists=FileManager.default.fileExists(atPath:executable.path),canExecute=FileManager.default.isExecutableFile(atPath:executable.path)
+                guard exists,canExecute else {
+                    NSLog("GaoArchiveQuickLook phase=engine-check bridge=%d exists=%d executable=%d",extra,exists,canExecute)
+                    throw NSError(domain:"GaoArchiveQuickLook",code:1,userInfo:[NSLocalizedDescriptionKey:"压缩预览引擎缺失或不可执行，请重新安装完整的搞操作。"])
+                }
+                do {try process.run()}
+                catch {
+                    let failure=error as NSError
+                    NSLog("GaoArchiveQuickLook phase=engine-launch bridge=%d exists=%d executable=%d error-domain=%@ error-code=%ld",extra,exists,canExecute,failure.domain,failure.code)
+                    throw NSError(domain:"GaoArchiveQuickLook",code:2,userInfo:[NSLocalizedDescriptionKey:"无法启动压缩预览引擎（\(failure.domain) \(failure.code)）。请重新安装搞操作后重试。"])
+                }
                 let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
                 timer.schedule(deadline: .now() + 12); timer.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }; timer.resume()
                 defer { timer.cancel() }
@@ -46,11 +62,31 @@ final class ArchiveQuickLook: NSViewController, QLPreviewingController {
                     if raw.lowercased().contains("password") || raw.lowercased().contains("encrypted") {
                         text = url.lastPathComponent + "\n\n此压缩包已加密。请用搞操作打开并输入密码。"
                     } else if exceeded { text = url.lastPathComponent + "\n\n压缩包目录超出空格预览预算，请用搞操作打开。" }
-                    else { throw NSError(domain: "GaoArchiveQuickLook", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "无法预览此格式或压缩包已损坏。请在搞操作中查看详情。"] ) }
+                    else {
+                        NSLog("GaoArchiveQuickLook phase=engine-result bridge=%d exit=%ld",extra,process.terminationStatus)
+                        throw NSError(domain: "GaoArchiveQuickLook", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "压缩预览引擎未能读取此文件（退出码 \(process.terminationStatus)）。请在搞操作中查看详情。"] )
+                    }
                 } else { text = ArchiveQuickLookDocument.render(filename: url.lastPathComponent, technicalListing: raw) }
                 DispatchQueue.main.async { self.textView.string = text; handler(nil) }
             } catch { DispatchQueue.main.async { handler(error) } }
         }
+    }
+}
+
+struct ArchiveQuickLookResources {
+    let resource:URL
+    let tools:URL
+    static func resolve(classBundle:Bundle,mainBundle:Bundle)throws->Self {
+        guard let bundle=[classBundle,mainBundle].first(where:{$0.bundleIdentifier == "com.gaoseries.GaoCaoZuo.QuickLook" && $0.bundleURL.pathExtension == "appex"}),let resource=bundle.resourceURL else {
+            NSLog("GaoArchiveQuickLook phase=bundle-check main=%@ class=%@",mainBundle.bundleIdentifier ?? "missing",classBundle.bundleIdentifier ?? "missing")
+            throw NSError(domain:"GaoArchiveQuickLook",code:3,userInfo:[NSLocalizedDescriptionKey:"无法定位压缩预览扩展资源，请重新安装完整的搞操作。"])
+        }
+        let plugins=bundle.bundleURL.deletingLastPathComponent(),contents=plugins.deletingLastPathComponent(),application=contents.deletingLastPathComponent()
+        guard plugins.lastPathComponent == "PlugIns",contents.lastPathComponent == "Contents",application.pathExtension == "app",Bundle(url:application)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else {
+            NSLog("GaoArchiveQuickLook phase=container-check")
+            throw NSError(domain:"GaoArchiveQuickLook",code:3,userInfo:[NSLocalizedDescriptionKey:"压缩预览扩展安装位置不完整，请重新安装搞操作。"])
+        }
+        return Self(resource:resource,tools:contents.appendingPathComponent("Resources/Tools",isDirectory:true))
     }
 }
 
