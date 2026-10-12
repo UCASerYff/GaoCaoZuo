@@ -2,13 +2,26 @@ import AppKit
 import FinderSync
 import Darwin
 
+/// FinderSync can deliver synchronous Objective-C callbacks on an XPC worker.
+/// Keep the reply synchronous while moving AppKit work onto its main executor.
+/// Never dispatch synchronously when the callback already runs on that executor.
+enum FinderCallbackMainActor {
+    static func sync(_ body: @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { body() }
+        } else {
+            DispatchQueue.main.sync { MainActor.assumeIsolated { body() } }
+        }
+    }
+}
+
 final class GaoFinderSync: FIFinderSync {
     private var observer:NSObjectProtocol?
     override init() {
         super.init()
-        MainActor.assumeIsolated { updateScope() }
+        FinderCallbackMainActor.sync { updateScope() }
         observer=DistributedNotificationCenter.default().addObserver(forName:FinderMenuSnapshot.changedNotification,object:nil,queue:.main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateScope() }
+            FinderCallbackMainActor.sync { self?.updateScope() }
         }
     }
     deinit {if let observer {DistributedNotificationCenter.default().removeObserver(observer)}}
@@ -21,19 +34,29 @@ final class GaoFinderSync: FIFinderSync {
     }
     override var toolbarItemName:String {"搞操作"}
     override var toolbarItemToolTip:String {"当前目录的快捷操作"}
-    override var toolbarItemImage:NSImage {NSImage(systemSymbolName:"cursorarrow.motionlines",accessibilityDescription:"搞操作") ?? NSImage()}
-    override func menu(for menuKind:FIMenuKind)->NSMenu? {
-        MainActor.assumeIsolated {
-            guard [.contextualMenuForItems,.contextualMenuForContainer,.contextualMenuForSidebar,.toolbarItemMenu].contains(menuKind) else {return nil}
-            let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
-            if menuKind == .toolbarItemMenu && !snapshot.preferences.showToolbar {return nil}
-            let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
-            let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
-            guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,preferences:snapshot.preferences) else{return nil}
-            return FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
-        }
+    override var toolbarItemImage:NSImage {
+        var image:NSImage!
+        FinderCallbackMainActor.sync { image=NSImage(systemSymbolName:"cursorarrow.motionlines",accessibilityDescription:"搞操作") ?? NSImage() }
+        return image
     }
-    @MainActor @objc private func openAction(_ sender:NSMenuItem) {
+    override func menu(for menuKind:FIMenuKind)->NSMenu? {
+        var menu:NSMenu?
+        FinderCallbackMainActor.sync { menu=makeMenu(for:menuKind) }
+        return menu
+    }
+    @MainActor private func makeMenu(for menuKind:FIMenuKind)->NSMenu? {
+        guard [.contextualMenuForItems,.contextualMenuForContainer,.contextualMenuForSidebar,.toolbarItemMenu].contains(menuKind) else {return nil}
+        let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
+        if menuKind == .toolbarItemMenu && !snapshot.preferences.showToolbar {return nil}
+        let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
+        let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
+        guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,preferences:snapshot.preferences) else{return nil}
+        return FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
+    }
+    @objc private func openAction(_ sender:NSMenuItem) {
+        FinderCallbackMainActor.sync { performAction(sender) }
+    }
+    @MainActor private func performAction(_ sender:NSMenuItem) {
         guard let action=sender.representedObject as? String,FinderActionRequest.isAllowed(action) else{return}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
         let containerAction=FinderMenuContext.usesContainer(action)

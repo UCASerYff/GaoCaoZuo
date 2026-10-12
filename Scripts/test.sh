@@ -5,6 +5,7 @@ STAGING=$(mktemp -d /private/tmp/gaocaozuo-tests.XXXXXX)
 trap 'rm -rf "$STAGING"' EXIT
 python3 -B "$PROJECT_DIR/Tests/InstallTests.py"
 python3 -B "$PROJECT_DIR/Tests/TemplateAssetTests.py"
+python3 -B "$PROJECT_DIR/Tests/FinderCallbackTests.py"
 swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Tests/IconTests.swift" "$PROJECT_DIR/Assets/AppIcon.png"
 if [[ -f "$PROJECT_DIR/Tests/TestMain.swift" ]]; then
   ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
