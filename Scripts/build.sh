@@ -30,11 +30,18 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos
   "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoArchiveQuickLook -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
-  "$STAGING"/QuickLookExtension/*.swift -framework AppKit -framework QuickLookUI -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
+  "$STAGING"/QuickLookExtension/*.swift "$STAGING/Shared/GaoLocalization.swift" -framework AppKit -framework QuickLookUI -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
+python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$APP/Contents/Resources" "$EXT/Contents/Resources" "$QL_EXT/Contents/Resources"
+python3 - "$APP/Contents/Resources/GaoCapabilities.json" "$APP_VERSION" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=json.loads(p.read_text()); data['appVersion']=sys.argv[2]
+p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+PY
 cp "$PROJECT_DIR/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/AppIcon.png"
 [[ ! -f "$PROJECT_DIR/使用说明.txt" ]] || cp "$PROJECT_DIR/使用说明.txt" "$APP/Contents/Resources/使用说明.txt"

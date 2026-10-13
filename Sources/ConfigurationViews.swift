@@ -92,8 +92,8 @@ import UniformTypeIdentifiers
         VStack(alignment: .leading, spacing: 16) {
             Text("编辑输入规则").font(.title2.bold())
             Form {
-                Picker("执行动作", selection: $draft.actionID) { ForEach(store.actionChoices) { Text($0.title).tag($0.id) } }
-                Picker("触发方式", selection: $draft.trigger) { ForEach(InputTrigger.allCases) { Text($0.title).tag($0) } }
+                Picker("执行动作", selection: $draft.actionID) { ForEach(store.actionChoices) { Text(L10n.text($0.title)).tag($0.id) } }
+                Picker("触发方式", selection: $draft.trigger) { ForEach(InputTrigger.allCases) { Text(L10n.text($0.title)).tag($0) } }
                     .onChange(of: draft.trigger) { _, type in
                         if type == .gesture { draft.modifiers = UInt64(NSEvent.ModifierFlags.option.rawValue) }
                         else if type == .hotkey && draft.modifiers == 0 { draft.modifiers = UInt64(NSEvent.ModifierFlags([.command, .option]).rawValue) }
@@ -298,7 +298,7 @@ private struct WorkflowActionChoice: Identifiable {
         VStack(alignment:.leading,spacing:10) {
             HStack {
                 Text("\(number)").font(.headline).foregroundStyle(.secondary).frame(width:24)
-                Picker("动作",selection:$step.actionID) { ForEach(WorkflowActionChoice.all) { Text($0.title).tag($0.id) } }.labelsHidden()
+                Picker("动作",selection:$step.actionID) { ForEach(WorkflowActionChoice.all) { Text(L10n.text($0.title)).tag($0.id) } }.labelsHidden()
                 Button(action:moveUp) { Image(systemName:"arrow.up") }.disabled(!canMoveUp).help("上移")
                 Button(action:moveDown) { Image(systemName:"arrow.down") }.disabled(!canMoveDown).help("下移")
                 Button(role:.destructive,action:remove) { Image(systemName:"trash") }
@@ -368,7 +368,7 @@ private struct WorkflowActionChoice: Identifiable {
     }
     private func settingsItem(_ id:Int,_ title:String,_ icon:String)->some View {
         Button { selectedTab=id } label: {
-            Label(title,systemImage:icon).frame(maxWidth:.infinity,alignment:.leading).padding(10)
+            Label(L10n.text(title),systemImage:icon).frame(maxWidth:.infinity,alignment:.leading).padding(10)
                 .background(selectedTab == id ? Color.accentColor.opacity(0.16) : Color.clear,in:RoundedRectangle(cornerRadius:8))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityAddTraits(selectedTab == id ? .isSelected : [])
@@ -390,6 +390,8 @@ private struct WorkflowActionChoice: Identifiable {
                 .onChange(of:store.settings.language) { _, val in
                     if let lang = GaoLanguage(rawValue: val) { GaoLocale.shared.setLanguage(lang) }
                 }
+                Text("部分界面尚未翻译，会显示英文或中文。Finder 菜单随此设置更新；Quick Look 跟随系统语言。")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("显示菜单栏图标",isOn:setting(\.showMenuBarIcon))
                 Picker("菜单栏左键",selection:setting(\.statusBarLeftClick)){Text("操作面板").tag("panel");Text("主窗口").tag("main");Text("剪贴板").tag("clipboard")}
                 Toggle("新建文件提示音",isOn:setting(\.playNewFileSound))
@@ -574,7 +576,7 @@ private struct WorkflowActionChoice: Identifiable {
             Image(systemName: granted ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(granted ? Color.green : Color.secondary).padding(.top, 3)
             VStack(alignment: .leading, spacing: 4) {
-                HStack { Text(title).fontWeight(.medium); Text(granted ? enabledLabel : missingLabel).font(.caption).foregroundStyle(.secondary) }
+                HStack { Text(L10n.text(title)).fontWeight(.medium); Text(L10n.text(granted ? enabledLabel : missingLabel)).font(.caption).foregroundStyle(.secondary) }
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 10)

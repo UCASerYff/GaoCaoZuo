@@ -5,6 +5,10 @@ import Darwin
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
+        try runLocalizationTests()
+        // Existing behavioral fixtures use Chinese diagnostics; resource tests above
+        // exercise explicit language changes independently of the host's language.
+        GaoLocale.shared.setLanguage(.zhHans)
         try runMigrationTests()
         try await runGaoActionTests()
         try runEnhancementIntegrationTests()

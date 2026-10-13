@@ -13,7 +13,7 @@ enum ArchiveQuickLookNative {
     }
     struct Failure:LocalizedError {
         let message:String
-        var errorDescription:String? {message}
+        var errorDescription:String? {L10n.text(message)}
     }
     private final class Input {
         let handle:FileHandle,limits:Limits,deadline:Double,fileSize:Int64

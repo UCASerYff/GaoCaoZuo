@@ -101,14 +101,20 @@ private struct ArchivePasswordExport: Codable {
                     if id.hasSuffix("trash") { options.trashOriginals = true }
                     for source in files {
                         if store.quickCancellationRequested || Task.isCancelled { return outputs }
-                        let hash = try FileTools.fingerprint(source)
+                        // Capture refuses unproven split-stream groups before any
+                        // decoder work or original-file side effect can begin.
+                        let group = options.trashOriginals ? try ArchiveVolumeGroup.capture(source) : nil
+                        let originals = group?.fingerprints ?? []
                         let result = try await withPassword(archive: source, store: store) { password in
                             if id == "archive.extract.here" { return try await store.archive.extractIntoDirectory(archive: source, to: source.deletingLastPathComponent(), password: password, options: options) }
                             let target = try QuickFileActions.uniqueURL(in: source.deletingLastPathComponent(), preferredName: QuickFileActions.extractionFolderName(for: source), isDirectory: true)
                             return [try await store.archive.extract(archive: source, to: target, password: password, selected: nil, options: options)]
                         }
                         try store.record(store.archive.lastResultReceipts); outputs += result
-                        if options.trashOriginals { try Self.trashUnchanged([(source, hash)]) }
+                        if options.trashOriginals {
+                            try group!.verifyUnchanged()
+                            try Self.trashUnchanged(originals)
+                        }
                     }
                     if options.revealResults { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
                 }
@@ -207,9 +213,19 @@ private struct ArchivePasswordExport: Codable {
     func preview(archive: URL, path: String, password: String?, service: ArchiveService) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("gaocaozuo-preview-" + UUID().uuidString, isDirectory: true)
         var options = preferences.extraction; options.allowSafeLinks = false
-        _ = try await service.extract(archive: archive, to: root, password: password, selected: [path], options: options)
-        previewRoots.append(root); previewURL = root.appendingPathComponent(path)
-        previewFiles = [previewURL!]
+        let before = try FileTools.fingerprint(archive)
+        let listing = try await service.list(archive: archive, password: password, options: options)
+        guard let entry = listing.first(where: { $0.path == path }), !entry.isDirectory,
+              entry.symbolicLink == nil, entry.hardLink == nil, entry.size <= 128 * 1024 * 1024 else {
+            throw ArchiveError.invalid("内容预览只接受不超过 128 MiB 的普通文件；较大项目请明确提取后打开。")
+        }
+        do {
+            _ = try await service.extract(archive: archive, to: root, password: password, selected: [path], options: options)
+            let file = root.appendingPathComponent(path)
+            let identity = try EnhancedFileTools.checked(file)
+            guard identity.st_size <= 128 * 1024 * 1024, try FileTools.fingerprint(archive) == before else { throw ArchiveError.invalid("预览内容或原压缩包已变化，未显示不完整结果。") }
+            previewRoots.append(root); previewURL = file; previewFiles = [file]
+        } catch { try? FileManager.default.removeItem(at: root); throw error }
     }
 
     func clearPreviews() { previewURL = nil; previewFiles = []; previewRoots.forEach { try? FileManager.default.removeItem(at: $0) }; previewRoots = [] }
@@ -226,11 +242,36 @@ private struct ArchivePasswordExport: Codable {
         let controller = NSWindowController(window: window); windows.append(controller); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private static func dateSuffix() -> String { let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; return f.string(from: Date()) }
-    static func trashUnchanged(_ originals: [(URL, String)]) throws {
+    static func trashUnchanged(_ originals: [(URL, String)], moveToTrash: ((URL) throws -> URL)? = nil) throws {
         for (url, hash) in originals {
             let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
             guard current == hash else { throw FileToolsError.changed(url) }
         }
-        for (url, _) in originals { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+        var moved: [(URL,URL,String)] = []
+        do {
+            for (url, hash) in originals {
+                let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
+                guard current == hash else { throw FileToolsError.changed(url) }
+                let trashURL: URL
+                if let moveToTrash { trashURL = try moveToTrash(url) }
+                else {
+                    var trashed: NSURL?
+                    try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
+                    guard let value = trashed as URL? else { throw ArchiveError.invalid("废纸篓没有返回可恢复路径；请保留当前结果并检查原件。") }
+                    trashURL = value
+                }
+                moved.append((url, trashURL, hash))
+            }
+        } catch {
+            var restored = true
+            for (original, trashed, hash) in moved.reversed() {
+                do {
+                    guard (try? FileManager.default.attributesOfItem(atPath: original.path)) == nil,
+                          try FileTools.archiveFingerprint(trashed) == hash else { restored = false; continue }
+                    try FileManager.default.moveItem(at: trashed, to: original)
+                } catch { restored = false }
+            }
+            throw ArchiveError.invalid(restored ? "原件后处理失败，已恢复本批已移动原件；解压结果保留。" : "原件后处理部分失败；已尽量恢复，本批结果与剩余废纸篓原件均保留，请复核。")
+        }
     }
 }

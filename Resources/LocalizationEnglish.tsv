@@ -1,0 +1,499 @@
+# Chinese key<TAB>English translation. Untranslated copy deliberately falls back to its source.
+设置…	Settings…
+让 Mac 的常用操作，少点几下。	Everyday Mac actions in fewer clicks.
+操作面板	Action Panel
+设置 ⌘,	Settings ⌘,
+操作提示	Action Notice
+知道了	OK
+等待解压密码	Waiting for Archive Password
+清除等待任务	Clear Waiting Tasks
+取消任务	Cancel Task
+停止压缩或解压，同时取消等待任务	Stop the archive task and cancel waiting tasks
+上次结果	Last Results
+在 Finder 中显示最近生成或处理的文件	Reveal the most recent results in Finder
+保持唤醒已开启	Keep Awake Is On
+拖入文件，或点击选择文件	Drop files here or choose files
+选择文件…	Choose Files…
+清除	Clear
+搜索动作、关键词或拼音	Search actions, keywords or pinyin
+暂无匹配动作	No Matching Actions
+可以更换关键词，或将动作加入收藏。	Try another keyword or add an action to Favorites.
+窗口、锁屏等功能按需使用系统授权。	Window and lock-screen actions request system access when needed.
+常用目录	Favorite Folders
+添加目录…	Add Folder…
+收藏常用目录，快速打开或在复制、移动时选择。	Save favorite folders for opening, copying and moving files.
+复制到这里	Copy Here
+移动到这里	Move Here
+移除收藏	Remove Favorite
+文件模板	File Templates
+管理模板…	Manage Templates…
+在当前目录直接新建，自动避开同名文件	Create in the current folder without overwriting existing files
+收藏动作	Favorite Actions
+窗口控制已授权	Window Control Access Granted
+窗口控制需要辅助功能授权	Window Control Requires Accessibility Access
+操作前台目标窗口；先切到目标应用，再使用快捷键或操作面板。特殊窗口可能无法调整。	Switch to the target app before using a shortcut or the action panel. Some windows cannot be resized.
+检查与授权	Check Access
+搜索操作…	Search Actions…
+↑↓ 选择 · 回车执行	↑↓ Select · Return to Run
+打开主窗口	Open Main Window
+记录新复制的内容	Record Newly Copied Content
+搜索历史	Search History
+历史保存在本机。来源标记为机密或临时的内容会跳过；可在设置中排除应用。	History stays on this Mac. Confidential or temporary content is skipped. Exclude apps in Settings.
+清除未固定历史…	Clear Unpinned History…
+复制	Copy
+已复制	Copied
+纯文本	Plain Text
+已复制为纯文本	Copied as Plain Text
+粘贴	Paste
+等待新的复制内容	Waiting for New Clipboard Content
+历史记录尚未启用	Clipboard History Is Off
+启用后开始记录；也可以直接使用下方常用文本。	Enable history to start recording, or use a saved snippet below.
+常用文本	Saved Snippets
+名称	Name
+文本内容	Text Content
+已复制常用文本	Snippet Copied
+清除未固定的剪贴板历史？	Clear unpinned clipboard history?
+固定内容会保留；清除会同时移除本应用保存的对应图片附件。	Pinned content stays. Images belonging to cleared entries are also removed.
+恢复前会核验目标内容；原位置冲突、文件变化或文件缺失时停止。新建、复制和转换的结果恢复时移入废纸篓。	Recovery verifies files and stops on conflicts, changes or missing items. Newly created results are moved to Trash.
+恢复…	Recover…
+恢复这次操作？	Recover this operation?
+恢复	Recover
+暂无恢复记录	No Recovery Records
+选择要限定或排除的应用	Choose an app to limit or exclude
+把常用动作放到顺手的位置。按应用设置的规则优先于全局规则。	Put actions within reach. App-specific rules take priority over global rules.
+添加规则	Add Rule
+启用	Enable
+所有应用	All Apps
+触发方式冲突，此规则暂不执行	Trigger conflict: this rule is paused
+编辑	Edit
+还没有输入规则	No Input Rules
+添加一个快捷键来打开操作面板。	Add a shortcut to open the action panel.
+打开设置	Open Settings
+输入监听已暂停	Input Monitoring Paused
+输入监听权限可用	Input Monitoring Access Available
+尚未获得输入监听权限	Input Monitoring Access Required
+设置权限	Set Up Access
+继续监听	Resume Monitoring
+暂停监听	Pause Monitoring
+请选择一个有效动作。	Choose a valid action.
+应用标识应为有效 Bundle ID，可使用选择应用按钮。	Enter a valid bundle ID, or use Choose App.
+同一应用已有相同触发方式，请更换按键或停用冲突规则。	This app already has the same trigger. Change it or disable the conflicting rule.
+编辑输入规则	Edit Input Rule
+执行动作	Action to Run
+触发方式	Trigger
+快捷键	Keyboard Shortcut
+点击录制框，再按下修饰键与普通按键。Esc 取消录制。	Click to record, then press a modifier and a key. Esc cancels recording.
+修饰键	Modifiers
+鼠标按钮	Mouse Button
+中键（第 3 键）	Middle Button (Button 3)
+拖动方向	Drag Direction
+向左	Left
+向右	Right
+向上	Up
+向下	Down
+按住 Option 和右键拖动至少 70 点，再松开右键。	Hold Option and drag with the right button at least 70 points, then release it.
+限定应用（空白为全部）	Limit to App (blank for all)
+选择应用…	Choose App…
+启用此规则	Enable This Rule
+编辑期间已暂停输入规则，关闭后恢复之前的状态。	Input rules are paused while editing and return to their previous state when closed.
+点击录制快捷键	Click to Record Shortcut
+点击后按下快捷键，Esc 取消。	Click, then press a shortcut. Esc cancels.
+按下快捷键…（Esc 取消）	Press Shortcut… (Esc to Cancel)
+请同时按住 ⌘ / ⌥ / ⌃ / ⇧	Also hold ⌘ / ⌥ / ⌃ / ⇧
+把打开应用、窗口排列与常用文字串成一步。	Combine app launching, window layouts and snippets into one action.
+添加模板	Add Template
+左右阅读	Side-by-Side Reading
+写作与保持唤醒	Writing and Keep Awake
+新组合操作	New Workflow
+新建	New
+停止	Stop
+运行	Run
+步骤按顺序执行，失败时停止。停止或失败会保留已经完成的步骤，不会整体回滚。保持唤醒步骤会切换当前状态；运行前请查看当前状态。	Steps run in order and stop on failure. Completed steps are kept. Keep Awake toggles its current state; check before running.
+打开文件、文件夹或应用	Open File, Folder or App
+打开网址	Open Website
+复制文字	Copy Text
+运行系统快捷指令	Run System Shortcut
+等待	Wait
+切换保持唤醒	Toggle Keep Awake
+请填写组合操作名称。	Enter a workflow name.
+组合操作须包含 1–50 个步骤。	A workflow must have 1–50 steps.
+编辑组合操作	Edit Workflow
+添加步骤	Add Step
+动作	Action
+上移	Move Up
+下移	Move Down
+文件、目录或应用的绝对路径	Absolute Path to a File, Folder or App
+选择…	Choose…
+已存在的系统快捷指令名称	Existing System Shortcut Name
+执行的是您在“快捷指令”应用中创建的指令。	Runs a shortcut you created in the Shortcuts app.
+秒	Seconds
+外观与剪贴板	Appearance & Clipboard
+输入	Input
+压缩	Archives
+右键	Finder Menu
+布局	Layouts
+权限	Access
+数据	Data
+关于	About
+外观与语言	Appearance & Language
+界面模式	Appearance
+跟随系统	System Default
+浅色	Light
+深色	Dark
+界面语言 (Language)	Interface Language
+显示菜单栏图标	Show Menu Bar Icon
+菜单栏左键	Menu Bar Left Click
+主窗口	Main Window
+新建文件提示音	Play Sound After File Creation
+登录时启动	Launch at Login
+剪贴板历史	Clipboard History
+记录剪贴板历史	Record Clipboard History
+关闭后停止采集，已有历史继续保留。启用后只在本机保存，系统标记为敏感或临时的内容会跳过。	Turning this off stops recording and keeps existing history. History stays local; sensitive or temporary content is skipped.
+固定记录不参与到期清理。以下应用在前台时不记录剪贴板。	Pinned entries do not expire. Clipboard recording pauses when these apps are in front.
+添加排除应用…	Add Excluded App…
+输入规则排除	Excluded Apps for Input Rules
+以下应用在前台时，暂停所有快捷键、鼠标按钮和绘图手势规则。可用于游戏、设计软件或已有专属手势的应用。	Pause all shortcuts, mouse buttons and drawing gestures while these apps are in front.
+添加输入排除应用…	Add Input Exclusion…
+请在系统设置的登录项中允许搞操作启动。	Allow GaoCaoZuo in Login Items in System Settings.
+本机资料	Local Data
+资料位置	Data Location
+在 Finder 中打开资料目录	Reveal Data Folder in Finder
+settings.json 保存模板、输入规则和组合操作；receipts.json 保存恢复记录；Clipboard 文件夹保存历史及 PNG/RTF 附件。密码保存在 macOS 钥匙串。	settings.json stores templates, input rules and workflows. receipts.json stores recovery records. Clipboard stores history and PNG/RTF attachments. Passwords stay in Keychain.
+安全备份	Verified Backups
+正式更新安装前，安全安装器会完整备份资料、全部附件及偏好设置，并逐文件校验。备份保存在资料同级的 GaoCaoZuo-Backups 目录。	Before updates, the installer backs up and verifies all data, attachments and preferences in the adjacent GaoCaoZuo-Backups folder.
+查看已有备份	View Existing Backups
+尚未生成安装备份。首次安全安装会记录资料状态。	No installation backups yet. The first safe installation records the data state.
+本版不提供覆盖式导入或一键重置。保留资料与安全备份后，再处理读取错误。	This version does not overwrite-import or reset data. Keep data and backups before resolving read errors.
+资料需要检查	Data Needs Review
+让 Mac 上的操作更简单	Make Mac Actions Simpler
+文件、窗口、压缩、剪贴板与常用动作，集中到一个入口。	Files, windows, archives, clipboard and everyday actions in one place.
+使用说明	User Guide
+打开使用说明	Open User Guide
+窗口拖动与吸附	Window Dragging & Snapping
+Option＋左键拖动前台窗口	Option + Left Drag to Move Front Window
+按住 Option，在前台目标窗口内按住左键拖动，可移动窗口；松开左键结束。	Hold Option and left-drag inside the front window to move it. Release the button to finish.
+拖动到屏幕边缘吸附	Snap Windows at Screen Edges
+拖动窗口接近屏幕边缘时，按支持的区域排列窗口。此功能默认关闭，可与快捷键窗口动作独立设置。	Arrange windows near supported screen edges. Off by default; configured separately from keyboard layouts.
+所需权限	Required Access
+辅助功能	Accessibility
+已授权	Granted
+尚未授权	Not Granted
+设置辅助功能权限	Set Up Accessibility Access
+输入监听	Input Monitoring
+权限可用	Access Available
+设置输入监控权限	Set Up Input Monitoring
+使用边界	Limitations
+输入排除应用与暂停监听同样适用于窗口拖动和吸附。可在“外观与剪贴板”页管理排除应用。	Input exclusions and pause also apply to window dragging and snapping. Manage exclusions in Appearance & Clipboard.
+所需权限已就绪	Required Access Is Ready
+完成授权，操作更顺手	Grant Access to Enable Actions
+重新检测	Check Again
+继续完成授权	Complete Setup
+调整与拖动窗口、自动粘贴、锁定屏幕。	Arrange and drag windows, paste automatically and lock the screen.
+输入监控	Input Monitoring
+识别快捷键、鼠标按钮和方向手势，不记录键盘输入内容。	Recognize shortcuts, mouse buttons and direction gestures without recording typed content.
+输入监听当前已暂停，可在快捷键与手势页恢复。	Input monitoring is paused. Resume it in Shortcuts & Gestures.
+输入监听所需权限已具备。	Input monitoring access is ready.
+输入监听当前不可用。	Input monitoring is unavailable.
+当前监听可通过辅助功能权限工作；输入监控这一项尚未授权。	Monitoring currently works through Accessibility; Input Monitoring access is not granted.
+Finder 扩展	Finder Extension
+在 Finder 右键菜单中直接操作文件。	Use file actions directly from Finder’s context menu.
+已启用	Enabled
+未启用	Disabled
+系统中的名称为“搞操作访达扩展”。在主目录及系统支持的位置显示菜单；部分云盘或系统管理目录可能不显示。	Listed as GaoCaoZuo Finder Extension. Menus appear in your home folder and supported locations; some cloud or managed folders may not show them.
+文件与文件夹	Files & Folders
+未授权	Not Granted
+查看设置	View Settings
+去开启	Enable
+当前只有一个显示器。	Only one display is connected.
+此动作需要窗口状态操作，不能仅计算尺寸。	This action requires a window state change, not just frame calculation.
+不能将搞操作自己的窗口作为本次操作目标。	GaoCaoZuo cannot target its own window for this action.
+前台应用已变化，已停止切换窗口；请重新选择需要操作的窗口。	The front app changed. Window switching stopped; select the target again.
+窗口布局已调整，但系统拒绝激活目标应用。请手动切回该窗口查看。	The layout changed, but the system refused to activate the target app. Switch back manually to inspect it.
+请在系统设置的“隐私与安全性 → 辅助功能”中允许搞操作。	Allow GaoCaoZuo in System Settings → Privacy & Security → Accessibility.
+窗口操作正在进行，请稍候再试。	A window operation is in progress. Try again shortly.
+窗口操作需要辅助功能权限，请先在设置中授权。	Window actions need Accessibility access. Grant it in Settings.
+没有可操作的目标窗口。请先切换到需要调整的窗口，再打开操作面板。	No target window is available. Switch to the window you want to arrange, then open the action panel.
+请先退出目标窗口的全屏模式，再调整布局。	Exit the target window’s full-screen mode before arranging it.
+这个窗口还没有可恢复的位置记录。	No saved position is available for this window.
+拖动窗口与边缘吸附需要辅助功能权限。	Window dragging and snapping require Accessibility access.
+这个应用没有可读取的标准前台窗口，无法开始拖动或吸附。	This app exposes no readable standard front window. Dragging or snapping cannot start.
+目标应用限制了窗口移动范围，已停止拖动；可用“恢复原位置”返回。	The app limits window movement. Dragging stopped; use Restore Position to return.
+原目标应用已经退出。	The target app has quit.
+自定义窗口布局不存在。	The custom window layout no longer exists.
+自定义布局需要辅助功能权限。	Custom layouts require Accessibility access.
+没有可操作的目标窗口。	No target window is available.
+没有可用显示器。	No display is available.
+目标应用	Target App
+辅助功能权限已失效，已停止窗口操作。	Accessibility access was lost. Window actions stopped.
+目标应用不支持将这个窗口带到前台。请手动切回后重试。	The app cannot bring this window to the front. Switch back manually and try again.
+前台应用已变化，已停止这次窗口布局。	The front app changed. This layout operation stopped.
+前台应用已变化，已停止切换窗口。	The front app changed. Window switching stopped.
+目标应用拒绝将窗口带到前台。	The target app refused to bring the window to the front.
+系统拒绝激活目标应用。	The system refused to activate the target app.
+目标窗口不支持标准关闭按钮。	The target window has no standard close button.
+目标窗口不提供全屏状态。	The target window exposes no full-screen state.
+无法读取目标应用窗口列表。	The target app’s window list could not be read.
+目标应用只有一个窗口。	The target app has only one window.
+原目标应用已经退出或失效，请重新选择窗口。	The target app quit or became invalid. Select a window again.
+原目标窗口已经失效，请重新选择窗口。	The target window is no longer valid. Select it again.
+原目标窗口已关闭，或应用不提供标准窗口列表；请重新选择可操作的窗口。	The window closed or the app exposes no standard window list. Select another target.
+辅助功能权限已失效，已停止窗口拖动。	Accessibility access was lost. Window dragging stopped.
+前台应用已变化，已取消这次窗口拖动。	The front app changed. This drag was cancelled.
+请先退出目标窗口的全屏模式，再使用拖动或吸附。	Exit full-screen mode before dragging or snapping this window.
+无法读取目标窗口的位置；这个应用可能不支持标准辅助功能窗口操作。	The target window’s position is unreadable. This app may not support standard Accessibility window actions.
+目标窗口的位置数据无效。	The target window’s position data is invalid.
+目标应用拒绝调整窗口尺寸。	The target app refused to resize the window.
+目标应用拒绝移动窗口。	The target app refused to move the window.
+锁定屏幕快捷操作需要辅助功能权限。	Lock Screen requires Accessibility access.
+无法发送系统锁屏快捷键。	The system lock shortcut could not be sent.
+无法解除保持唤醒，请退出搞操作以释放请求。	Keep Awake could not be released. Quit GaoCaoZuo to release the request.
+系统拒绝了保持唤醒请求。	The system refused the Keep Awake request.
+搜索剪贴板…	Search Clipboard…
+关闭 Esc	Close Esc
+历史记录未开启	History Is Off
+开启历史	Enable History
+暂无剪贴板历史	No Clipboard History
+没有匹配内容	No Matching Content
+可直接粘贴当前剪贴板的纯文本，或复制下方常用文本。	Paste the current clipboard as plain text or copy a saved snippet below.
+试试其他关键词。	Try another keyword.
+常用文本 · 点击复制	Saved Snippets · Click to Copy
+↑↓ 选择 · 回车粘贴	↑↓ Select · Return to Paste
+粘贴当前纯文本	Paste Current Plain Text
+管理	Manage
+已固定	Pinned
+点击直接粘贴；右键查看更多操作	Click to paste; right-click for more actions
+粘贴为纯文本	Paste as Plain Text
+复制为纯文本	Copy as Plain Text
+取消固定	Unpin
+固定	Pin
+删除	Delete
+显示结果	Show Results
+取消等待	Cancel Waiting
+打开搞操作	Open GaoCaoZuo
+这个压缩包需要密码	This Archive Requires a Password
+密码不正确，请重试。	Incorrect password. Try again.
+压缩包密码	Archive Password
+仅用于这次解压	Used Only for This Extraction
+继续解压	Continue Extraction
+管理文件模板	Manage File Templates
+从模板新建	Create from Template
+在 Finder 显示	Reveal in Finder
+正在处理，请等待…	Processing, Please Wait…
+目标同名文件不会被覆盖	Existing files will not be overwritten
+完成	Done
+目标目录	Destination Folder
+目录完整路径	Full Folder Path
+请选择模板	Choose a Template
+文件名称	File Name
+初始内容	Initial Content
+创建文件夹	Create Folder
+创建文件	Create File
+创建	Create
+请输入有效的文件夹名称。	Enter a valid folder name.
+先检查全部文件是否重名，遇到冲突会停止。移动与复制都会保存恢复记录。	All names are checked first. Conflicts stop the operation. Copy and move save recovery records.
+移动文件	Move Files
+复制文件	Copy Files
+移动	Move
+命名模板	Name Pattern
+{name} 原名称 · {ext} 扩展名 · {n} 序号 · {n:03} 三位补零；同名冲突停止。	{name} original name · {ext} extension · {n} number · {n:03} zero-padded number. Conflicts stop renaming.
+按预览重命名	Rename as Previewed
+重命名	Rename
+压缩包名称	Archive Name
+格式	Format
+加密密码（留空不加密）	Password (blank for no encryption)
+将密码保存到系统钥匙串	Save Password in Keychain
+压缩等级	Compression Level
+每个项目分别压缩	Compress Each Item Separately
+名称附加日期	Append Date to Name
+完成后显示结果	Show Results When Done
+核验完成后将原件移到废纸篓	Move Originals to Trash After Verification
+忽略文件模式	Ignore Patterns
+每行一条，支持 * 和 ?，例如 .DS_Store、*.tmp	One pattern per line. Supports * and ?, such as .DS_Store and *.tmp
+分卷压缩	Split Archive
+固实压缩	Solid Compression
+加密文件名	Encrypt File Names
+ZIP 使用 AES256，可使用中文密码；部分系统自带解压器不支持 AES。7Z 可分别选择文件名加密与固实压缩。	ZIP uses AES256 and accepts Unicode passwords; some system extractors do not support AES. 7Z supports file-name encryption and solid compression.
+开始压缩	Start Compression
+请仅选择一个压缩包或首个 .001 分卷。	Choose one archive or its first .001 volume.
+新的解压文件夹名称	New Extraction Folder Name
+压缩包密码（需要时填写）	Archive Password (if needed)
+解压预算与编码	Extraction Limits & Encoding
+展开多层 TAR 容器	Expand Nested TAR Containers
+允许包内安全链接	Allow Safe Archive Links
+文件名编码	File Name Encoding
+自动	Automatic
+刷新列表	Refresh List
+查看包内文件	Browse Archive
+全部解压	Extract All
+全选文件	Select All Files
+清除勾选	Clear Selection
+列表仅展示前 2000 项；全部解压仍处理完整内容。	The list shows the first 2,000 entries. Extract All still processes the entire archive.
+查看任务日志	View Task Log
+请输入有效的压缩包名称。	Enter a valid archive name.
+压缩包已生成，但未取得恢复记录，请核验输出。	The archive was created, but no recovery record could be saved. Verify the output.
+压缩完成	Compression Complete
+请输入有效的新文件夹名称。	Enter a valid new folder name.
+解压结果已生成，但未取得恢复记录，请核验输出。	Extraction finished, but no recovery record could be saved. Verify the output.
+解压完成	Extraction Complete
+输出格式	Output Format
+限制最长边	Limit Longest Edge
+保留原图片，输出为新文件。多帧与多页图片会提示；转换会去除源图片定位等元数据。	Original images are kept. Multi-frame or multi-page images show a notice. Conversion removes location and other source metadata.
+转换图片	Convert Images
+图片转换	Image Conversion
+为所选普通文件计算 SHA-256，不修改文件内容。	Calculate SHA-256 for selected regular files without modifying their content.
+开始计算	Calculate
+复制校验值	Copy Checksums
+输入文本或完整网址	Enter Text or a Full URL
+生成并保存 PNG…	Generate and Save PNG…
+生成二维码	Generate QR Code
+新增	Add
+新模板	New Template
+模板名称	Template Name
+默认文件名（含扩展名）	Default File Name (with extension)
+保存模板	Save Template
+打开操作面板	Open Action Panel
+搜索动作或拖入文件	Search Actions or Drop Files
+新建文本文件	New Text File
+立即在当前目录创建，重名自动编号	Create in the current folder; automatically number duplicate names
+新建 Markdown	New Markdown
+立即新建 .md 文件，重名自动编号	Create a .md file and number duplicate names automatically
+自定义新建…	Custom New File…
+指定名称与初始内容	Set the Name and Initial Content
+自定义内容与扩展名	Custom Content and Extension
+新建文件夹	New Folder
+立即创建，不再询问名称	Create Immediately
+复制文件路径	Copy File Paths
+多个路径按行排列	One Path per Line
+复制文件名称	Copy File Names
+包含文件扩展名	Include File Extensions
+复制到目录	Copy to Folder
+预检重名，保留原文件	Check for Conflicts and Keep Originals
+移动到目录	Move to Folder
+保留可核验的恢复记录	Keep Verified Recovery Records
+批量重命名	Batch Rename
+名称与序号模板，执行前预览	Name and Number Patterns with Preview
+在终端打开	Open in Terminal
+进入所选目录	Use the Selected Working Directory
+定位当前选中的文件	Reveal Selected Files
+原位置直接生成，自动避开同名文件	Create Alongside Originals without Name Conflicts
+原位置直接生成，无需设置	Create Alongside Originals
+加密、分卷与固实压缩	Encryption, Split Volumes and Solid Compression
+自动解到同目录，支持多选压缩包	Extract Alongside Originals; Multiple Archives Supported
+选择位置或提取部分文件	Choose a Destination or Extract Selected Entries
+预览压缩包	Preview Archive
+查看列表并选择提取	Browse and Extract Selected Entries
+转为 PNG	Convert to PNG
+原位置生成新图，保留原文件	Create a New Image and Keep the Original
+转为 JPEG	Convert to JPEG
+转为 HEIC	Convert to HEIC
+转为 TIFF	Convert to TIFF
+自定义图片转换…	Custom Image Conversion…
+立即计算并复制文件校验值	Calculate and Copy Checksums
+剪贴板转二维码	Clipboard to QR Code
+生成PNG并复制图片，保存到当前目录	Create and Copy a PNG in the Current Folder
+自定义二维码…	Custom QR Code…
+将文本或网址保存为 PNG	Save Text or URL as PNG
+查看剪贴板	View Clipboard
+搜索历史与固定内容	Search History and Pinned Content
+去除格式后直接粘贴到目标应用	Paste Plain Text into the Target App
+只移除剪贴板格式，不发送粘贴	Remove Clipboard Formatting without Pasting
+阻止自动系统睡眠	Prevent Automatic System Sleep
+锁定屏幕	Lock Screen
+发送系统锁屏请求	Send System Lock Request
+电脑睡眠	Sleep Mac
+发送系统睡眠请求	Send System Sleep Request
+查看组合操作	View Workflows
+编辑并运行多个动作	Edit and Run Multiple Actions
+系统控制	System Controls
+弹出访达操作菜单	Show Finder Action Menu
+在当前访达目录选择动作	Choose an Action for the Current Finder Folder
+添加到常用目录	Add to Favorite Folders
+收藏当前目录	Favorite Current Folder
+恢复本次运行保存的位置	Restore Position Saved in This Session
+调整前台目标窗口	Arrange the Target Window
+选择一个动作开始	Choose an Action to Start
+设置来自更新版本，已保留原资料并停止写入。	Settings came from a newer version. Original data is kept and writes are blocked.
+恢复记录来自更新版本，已停止写入。	Recovery records came from a newer version. Writes are blocked.
+自定义窗口布局	Custom Window Layout
+打开所选文件或目录	Open Selected Files or Folders
+选择要操作的文件或文件夹	Choose Files or Folders
+选择目录	Choose Folder
+收藏一个常用目录	Add a Favorite Folder
+保持唤醒已关闭	Keep Awake Is Off
+已发送系统请求	System Request Sent
+已发送纯文本粘贴	Plain Text Paste Sent
+剪贴板没有文字	Clipboard Has No Text
+资料保护模式，无法收藏目录	Data Protection Mode: Cannot Save Favorite
+已添加到常用目录	Added to Favorite Folders
+常用目录已失效	Favorite Folder Is Unavailable
+移动到常用目录	Move to Favorite Folder
+复制到常用目录	Copy to Favorite Folder
+已创建模板文件	Template File Created
+请先完成当前自定义操作	Finish the Current Custom Action First
+找不到系统终端。	System Terminal Could Not Be Found.
+任务正在进行	Task in Progress
+已恢复操作	Operation Recovered
+已请求停止组合操作；已完成的步骤保留	Workflow Stop Requested; Completed Steps Are Kept
+已有任务正在运行	A Task Is Already Running
+文件或应用无法打开，请检查路径。	The file or app cannot be opened. Check the path.
+请输入完整的 http/https 网址。	Enter a complete http/https URL.
+请填写系统快捷指令名称。	Enter a system shortcut name.
+等待时间应为 0–30 秒。	Wait time must be 0–30 seconds.
+组合操作包含不支持的步骤，请重新选择动作。	The workflow contains an unsupported step. Choose another action.
+系统快捷指令失败、已取消或超过两分钟，请在快捷指令应用中检查。	The shortcut failed, was cancelled or exceeded two minutes. Check it in Shortcuts.
+资料暂时不可写入	Data Is Temporarily Read-Only
+等待任务已满，请稍后再试	The Waiting Queue Is Full. Try Again Later.
+资料不可写入，等待任务已停止	Data Is Read-Only. Waiting Tasks Stopped.
+已停止；已完成的结果保留	Stopped; Completed Results Are Kept
+已清除等待任务	Waiting Tasks Cleared
+请先选择文件	Choose Files First
+新建文件	New File
+解压	Extract
+选择目标目录，选定后立即执行	Choose a Destination Folder to Run Immediately
+目标目录不可用	Destination Folder Is Unavailable
+计算并复制 SHA-256	Calculate and Copy SHA-256
+剪贴板没有文字或网址	Clipboard Contains No Text or URL
+生成并复制二维码	Generate and Copy QR Code
+二维码已保存，但未能复制到剪贴板。	The QR code was saved, but could not be copied to the clipboard.
+解压任务状态异常。	The extraction task is in an invalid state.
+在“辅助功能”中开启搞操作，再返回此处继续。	Enable GaoCaoZuo in Accessibility, then return here.
+在“输入监控”中开启搞操作；系统若要求重新打开应用，请按提示操作。	Enable GaoCaoZuo in Input Monitoring. Restart the app if the system asks.
+在系统扩展管理中启用“搞操作访达扩展”，再返回此处检查。	Enable GaoCaoZuo Finder Extension in System Extensions, then return to check.
+未能打开系统设置，请手动进入“隐私与安全性”开启对应权限。	System Settings could not be opened. Grant the required access manually in Privacy & Security.
+关于搞操作	About GaoCaoZuo
+退出搞操作	Quit GaoCaoZuo
+显示主窗口	Show Main Window
+撤销	Undo
+全选	Select All
+最小化	Minimize
+帮助	Help
+排列当前窗口	Arrange Current Window
+运行组合操作	Run Workflow
+恢复快捷键与手势	Resume Shortcuts & Gestures
+暂停快捷键与手势	Pause Shortcuts & Gestures
+检查权限…	Check Access…
+解压密码	Extraction Password
+当前目录的快捷操作	Actions for the Current Folder
+用百度翻译	Translate with Baidu
+用谷歌翻译	Translate with Google
+文字转二维码	Text to QR Code
+用搞截图截取区域	Capture Region with GaoJieTu
+用搞截图标注图片	Annotate Image with GaoJieTu
+用搞机灵分析所选目录	Inspect Folder with GaoJiLing
+部分界面尚未翻译，会显示英文或中文。Finder 菜单随此设置更新；Quick Look 跟随系统语言。	Some interface text is still untranslated and falls back to English or Chinese. Finder menus follow this setting; Quick Look follows the system language.
+已存在同名项目，未覆盖：%@	An item with this name already exists and was not overwritten: %@
+文件已发生变化，为保护资料无法恢复：%@	The file changed. Recovery stopped to protect your data: %@
+暂不处理符号链接、特殊文件或无法读取的项目：%@	Symbolic links, special files and unreadable items are not supported here: %@
+选择其他目录…	Choose Another Folder…
+添加或选择其他应用…	Add or Choose Another App…
+管理与导入模板…	Manage and Import Templates…
+用搞操作打开	Open in GaoCaoZuo
+此处只读目录。包内内容预览、选取、提取和增删在搞操作主应用完成；打开后采用你的压缩包打开设置。	This is a read-only listing. Content previews, selection, extraction and editing are handled in the main app, using your archive opening preference.
+主应用位置无法验证，请在 Finder 中选择搞操作打开。	The main app location could not be verified. Choose GaoCaoZuo in Finder to open this archive.
+无法打开主应用；目录预览仍可使用。	The main app could not be opened. This directory preview is still available.
+大小未知	Unknown Size
+部分大小未知	Some Sizes Are Unknown
+仅显示前 4000 项，完整目录请用搞操作打开。	Only the first 4,000 entries are shown. Open in GaoCaoZuo for the full listing.
+%ld 项 ·	%ld entries ·
+已列出 %ld 项 ·	%ld listed entries ·
+展开约 %@	Expanded size: %@

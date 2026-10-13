@@ -181,6 +181,7 @@ struct ArchivePreferencesView: View {
                 Picker("旧压缩包文件名编码", selection: $controller.preferences.extraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? "自动" : $0).tag($0) } }
                 Toggle("解压完成后显示结果目录", isOn: $controller.preferences.extraction.revealResults)
                 Toggle("解压完成并核验后将原包移到废纸篓", isOn: $controller.preferences.extraction.trashOriginals)
+                Text("ZIP/7Z 分卷只支持保留原件解压；自动原件后处理尚未支持。").font(.caption).foregroundStyle(.secondary)
                 Text("重名项目会停止，不会覆盖原有文件。预算调整后仍会核验实际输出和链接安全。").font(.caption).foregroundStyle(.secondary)
             }
             Section("密码与打开方式") {

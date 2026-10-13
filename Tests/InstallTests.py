@@ -204,6 +204,84 @@ def registration_regressions(installer, root):
     assert record["state"] == "rolled_back" and record["failed_candidate"]["removed_after_registration"]
     assert not stage.exists() and installer.inventory(target, permit_symlinks=True) == old_inventory
 
+    # Every durable prepared move boundary can be rolled back. A prepared
+    # transaction must never be accepted as GUI-verified.
+    for boundary in ("before-move", "old-moved", "new-moved", "first-before-move"):
+        target, stage, previous, path = pending("prepared-" + boundary)
+        record = json.loads(path.read_text())
+        old_inventory = record["previous_inventory"]
+        if boundary != "new-moved":
+            target.rename(stage / "candidate.app")
+        if boundary == "before-move":
+            previous.rename(target)
+        elif boundary == "first-before-move":
+            shutil.rmtree(previous)
+            record["had_previous"] = False
+            record.pop("previous_inventory")
+        record["state"] = "prepared"
+        installer.atomic_json(path, record)
+        with unittest.mock.patch.object(installer, "run") as external:
+            try:
+                installer.finalize(SimpleNamespace(manifest=str(path), rollback=False))
+                raise AssertionError("Prepared transaction was finalized")
+            except RuntimeError as error:
+                assert "待验收" in str(error)
+            external.assert_not_called()
+        with unittest.mock.patch.object(installer, "verify_signature"), \
+             unittest.mock.patch.object(installer, "ensure_not_running"), \
+             unittest.mock.patch.object(installer, "run", return_value=""):
+            installer.finalize(SimpleNamespace(manifest=str(path), rollback=True))
+        assert json.loads(path.read_text())["state"] == "rolled_back" and not stage.exists()
+        if boundary == "first-before-move":
+            assert not target.exists()
+        else:
+            assert installer.inventory(target, permit_symlinks=True) == old_inventory
+
+    # A multi-command unregister can partially fail before any program moves.
+    # Restore the original registration even when register(remove=True) throws.
+    case = root / "partial-unregister"
+    source, target = case / "source/搞操作.app", case / "Applications/搞操作.app"
+    fixture(source, "1.01", b"new candidate")
+    fixture(target, "1.00", b"original program")
+    old_inventory = installer.inventory(target, permit_symlinks=True)
+    args = SimpleNamespace(app=str(source), target=str(target), data_root=str(case / "Data"),
+                           preferences=str(case / "Preferences.plist"), backup_root=str(case / "Backups"),
+                           defer_cleanup=True, simulate=True)
+    events = []
+    def partial_unregister(app, simulate, remove=False):
+        events.append((app, remove))
+        if app == target and remove:
+            raise RuntimeError("unregister failed after first command")
+    with unittest.mock.patch.object(installer, "register", side_effect=partial_unregister):
+        try:
+            installer.install(args)
+            raise AssertionError("Partial unregister failure was ignored")
+        except RuntimeError as error:
+            assert "unregister failed" in str(error)
+    path = next((case / "Backups").glob("安装-*/manifest.json"))
+    assert events[0] == (target, True) and events[1] == (target, False), events
+    assert json.loads(path.read_text())["state"] == "rolled_back"
+    assert installer.inventory(target, permit_symlinks=True) == old_inventory
+    assert installer.inventory(source, permit_symlinks=True)["state"] == "present"
+    def failed_restore(app, simulate, remove=False):
+        if app == target:
+            raise RuntimeError("registration service unavailable")
+    with unittest.mock.patch.object(installer, "register", side_effect=failed_restore):
+        try:
+            installer.install(args)
+            raise AssertionError("Failed registration restore was ignored")
+        except RuntimeError as error:
+            assert "自动恢复未完成" in str(error)
+    unfinished = [p for p in (case / "Backups").glob("安装-*/manifest.json")
+                  if json.loads(p.read_text())["state"] == "prepared"]
+    assert len(unfinished) == 1
+    assert "rollback_failure" in json.loads(unfinished[0].read_text())
+    with unittest.mock.patch.object(installer, "register"):
+        installer.finalize(SimpleNamespace(manifest=str(unfinished[0]), rollback=True))
+    assert installer.inventory(target, permit_symlinks=True) == old_inventory
+    assert json.loads(unfinished[0].read_text())["state"] == "rolled_back"
+    print("Prepared interruption boundaries and partial-unregister recovery passed; no system registrations changed")
+
 
 def main():
     root = Path(tempfile.mkdtemp(prefix="GaoActions-InstallTests-")).resolve()

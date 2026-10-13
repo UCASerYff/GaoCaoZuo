@@ -2,6 +2,8 @@ import AppKit
 
 @MainActor func runInputEnhancementTests()throws {
     try runInputLifecycleTests()
+    try runInputDeviceMenuTests()
+    try runWindowProcessIdentityTests()
     var assertions=0
     func check(_ condition:@autoclosure ()->Bool,_ text:String)throws {assertions+=1;if !condition(){throw SystemControlError.message("输入/窗口增强测试失败："+text)}}
     let original=InputEnhancementConfiguration()

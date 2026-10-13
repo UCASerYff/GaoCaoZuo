@@ -6,11 +6,18 @@ import Foundation
     try fm.createDirectory(at:root,withIntermediateDirectories:false)
     defer{try? fm.removeItem(at:root)}
     let source=root.appendingPathComponent("migration.plist")
-    let document:[String:Any]=["schema":1,"right":["commonDirList":[["name":"临时目录","path":root.path]],"shouldAutoOpenNewFile":true,"shouldMergeFinderMenuItems":false],"archive":["cpuUseCount":2,"shouldAppendDateAfterFileNameWhenCompress":true,"shouldExcludeIgnoreFilesWhenCompress":true,"ignoreFilesWhenCompress":[["name":".DS_Store","enable":true]]],"pane":["isUnsnapRestore":false],"input":["ruleOfKeyboard":[["AppName":"All Applications","All Rules":[["Gesture":["keyCode":123,"modifierFlags":524288],"Action":["ActionType":"Preset","Action":"half_of_Left"],"Enable":1,"Note":"测试"]]]]]]
+    let document:[String:Any]=["schema":1,"unknownRoot":["nested":["doNotDrop":true]],"right":["futureCustomTemplates":["originalData":"retain"],"commonDirList":[["name":"临时目录","path":root.path]],"shouldAutoOpenNewFile":true,"shouldMergeFinderMenuItems":false],"archive":["cpuUseCount":2,"shouldAppendDateAfterFileNameWhenCompress":true,"shouldExcludeIgnoreFilesWhenCompress":true,"ignoreFilesWhenCompress":[["name":".DS_Store","enable":true]]],"pane":["isUnsnapRestore":false],"input":["ruleOfKeyboard":[["AppName":"All Applications","All Rules":[["Gesture":["keyCode":123,"modifierFlags":524288],"Action":["ActionType":"Preset","Action":"half_of_Left"],"Enable":1,"Note":"测试"]]]]]]
     try PropertyListSerialization.data(fromPropertyList:document,format:.binary,options:0).write(to:source)
     let store=OperationStore(directory:root.appendingPathComponent("Data"))
     let originalFolders=store.settings.folders.count
     try store.importReplacementSettings(source)
+    let evidenceURL=store.data.directory.appendingPathComponent("replacement-migration-evidence.json")
+    let evidence=try JSONSerialization.jsonObject(with:Data(contentsOf:evidenceURL)) as! [String:Any]
+    let originalURL=store.data.directory.appendingPathComponent(evidence["originalFile"] as! String)
+    guard try Data(contentsOf:originalURL) == Data(contentsOf:source),
+          (try fm.attributesOfItem(atPath:originalURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+          (evidence["unmappedKeys"] as? [String:[String]])?["right"]?.contains("futureCustomTemplates") == true,
+          (evidence["unmappedKeys"] as? [String:[String]])?["root"]?.contains("unknownRoot") == true else {throw DataFailure.message("迁移未按原字节私有保留未知字段及映射证据")}
     guard store.settings.folders.count==originalFolders+1,store.settings.inputEnhancements.rules.count==1,
           store.settings.inputEnhancements.rules.allSatisfy({!$0.enabled}),!store.settings.clipboardEnabled,
           store.fileEnhancements.settings.autoOpenNew,store.archiveEnhancements.preferences.creation.threads==2,

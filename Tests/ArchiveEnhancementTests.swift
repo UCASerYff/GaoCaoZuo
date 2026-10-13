@@ -61,7 +61,19 @@ enum ArchiveEnhancementTests {
             let output = root.appendingPathComponent(name + "-expanded")
             _ = try await service.extract(archive: first, to: output, password: pw, selected: nil)
             try expect(try Data(contentsOf: output.appendingPathComponent("volume.bin")) == Data(contentsOf: large), "split ZIP bytes roundtrip")
+            try await rejects("numeric ZIP group has no provenance authorizing automatic disposal") { _ = try ArchiveVolumeGroup.capture(first) }
+            let middle = first.deletingPathExtension().appendingPathExtension("002")
+            let last = first.deletingPathExtension().appendingPathExtension("003"), held = last.appendingPathExtension("held")
+            try await rejects("cannot dispose non-first volume") { _ = try ArchiveVolumeGroup.capture(middle) }
+            try fm.moveItem(at: last, to: held)
+            try await rejects("missing volume never forms disposal group") { _ = try await service.extract(archive: first, to: root.appendingPathComponent(UUID().uuidString), password: pw, selected: nil) }
+            try fm.moveItem(at: held, to: last)
+            let middleHeld = middle.appendingPathExtension("held")
+            try fm.moveItem(at: middle, to: middleHeld)
+            try await rejects("non-contiguous disposal group rejected") { _ = try ArchiveVolumeGroup.capture(first) }
+            try fm.moveItem(at: middleHeld, to: middle)
         }
+        try await runArchiveDisposalSafetyTests(service: service, root: root, payload: payload)
         let linked = root.appendingPathComponent("Links.app", isDirectory: true)
         try fm.createDirectory(at: linked, withIntermediateDirectories: false)
         try payload.write(to: linked.appendingPathComponent("run.sh"))
@@ -84,6 +96,8 @@ enum ArchiveEnhancementTests {
             try expect(try Data(contentsOf: target.appendingPathComponent("dir/run.sh")) == payload, "recursive container extraction \(name)")
             try expect(try fm.destinationOfSymbolicLink(atPath: target.appendingPathComponent("dir/shortcut").path) == "run.sh", "safe symlink \(name)")
             try expect(try Data(contentsOf: target.appendingPathComponent("dir/hard")) == payload, "safe hard-link contents \(name)")
+            var originalInfo = stat(), hardInfo = stat()
+            try expect(lstat(target.appendingPathComponent("dir/run.sh").path, &originalInfo) == 0 && lstat(target.appendingPathComponent("dir/hard").path, &hardInfo) == 0 && originalInfo.st_dev == hardInfo.st_dev && originalInfo.st_ino == hardInfo.st_ino && originalInfo.st_nlink == 2, "safe hard-link actual shared inode \(name)")
             try expect((try fm.attributesOfItem(atPath: target.appendingPathComponent("dir/run.sh").path)[.posixPermissions] as? NSNumber)?.intValue == 0o755, "executable mode \(name)")
             try expect(abs(((try fm.attributesOfItem(atPath: target.appendingPathComponent("dir/run.sh").path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0) - 1_760_000_000) < 1, "file mtime \(name)")
             let receipt = service.lastResultReceipts
@@ -117,6 +131,38 @@ enum ArchiveEnhancementTests {
         _ = try await service.extract(archive: fixture.appendingPathComponent("hello.lz"), to: lzOut, password: nil, selected: nil)
         try expect(try Data(contentsOf: lzOut.appendingPathComponent("hello")) == payload, "LZIP standalone actual extraction")
 
+        print("Archive test: independently generated AR / CPIO / CAB / ISO"); fflush(stdout)
+        for (name, path) in [("original.ar", "payload.txt"), ("original.cpio", "payload.txt"), ("original.cab", "hello.txt"), ("original.iso", "hello.txt")] {
+            let archive = fixture.appendingPathComponent(name)
+            print("Archive sample \(name) SHA256=\(try FileTools.sha256(archive)) backend=7zz-26.04")
+            let entries = try await service.list(archive: archive, password: nil)
+            try expect(entries.contains { $0.path == path }, "independent sample listing \(name)")
+            let target = root.appendingPathComponent("all-" + name)
+            _ = try await service.extract(archive: archive, to: target, password: nil, selected: nil)
+            try expect(try Data(contentsOf: target.appendingPathComponent(path)) == payload, "independent sample full extraction \(name)")
+            let selectedTarget = root.appendingPathComponent("selected-" + name)
+            _ = try await service.extract(archive: archive, to: selectedTarget, password: nil, selected: [path])
+            try expect(try Data(contentsOf: selectedTarget.appendingPathComponent(path)) == payload, "independent sample selected extraction \(name)")
+        }
+        try expect(ArchiveCapabilities.matrix.first { $0.format.hasPrefix("TAR") }?.canCreate == false, "TAR creation is not advertised")
+        let rollbackSourceA = root.appendingPathComponent("rollback-a.zip"), rollbackSourceB = root.appendingPathComponent("rollback-b.zip")
+        try payload.write(to: rollbackSourceA);try payload.write(to: rollbackSourceB)
+        let fakeTrash = root.appendingPathComponent("isolated-trash");try fm.createDirectory(at:fakeTrash,withIntermediateDirectories:false)
+        let originalPairs = try [rollbackSourceA, rollbackSourceB].map { ($0, try FileTools.fingerprint($0)) }
+        try await rejects("partial volume disposal rolls back earlier moves") {
+            try ArchiveEnhancementController.trashUnchanged(originalPairs) { file in
+                if file == rollbackSourceB { throw ArchiveError.invalid("injected second-volume failure") }
+                let target = fakeTrash.appendingPathComponent(file.lastPathComponent);try fm.moveItem(at:file,to:target);return target
+            }
+        }
+        try expect(try Data(contentsOf:rollbackSourceA) == payload && Data(contentsOf:rollbackSourceB) == payload && fm.contentsOfDirectory(atPath:fakeTrash.path).isEmpty,"disposal rollback restores all original temporary samples")
+        let badHardRoot=root.appendingPathComponent("bad-hard-root");try fm.createDirectory(at:badHardRoot,withIntermediateDirectories:false)
+        try payload.write(to:badHardRoot.appendingPathComponent("original"));try payload.write(to:badHardRoot.appendingPathComponent("pretend-link"))
+        let hardExpected:[ArchiveEntry]=[.init(path:"original",size:UInt64(payload.count),isDirectory:false),.init(path:"pretend-link",size:0,isDirectory:false,hardLink:"original")]
+        try await rejects("equal byte copies are not accepted as hard links") {try ArchiveService.verifyExtractedTree(badHardRoot,expected:hardExpected)}
+        try fm.removeItem(at:badHardRoot.appendingPathComponent("pretend-link"));try fm.linkItem(at:badHardRoot.appendingPathComponent("original"),to:badHardRoot.appendingPathComponent("pretend-link"))
+        let outside=root.appendingPathComponent("outside-inode-link");try fm.linkItem(at:badHardRoot.appendingPathComponent("original"),to:outside)
+        try await rejects("hard link with an extra outside-root name rejected") {try ArchiveService.verifyExtractedTree(badHardRoot,expected:hardExpected)}
         let here = root.appendingPathComponent("here"); try fm.createDirectory(at: here, withIntermediateDirectories: false)
         print("Archive test: direct expansion and editing"); fflush(stdout)
         let targets = try await service.extractIntoDirectory(archive: root.appendingPathComponent("stored.zip"), to: here, password: nil)
@@ -170,6 +216,11 @@ enum ArchiveEnhancementTests {
         let ordinaryResults = try await service.extractIntoDirectory(archive: ordinaryZIP, to: ordinaryOut, password: nil)
         try expect(ordinaryResults.count == 1 && (try Data(contentsOf: ordinaryOut.appendingPathComponent("._ordinary.txt"))) == payload, "ordinary AppleDouble-like filename survives publication")
 
+        let previewController=ArchiveEnhancementController(directory:root.appendingPathComponent("preview-settings"))
+        try await previewController.preview(archive:edit.result,path:"new.txt",password:nil,service:service)
+        try expect(try Data(contentsOf:previewController.previewURL!) == Data("added".utf8),"browser preview materializes actual selected bytes")
+        let previewURL=previewController.previewURL!;previewController.clearPreviews()
+        try expect(!fm.fileExists(atPath:previewURL.path),"preview cleanup removes only its own temporary copy")
         let settings = root.appendingPathComponent("settings")
         let controller = ArchiveEnhancementController(directory: settings); controller.preferences.creation.level = .maximum; controller.preferences.extraction.maximumExpandedGiB = 80
         try controller.save()

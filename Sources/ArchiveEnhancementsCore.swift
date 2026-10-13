@@ -148,7 +148,7 @@ public enum ArchiveCapabilities {
                 canEncrypt: true,
                 canMultiVolume: true,
                 backend: "7zz 26.04 / pyzipper",
-                statusNote: "全量实测通过：支持 AES-256 加密、分卷（.001）、中文/Emoji 密码、包内条目增删与原包恢复"
+                statusNote: "已验证自建样本：AES-256、.001 分卷、中文/Emoji 密码与增删恢复；其他工具互操作和完整格式变体仍待验收"
             ),
             ArchiveFormatCapability(
                 format: "7Z",
@@ -162,7 +162,7 @@ public enum ArchiveCapabilities {
                 canEncrypt: true,
                 canMultiVolume: true,
                 backend: "7zz 26.04",
-                statusNote: "全量实测通过：支持 AES-256、文件名加密（-mhe）、固实压缩、分卷与完整性自检"
+                statusNote: "已实现 AES-256、文件名加密、固实与分卷；自建样本通过不代表全部变体或性能等价"
             ),
             ArchiveFormatCapability(
                 format: "TAR / TAR.GZ / TAR.BZ2 / TAR.XZ / TAR.LZ",
@@ -171,12 +171,12 @@ public enum ArchiveCapabilities {
                 canPreview: true,
                 canRandomExtract: true,
                 canExtractAll: true,
-                canCreate: true,
+                canCreate: false,
                 canEdit: false,
                 canEncrypt: false,
                 canMultiVolume: false,
                 backend: "7zz 26.04 / 系统 libarchive",
-                statusNote: "全量实测通过：支持递归展开容器，自动多层提取，单层 LZIP 提取"
+                statusNote: "自建样本读取/提取通过；主应用可提取选定文件，固实/压缩容器需顺序解码；未提供 TAR 系列创建"
             ),
             ArchiveFormatCapability(
                 format: "RAR / RAR5",
@@ -189,8 +189,8 @@ public enum ArchiveCapabilities {
                 canEdit: false,
                 canEncrypt: false,
                 canMultiVolume: true,
-                backend: "7zz 26.04 (非自由反汇编/只读解码)",
-                statusNote: "只读解压支持；RAR 属专有商业格式，FastZip 本身不创建 RAR，本项目亦明确不提供 RAR 创建"
+                backend: "7zz 26.04（含受 unRAR 许可约束的只读解码器）",
+                statusNote: "后端提供只读解码；现有 stored RAR4 小样本不证明 RAR5、加密、固实或旧多卷可用，均待真实样本验收；不提供 RAR 创建"
             ),
             ArchiveFormatCapability(
                 format: "ACE",
@@ -218,7 +218,7 @@ public enum ArchiveCapabilities {
                 canEncrypt: false,
                 canMultiVolume: false,
                 backend: "7zz 26.04",
-                statusNote: "7zz 解码器支持读取与提取；未进行全规格真实样本基准测试"
+                statusNote: "原创单文件样本的列目录、整包和选取提取已覆盖；CAB仅None未压缩、ISO仅Apple生成ISO/Joliet、AR仅System V、CPIO仅newc，其他变体与宿主仍待验收"
             )
         ]
     }

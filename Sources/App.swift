@@ -32,6 +32,7 @@ final class OperationPanel: NSPanel {
     private var enhancementObservers:Set<AnyCancellable>=[]
     private var activationObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
+    private var gaoActionClient: GaoActionClient!
     private var earlyURLs: [URL] = []
     private var pendingInitialPresentation = false
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,6 +41,8 @@ final class OperationPanel: NSPanel {
         if let i=args.firstIndex(of:"--data-dir"),args.count>i+1,args[i+1].hasPrefix("/") {directory=URL(fileURLWithPath:args[i+1],isDirectory:true)}
         else {directory=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/GaoSeries/GaoCaoZuo",isDirectory:true)}
         store=OperationStore(directory:directory)
+        GaoLocale.shared.setLanguage(GaoLanguage(rawValue:store.settings.language) ?? .system)
+        gaoActionClient=GaoActionClient(dataDirectory:directory)
         store.showMain={ [weak self] in self?.showMain() }
         store.showPanel={ [weak self] in self?.showPanel() }
         store.showSettings={ [weak self] in self?.showSettings() }
@@ -60,7 +63,7 @@ final class OperationPanel: NSPanel {
         NSUpdateDynamicServices()
         mainWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1120,height:780),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
         mainWindow.title="搞操作 V\(store.version)";mainWindow.minSize=NSSize(width:960,height:680);mainWindow.isReleasedWhenClosed=false;mainWindow.delegate=self
-        mainWindow.contentView=NSHostingView(rootView:OperationRootView(store:store));mainWindow.center();mainWindow.setFrameAutosaveName("GaoCaoZuo.main")
+        mainWindow.contentView=NSHostingView(rootView:GaoLocalizedContent { OperationRootView(store:self.store) });mainWindow.center();mainWindow.setFrameAutosaveName("GaoCaoZuo.main")
         if let i=args.firstIndex(of:"--migration"),args.count>i+1,args[i+1].hasPrefix("/") {do{try store.importReplacementSettings(URL(fileURLWithPath:args[i+1]))}catch{store.notify(error.localizedDescription,failed:true)}}
         installMenu();configureStatus();configureInput();applyAppearance();applyStatusVisibility()
         activationObserver=NSWorkspace.shared.notificationCenter.addObserver(forName:NSWorkspace.didActivateApplicationNotification,object:nil,queue:.main){[weak self]note in
@@ -77,6 +80,7 @@ final class OperationPanel: NSPanel {
     private func applyAppearance(){
         NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)
         if let lang=GaoLanguage(rawValue:store.settings.language) {GaoLocale.shared.setLanguage(lang)}
+        if mainWindow != nil { installMenu(); settingsWindow?.title=L10n.text("搞操作设置"); clipboardPanel?.title=L10n.text("剪贴板") }
     }
     func showMain(){store.windows.captureTarget();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func showPanel(){
@@ -85,7 +89,7 @@ final class OperationPanel: NSPanel {
         let panel=self.panel ?? OperationPanel(contentRect:NSRect(x:0,y:0,width:600,height:480),styleMask:[.titled,.fullSizeContentView],backing:.buffered,defer:false)
         panel.titleVisibility = .hidden;panel.titlebarAppearsTransparent=true;panel.standardWindowButton(.closeButton)?.isHidden=true;panel.standardWindowButton(.miniaturizeButton)?.isHidden=true;panel.standardWindowButton(.zoomButton)?.isHidden=true
         panel.level = .floating;panel.isReleasedWhenClosed=false;panel.hidesOnDeactivate=true;panel.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
-        panel.contentView=NSHostingView(rootView:OperationPanelView(store:store,close:{[weak panel] in panel?.orderOut(nil)}))
+        panel.contentView=NSHostingView(rootView:GaoLocalizedContent { [store=self.store!,weak panel] in OperationPanelView(store:store,close:{panel?.orderOut(nil)}) })
         let point=NSEvent.mouseLocation
         let screen=NSScreen.screens.first(where:{$0.frame.contains(point)}) ?? NSScreen.main
         if let frame=screen?.visibleFrame {panel.setFrameOrigin(NSPoint(x:frame.midX-300,y:frame.midY-240))}else{panel.center()}
@@ -95,18 +99,18 @@ final class OperationPanel: NSPanel {
         store.windows.captureTarget()
         if settingsWindow == nil {
             let window=NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
-            window.title="搞操作设置";window.isReleasedWhenClosed=false;window.contentView=NSHostingView(rootView:OperationSettingsView(store:store));window.center();settingsWindow=window
+            window.title=L10n.text("搞操作设置");window.isReleasedWhenClosed=false;window.contentView=NSHostingView(rootView:GaoLocalizedContent { OperationSettingsView(store:self.store) });window.center();settingsWindow=window
         }
-        settingsWindow?.contentView=NSHostingView(rootView:OperationSettingsView(store:store,initialTab:tab))
+        settingsWindow?.contentView=NSHostingView(rootView:GaoLocalizedContent { OperationSettingsView(store:self.store,initialTab:tab) })
         settingsWindow?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func showClipboard(){
         store.windows.captureTarget()
         if clipboardPanel?.isVisible == true {clipboardPanel?.orderOut(nil);return}
         let window=clipboardPanel ?? OperationPanel(contentRect:NSRect(x:0,y:0,width:520,height:480),styleMask:[.titled,.closable,.fullSizeContentView],backing:.buffered,defer:false)
-        window.title="剪贴板";window.titlebarAppearsTransparent=true;window.isReleasedWhenClosed=false
+        window.title=L10n.text("剪贴板");window.titlebarAppearsTransparent=true;window.isReleasedWhenClosed=false
         window.level = .floating;window.hidesOnDeactivate=true;window.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
-        window.contentView=NSHostingView(rootView:QuickClipboardView(store:store,close:{[weak window] in window?.orderOut(nil)},onError:{[weak self] message in self?.store.notify(message,failed:true)}))
+        window.contentView=NSHostingView(rootView:GaoLocalizedContent { [store=self.store!,weak window] in QuickClipboardView(store:store,close:{window?.orderOut(nil)},onError:{message in store.notify(message,failed:true)}) })
         clipboardPanel=window;window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
     }
     private func showFeedback(){
@@ -115,7 +119,7 @@ final class OperationPanel: NSPanel {
         let window=feedbackPanel ?? NSPanel(contentRect:NSRect(x:0,y:0,width:392,height:130),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         window.isReleasedWhenClosed=false;window.isOpaque=false;window.backgroundColor = .clear;window.hasShadow=true
         window.level = .floating;window.hidesOnDeactivate=false;window.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
-        let content=NSHostingView(rootView:QuickFeedbackView(store:store,archive:store.archive,close:{[weak window] in window?.orderOut(nil)}))
+        let content=NSHostingView(rootView:GaoLocalizedContent { [store=self.store!,weak window] in QuickFeedbackView(store:store,archive:store.archive,close:{window?.orderOut(nil)}) })
         window.contentView=content;window.setContentSize(NSSize(width:392,height:170))
         let point=NSEvent.mouseLocation
         if let frame=(NSScreen.screens.first{$0.frame.contains(point)} ?? NSScreen.main)?.visibleFrame {window.setFrameOrigin(NSPoint(x:frame.maxX-window.frame.width-20,y:frame.maxY-window.frame.height-20))}
@@ -130,7 +134,7 @@ final class OperationPanel: NSPanel {
         await withCheckedContinuation { continuation in
             let previous=NSWorkspace.shared.frontmostApplication
             let window=OperationPanel(contentRect:NSRect(x:0,y:0,width:454,height:220),styleMask:[.titled,.closable],backing:.buffered,defer:false)
-            window.title="解压密码";window.isReleasedWhenClosed=false;window.delegate=self;window.level = .floating
+            window.title=L10n.text("解压密码");window.isReleasedWhenClosed=false;window.delegate=self;window.level = .floating
             window.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
             var finished=false
             let finish:(String?)->Void={ [weak self,weak window] value in
@@ -140,7 +144,7 @@ final class OperationPanel: NSPanel {
                 continuation.resume(returning:value)
             }
             finishPassword=finish;passwordPanel=window
-            let content=NSHostingView(rootView:ArchivePasswordPrompt(filename:archive.lastPathComponent,incorrect:incorrect,finish:finish))
+            let content=NSHostingView(rootView:GaoLocalizedContent { ArchivePasswordPrompt(filename:archive.lastPathComponent,incorrect:incorrect,finish:finish) })
             window.contentView=content;window.setContentSize(content.fittingSize);window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
         }
     }
@@ -148,17 +152,17 @@ final class OperationPanel: NSPanel {
     private func installMenu(){
         let menu=NSMenu()
         let appMenu=NSMenu();appMenu.addItem(item("关于搞操作",#selector(about)));appMenu.addItem(.separator());appMenu.addItem(item("设置…",#selector(settingsAction),key:","));appMenu.addItem(.separator());appMenu.addItem(item("退出搞操作",#selector(quit),key:"q"))
-        menu.addItem(withTitle:"搞操作",action:nil,keyEquivalent:"").submenu=appMenu
-        let file=NSMenu();file.addItem(item("选择文件…",#selector(selectFiles),key:"o"));file.addItem(item("显示主窗口",#selector(mainAction),key:"0"));file.addItem(item("打开操作面板",#selector(panelAction)));file.addItem(.separator());file.addItem(item("关闭窗口",#selector(closeWindow),key:"w"))
-        menu.addItem(withTitle:"文件",action:nil,keyEquivalent:"").submenu=file
+        menu.addItem(withTitle:L10n.text("搞操作"),action:nil,keyEquivalent:"").submenu=appMenu
+        let file=NSMenu();file.addItem(item("选择文件…",#selector(selectFiles),key:"o"));file.addItem(item("显示主窗口",#selector(mainAction),key:"0"));file.addItem(item("打开操作面板",#selector(panelAction)));file.addItem(item("跨应用任务…",#selector(exchangeHistoryAction)));file.addItem(.separator());file.addItem(item("关闭窗口",#selector(closeWindow),key:"w"))
+        menu.addItem(withTitle:L10n.text("文件"),action:nil,keyEquivalent:"").submenu=file
         let edit=NSMenu()
-        for (title,selector,key) in [("撤销",Selector(("undo:")),"z"),("剪切",#selector(NSText.cut(_:)),"x"),("复制",#selector(NSText.copy(_:)),"c"),("粘贴",#selector(NSText.paste(_:)),"v"),("全选",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(NSMenuItem(title:title,action:selector,keyEquivalent:key))}
-        menu.addItem(withTitle:"编辑",action:nil,keyEquivalent:"").submenu=edit
-        let window=NSMenu();window.addItem(NSMenuItem(title:"最小化",action:#selector(NSWindow.performMiniaturize(_:)),keyEquivalent:"m"));menu.addItem(withTitle:"窗口",action:nil,keyEquivalent:"").submenu=window;NSApp.windowsMenu=window
-        let help=NSMenu();help.addItem(item("使用说明",#selector(helpAction)));menu.addItem(withTitle:"帮助",action:nil,keyEquivalent:"").submenu=help
+        for (title,selector,key) in [("撤销",Selector(("undo:")),"z"),("剪切",#selector(NSText.cut(_:)),"x"),("复制",#selector(NSText.copy(_:)),"c"),("粘贴",#selector(NSText.paste(_:)),"v"),("全选",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(NSMenuItem(title:L10n.text(title),action:selector,keyEquivalent:key))}
+        menu.addItem(withTitle:L10n.text("编辑"),action:nil,keyEquivalent:"").submenu=edit
+        let window=NSMenu();window.addItem(NSMenuItem(title:L10n.text("最小化"),action:#selector(NSWindow.performMiniaturize(_:)),keyEquivalent:"m"));menu.addItem(withTitle:L10n.text("窗口"),action:nil,keyEquivalent:"").submenu=window;NSApp.windowsMenu=window
+        let help=NSMenu();help.addItem(item("使用说明",#selector(helpAction)));menu.addItem(withTitle:L10n.text("帮助"),action:nil,keyEquivalent:"").submenu=help
         NSApp.mainMenu=menu
     }
-    private func item(_ title:String,_ selector:Selector,key:String="")->NSMenuItem{let value=NSMenuItem(title:title,action:selector,keyEquivalent:key);value.target=self;return value}
+    private func item(_ title:String,_ selector:Selector,key:String="")->NSMenuItem{let value=NSMenuItem(title:L10n.text(title),action:selector,keyEquivalent:key);value.target=self;return value}
     private func configureStatus(){statusItem=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength);statusItem.button?.image=NSImage(systemSymbolName:"cursorarrow.motionlines",accessibilityDescription:"搞操作");statusItem.button?.toolTip="搞操作";statusItem.button?.target=self;statusItem.button?.action=#selector(statusClicked);statusItem.button?.sendAction(on:[.leftMouseUp,.rightMouseUp])}
     private func applyStatusVisibility(){statusItem?.isVisible=store.settings.showMenuBarIcon}
     @objc private func statusClicked(){
@@ -166,8 +170,8 @@ final class OperationPanel: NSPanel {
             let menu=NSMenu();menu.addItem(item("打开操作面板",#selector(panelAction)));menu.addItem(item("显示主窗口",#selector(mainAction)));menu.addItem(item("剪贴板",#selector(clipboardAction)))
             let layouts=NSMenu()
             for action in WindowAction.allCases {let entry=item(action.title,#selector(quickMenuAction(_:)));entry.representedObject="window."+action.rawValue;layouts.addItem(entry)}
-            menu.addItem(withTitle:"排列当前窗口",action:nil,keyEquivalent:"").submenu=layouts
-            if !store.settings.workflows.isEmpty {let workflows=NSMenu();for workflow in store.settings.workflows {let entry=item(workflow.name,#selector(quickMenuAction(_:)));entry.representedObject="workflow.run."+workflow.id.uuidString;workflows.addItem(entry)};menu.addItem(withTitle:"运行组合操作",action:nil,keyEquivalent:"").submenu=workflows}
+            menu.addItem(withTitle:L10n.text("排列当前窗口"),action:nil,keyEquivalent:"").submenu=layouts
+            if !store.settings.workflows.isEmpty {let workflows=NSMenu();for workflow in store.settings.workflows {let entry=item(workflow.name,#selector(quickMenuAction(_:)));entry.representedObject="workflow.run."+workflow.id.uuidString;workflows.addItem(entry)};menu.addItem(withTitle:L10n.text("运行组合操作"),action:nil,keyEquivalent:"").submenu=workflows}
             menu.addItem(.separator());menu.addItem(item("检查权限…",#selector(permissionsAction)));menu.addItem(item(store.input.isPaused ? "恢复快捷键与手势" : "暂停快捷键与手势",#selector(pauseInput)));menu.addItem(item("设置…",#selector(settingsAction)));menu.addItem(.separator());menu.addItem(item("退出搞操作",#selector(quit)))
             statusItem.menu=menu;statusItem.button?.performClick(nil);statusItem.menu=nil
         }else{switch store.settings.statusBarLeftClick {case "main":showMain();case "clipboard":showClipboard();default:showPanel()}}
@@ -175,6 +179,7 @@ final class OperationPanel: NSPanel {
     @objc private func clipboardAction(){showClipboard()}
     @objc private func permissionsAction(){showSettings(tab:1)}
     @objc private func quickMenuAction(_ sender:NSMenuItem){store.windows.captureTarget();if let id=sender.representedObject as? String{store.prepare(id)}}
+    @objc private func exchangeHistoryAction(){gaoActionClient.showHistory()}
     @objc private func panelAction(){showPanel()}
     @objc private func mainAction(){showMain()}
     @objc private func settingsAction(){showSettings()}
@@ -204,7 +209,11 @@ final class OperationPanel: NSPanel {
         pendingInitialPresentation=false
         guard store != nil else{earlyURLs += urls;return}
         store.windows.captureTarget()
-        let fileURLs=urls.filter(\.isFileURL)
+        let exchangeURLs=urls.filter{$0.isFileURL && $0.pathExtension.lowercased()==GaoActionV1.packageExtension}
+        for url in exchangeURLs {
+            Task { @MainActor [client=gaoActionClient!,weak self] in await client.receivePackage(url) { message,failed in self?.store.notify(message,failed:failed) } }
+        }
+        let fileURLs=urls.filter{$0.isFileURL && $0.pathExtension.lowercased() != GaoActionV1.packageExtension}
         if !fileURLs.isEmpty {store.selection=fileURLs;if fileURLs.allSatisfy({["zip","7z","rar","ace","lzh","lha","lz","lzip","tar","tgz","gz","bz2","xz","zst","cab","iso","xar","cpio","001"].contains($0.pathExtension.lowercased())}) {_ = store.archiveEnhancements.handle(id:"archive.open",files:fileURLs,store:store)}else{showPanel()}}
         for url in urls where url.scheme == "gaocaozuo" {
             if url.host == "finder" {

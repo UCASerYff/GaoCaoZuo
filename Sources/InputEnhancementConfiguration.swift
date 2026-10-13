@@ -26,15 +26,15 @@ enum EnhancedInputTrigger: String, Codable, CaseIterable, Identifiable {
     case keyDown,keyUp,keyHold,keyReplacement,buttonDown,buttonUp,buttonHold,scroll,drawing,hotCorner,screenEdge,touch,pressure
     var id:String {rawValue}
     var title:String { switch self {
-    case .keyDown:return "按键按下";case .keyUp:return "按键松开";case .keyHold:return "按键长按";case .keyReplacement:return "替换按键"
-    case .buttonDown:return "按钮按下/组合";case .buttonUp:return "按钮松开";case .buttonHold:return "按钮长按";case .scroll:return "滚轮方向/组合"
-    case .drawing:return "鼠标自由绘图";case .hotCorner:return "屏幕热角停留";case .screenEdge:return "边角点击/滚轮";case .touch:return "多点触控（实验）";case .pressure:return "压力点按" }
+    case .keyDown:return L10n.text("按键按下");case .keyUp:return L10n.text("按键松开");case .keyHold:return L10n.text("按键长按");case .keyReplacement:return L10n.text("替换按键")
+    case .buttonDown:return L10n.text("按钮按下/组合");case .buttonUp:return L10n.text("按钮松开");case .buttonHold:return L10n.text("按钮长按");case .scroll:return L10n.text("滚轮方向/组合")
+    case .drawing:return L10n.text("鼠标自由绘图");case .hotCorner:return L10n.text("屏幕热角停留");case .screenEdge:return L10n.text("边角点击/滚轮");case .touch:return L10n.text("多点触控（实验）");case .pressure:return L10n.text("压力点按") }
     }
 }
 enum InputEffectKind:String,Codable,CaseIterable,Identifiable {
-    case action,shortcut,mouseClick,scroll,systemPreset,appleScript
+    case action,shortcut,mouseClick,scroll,systemPreset,appleScript,menuItem
     var id:String {rawValue}
-    var title:String { switch self {case .action:return "动作库";case .shortcut:return "输出快捷键";case .mouseClick:return "模拟鼠标点击";case .scroll:return "模拟滚动";case .systemPreset:return "系统控制";case .appleScript:return "AppleScript"} }
+    var title:String { switch self {case .action:return L10n.text("动作库");case .shortcut:return L10n.text("输出快捷键");case .mouseClick:return L10n.text("模拟鼠标点击");case .scroll:return L10n.text("模拟滚动");case .systemPreset:return L10n.text("系统控制");case .appleScript:return "AppleScript";case .menuItem:return L10n.text("应用菜单项")} }
 }
 struct InputEffect:Codable,Equatable {
     var kind:InputEffectKind = .action
@@ -46,8 +46,10 @@ struct InputEffect:Codable,Equatable {
     var scrollX: Double = 0
     var scrollY: Double = -100
     var systemPreset = "missionControl"
+    var menuBundleID = ""
+    var menuPath:[String] = []
     init() {}
-    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset}
+    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset,menuBundleID,menuPath}
     init(from decoder:Decoder)throws {
         self.init();let c=try decoder.container(keyedBy:CodingKeys.self)
         kind=try c.decodeIfPresent(InputEffectKind.self,forKey:.kind) ?? .action
@@ -59,6 +61,8 @@ struct InputEffect:Codable,Equatable {
         scrollX=try c.decodeIfPresent(Double.self,forKey:.scrollX) ?? 0
         scrollY=try c.decodeIfPresent(Double.self,forKey:.scrollY) ?? -100
         systemPreset=try c.decodeIfPresent(String.self,forKey:.systemPreset) ?? "missionControl"
+        menuBundleID=try c.decodeIfPresent(String.self,forKey:.menuBundleID) ?? ""
+        menuPath=try c.decodeIfPresent([String].self,forKey:.menuPath) ?? []
     }
 }
 struct InputScript:Codable,Equatable,Identifiable {
@@ -80,8 +84,14 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
     var button:Int = 1
     var heldButtons:[Int] = []
     var holdSeconds:Double = 0.7
+    var allowKeyRepeat=false
+    var minimumIntervalSeconds:Double=0
     var direction = "up"
     var corner = "topLeft"
+    /// On vertical edges, 0 is the top; on horizontal edges, 0 is the left.
+    var edgeStart:Double = 0
+    var edgeEnd:Double = 1
+    var edgeWidth:Double = 8
     var appBundleID = ""
     var consume = false
     var effect = InputEffect()
@@ -96,15 +106,22 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
     var thumbAtBottom = false
     var excludedApps: [String] = []
     init() {}
-    enum CodingKeys:String,CodingKey {case id,name,enabled,trigger,keyCode,modifiers,button,heldButtons,holdSeconds,direction,corner,appBundleID,consume,effect,drawing,recognitionThreshold,touchDevice,fingers,touchGesture,touchRegion,pressureStage,pressureThreshold,thumbAtBottom,excludedApps}
+    enum CodingKeys:String,CodingKey {case id,name,enabled,trigger,keyCode,modifiers,button,heldButtons,holdSeconds,allowKeyRepeat,minimumIntervalSeconds,direction,corner,edgeStart,edgeEnd,edgeWidth,appBundleID,consume,effect,drawing,recognitionThreshold,touchDevice,fingers,touchGesture,touchRegion,pressureStage,pressureThreshold,thumbAtBottom,excludedApps}
     init(from decoder:Decoder)throws {
         self.init();let c = try decoder.container(keyedBy:CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self,forKey:.id) ?? UUID();name = try c.decodeIfPresent(String.self,forKey:.name) ?? "新规则"
         enabled = try c.decodeIfPresent(Bool.self,forKey:.enabled) ?? false;trigger = try c.decodeIfPresent(EnhancedInputTrigger.self,forKey:.trigger) ?? .keyDown
         keyCode = try c.decodeIfPresent(UInt16.self,forKey:.keyCode) ?? 31;modifiers = try c.decodeIfPresent(UInt64.self,forKey:.modifiers) ?? UInt64(NSEvent.ModifierFlags.option.rawValue)
         button = try c.decodeIfPresent(Int.self,forKey:.button) ?? 1;heldButtons = try c.decodeIfPresent([Int].self,forKey:.heldButtons) ?? []
-        holdSeconds = try c.decodeIfPresent(Double.self,forKey:.holdSeconds) ?? 0.7;direction = try c.decodeIfPresent(String.self,forKey:.direction) ?? "up"
-        corner = try c.decodeIfPresent(String.self,forKey:.corner) ?? "topLeft";appBundleID = try c.decodeIfPresent(String.self,forKey:.appBundleID) ?? ""
+        holdSeconds = try c.decodeIfPresent(Double.self,forKey:.holdSeconds) ?? 0.7
+        allowKeyRepeat = try c.decodeIfPresent(Bool.self,forKey:.allowKeyRepeat) ?? false
+        minimumIntervalSeconds = try c.decodeIfPresent(Double.self,forKey:.minimumIntervalSeconds) ?? 0
+        direction = try c.decodeIfPresent(String.self,forKey:.direction) ?? "up"
+        corner = try c.decodeIfPresent(String.self,forKey:.corner) ?? "topLeft"
+        edgeStart = try c.decodeIfPresent(Double.self,forKey:.edgeStart) ?? 0
+        edgeEnd = try c.decodeIfPresent(Double.self,forKey:.edgeEnd) ?? 1
+        edgeWidth = try c.decodeIfPresent(Double.self,forKey:.edgeWidth) ?? 8
+        appBundleID = try c.decodeIfPresent(String.self,forKey:.appBundleID) ?? ""
         consume = try c.decodeIfPresent(Bool.self,forKey:.consume) ?? false;effect = try c.decodeIfPresent(InputEffect.self,forKey:.effect) ?? InputEffect()
         drawing = try c.decodeIfPresent([GesturePoint].self,forKey:.drawing) ?? [];recognitionThreshold = try c.decodeIfPresent(Double.self,forKey:.recognitionThreshold) ?? 0.23
         touchDevice = try c.decodeIfPresent(String.self,forKey:.touchDevice) ?? "any";fingers = try c.decodeIfPresent(Int.self,forKey:.fingers) ?? 3
@@ -130,26 +147,41 @@ struct ScrollDeviceProfile: Codable,Equatable,Identifiable {
 enum EnhancedInputValidation {
     static let modifiers = UInt64(NSEvent.ModifierFlags([.command,.control,.option,.shift,.function]).rawValue)
     static func error(_ rule:EnhancedInputRule)->String? {
-        guard !rule.name.isEmpty,rule.name.count<=200,rule.appBundleID.count<=256 else {return "规则名称或应用范围无效"}
-        guard rule.keyCode<=127,rule.effect.keyCode<=127,(0...31).contains(rule.button),rule.heldButtons.allSatisfy({(0...31).contains($0)}),Set(rule.heldButtons).count==rule.heldButtons.count else {return "键码或按钮编号无效"}
-        guard rule.holdSeconds.isFinite,(0.2...10).contains(rule.holdSeconds),rule.recognitionThreshold.isFinite,(0.05...0.5).contains(rule.recognitionThreshold) else {return "时间或识别阈值无效"}
-        if rule.consume && [.touch,.pressure,.hotCorner].contains(rule.trigger) {return "此触发只可监听，不能阻止系统原始手势"}
-        if rule.trigger == .keyReplacement && rule.effect.kind != .shortcut {return "按键替换必须选择输出快捷键"}
-        if [.keyDown,.keyUp,.keyHold].contains(rule.trigger) && rule.modifiers & modifiers == 0 && rule.keyCode != 63 {return "动作快捷键至少使用一个修饰键；普通键替换请显式使用替换按键"}
-        if rule.trigger == .drawing && rule.modifiers & modifiers == 0 {return "绘图请指定修饰键，避免误触"}
-        if (rule.trigger == .drawing || rule.touchGesture == "drawing" && rule.trigger == .touch) && (rule.drawing.count<3 || rule.drawing.count>2048 || !rule.drawing.allSatisfy({$0.x.isFinite && $0.y.isFinite && abs($0.x)<100000 && abs($0.y)<100000})) {return "请先绘制至少三个点的轨迹"}
-        if rule.trigger == .touch && (!(1...5).contains(rule.fingers) || !["tap","doubleTap","click","swipe","pinchIn","pinchOut","rotateLeft","rotateRight","drawing","tipTap","middleDrag"].contains(rule.touchGesture) || !["any","left","right","top","bottom","topLeft","topRight","bottomLeft","bottomRight"].contains(rule.touchRegion)) {return "触控规则无效；压力规则使用系统压力事件"}
-        if rule.trigger == .pressure && (!(1...2).contains(rule.pressureStage) || !rule.pressureThreshold.isFinite || !(0.05...1).contains(rule.pressureThreshold)) {return "压力阈值或级别无效"}
-        if rule.trigger == .screenEdge && !["click","scrollUp","scrollDown","scrollLeft","scrollRight"].contains(rule.direction) {return "边角触发方式无效"}
-        if rule.effect.kind == .mouseClick && !(0...31).contains(rule.effect.mouseButton) {return "输出鼠标按钮无效"}
-        if rule.effect.kind == .scroll && ![rule.effect.scrollX,rule.effect.scrollY].allSatisfy({$0.isFinite && abs($0)<=10000}) {return "输出滚动值无效"}
-        if rule.effect.kind == .systemPreset && !EnhancedSystemPreset.allCases.map(\.rawValue).contains(rule.effect.systemPreset) {return "系统动作无效"}
-        if rule.effect.kind == .appleScript && (rule.effect.script.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || rule.effect.script.utf8.count>65536) {return "脚本为空或超过 64 KiB"}
-        if rule.effect.kind == .action && rule.effect.actionID.isEmpty {return "请选择动作"}
+        guard !rule.name.isEmpty,rule.name.count<=200,rule.appBundleID.count<=256 else {return L10n.text("规则名称或应用范围无效")}
+        guard rule.keyCode<=127,rule.effect.keyCode<=127,(0...31).contains(rule.button),rule.heldButtons.allSatisfy({(0...31).contains($0)}),Set(rule.heldButtons).count==rule.heldButtons.count else {return L10n.text("键码或按钮编号无效")}
+        guard rule.holdSeconds.isFinite,(0.2...10).contains(rule.holdSeconds),rule.recognitionThreshold.isFinite,(0.05...0.5).contains(rule.recognitionThreshold) else {return L10n.text("时间或识别阈值无效")}
+        if !rule.minimumIntervalSeconds.isFinite || !(0...60).contains(rule.minimumIntervalSeconds) {return L10n.text("规则节流间隔必须为0–60秒")}
+        if rule.consume && [.touch,.pressure,.hotCorner].contains(rule.trigger) {return L10n.text("此触发只可监听，不能阻止系统原始手势")}
+        if rule.trigger == .keyReplacement && rule.effect.kind != .shortcut {return L10n.text("按键替换必须选择输出快捷键")}
+        if [.keyDown,.keyUp,.keyHold].contains(rule.trigger) && rule.modifiers & modifiers == 0 && rule.keyCode != 63 {return L10n.text("动作快捷键至少使用一个修饰键；普通键替换请显式使用替换按键")}
+        if rule.trigger == .drawing && rule.modifiers & modifiers == 0 {return L10n.text("绘图请指定修饰键，避免误触")}
+        if (rule.trigger == .drawing || rule.touchGesture == "drawing" && rule.trigger == .touch) && (rule.drawing.count<3 || rule.drawing.count>2048 || !rule.drawing.allSatisfy({$0.x.isFinite && $0.y.isFinite && abs($0.x)<100000 && abs($0.y)<100000})) {return L10n.text("请先绘制至少三个点的轨迹")}
+        if rule.trigger == .touch && (!(1...5).contains(rule.fingers) || !["tap","doubleTap","click","swipe","pinchIn","pinchOut","rotateLeft","rotateRight","drawing","tipTap","middleDrag"].contains(rule.touchGesture) || !["any","left","right","top","bottom","topLeft","topRight","bottomLeft","bottomRight"].contains(rule.touchRegion)) {return L10n.text("触控规则无效；压力规则使用系统压力事件")}
+        if rule.trigger == .pressure && (!(1...2).contains(rule.pressureStage) || !rule.pressureThreshold.isFinite || !(0.05...1).contains(rule.pressureThreshold)) {return L10n.text("压力阈值或级别无效")}
+        if [.screenEdge,.hotCorner].contains(rule.trigger) && !["left","right","top","bottom","topLeft","topRight","bottomLeft","bottomRight"].contains(rule.corner) {return L10n.text("屏幕边角无效")}
+        if rule.trigger == .screenEdge && (!rule.edgeStart.isFinite || !rule.edgeEnd.isFinite || !rule.edgeWidth.isFinite || rule.edgeStart < 0 || rule.edgeEnd > 1 || rule.edgeEnd-rule.edgeStart < 0.01 || !(2...80).contains(rule.edgeWidth)) {return L10n.text("边段必须位于0–1内，长度至少0.01，边缘宽度2–80pt")}
+        if rule.trigger == .screenEdge && !["click","scrollUp","scrollDown","scrollLeft","scrollRight"].contains(rule.direction) {return L10n.text("边角触发方式无效")}
+        if rule.effect.kind == .mouseClick && !(0...31).contains(rule.effect.mouseButton) {return L10n.text("输出鼠标按钮无效")}
+        if rule.effect.kind == .scroll && ![rule.effect.scrollX,rule.effect.scrollY].allSatisfy({$0.isFinite && abs($0)<=10000}) {return L10n.text("输出滚动值无效")}
+        if rule.effect.kind == .systemPreset && !EnhancedSystemPreset.allCases.map(\.rawValue).contains(rule.effect.systemPreset) {return L10n.text("系统动作无效")}
+        if rule.effect.kind == .appleScript && (rule.effect.script.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || rule.effect.script.utf8.count>65536) {return L10n.text("脚本为空或超过 64 KiB")}
+        if rule.effect.kind == .menuItem && (rule.effect.menuBundleID.isEmpty || rule.effect.menuBundleID.utf8.count>256 || !(2...10).contains(rule.effect.menuPath.count) || !rule.effect.menuPath.allSatisfy({!$0.isEmpty && $0.utf8.count<=1024})) {return L10n.text("请选择目标应用和完整菜单路径")}
+        if rule.effect.kind == .action && rule.effect.actionID.isEmpty {return L10n.text("请选择动作")}
         return nil
     }
     static func signature(_ r:EnhancedInputRule)->String {
-        [r.trigger.rawValue,String(r.keyCode),String(r.modifiers & modifiers),String(r.button),r.heldButtons.sorted().map(String.init).joined(separator:","),r.direction,r.corner,r.appBundleID,r.touchDevice,String(r.fingers),r.touchGesture,r.touchRegion,String(r.thumbAtBottom),String(r.pressureStage),String(r.pressureThreshold),r.trigger == .drawing ? r.id.uuidString : ""].joined(separator:"|")
+        [r.trigger.rawValue,String(r.keyCode),String(r.modifiers & modifiers),String(r.button),r.heldButtons.sorted().map(String.init).joined(separator:","),r.direction,r.corner,String(r.edgeStart),String(r.edgeEnd),String(r.edgeWidth),r.appBundleID,r.touchDevice,String(r.fingers),r.touchGesture,r.touchRegion,String(r.thumbAtBottom),String(r.pressureStage),String(r.pressureThreshold),r.trigger == .drawing ? r.id.uuidString : ""].joined(separator:"|")
+    }
+    static func conflictingIDs(_ rules:[EnhancedInputRule])->Set<UUID> {
+        let candidates=rules.filter{$0.enabled && $0.trigger != .drawing && !($0.trigger == .touch && $0.touchGesture == "drawing")}
+        var ids=Set(Dictionary(grouping:candidates,by:signature).values.filter{$0.count>1}.flatMap{$0.map(\.id)})
+        let edges=candidates.filter{$0.trigger == .screenEdge}
+        for (i,a) in edges.enumerated() {for b in edges.dropFirst(i+1) {
+            if a.appBundleID==b.appBundleID,a.modifiers & modifiers == b.modifiers & modifiers,
+               a.corner==b.corner,a.direction==b.direction,(a.direction != "click" || a.button==b.button),
+               max(a.edgeStart,b.edgeStart)<min(a.edgeEnd,b.edgeEnd) {ids.insert(a.id);ids.insert(b.id)}
+        }}
+        return ids
     }
     static func validate(_ c:InputEnhancementConfiguration)throws {
         guard c.rules.count<=500,c.scrollProfiles.count<=100,c.scriptLibrary.count<=200,c.hidProfiles.count<=100 else {throw SystemControlError.message("输入配置超过 500 条规则或 100 个设备配置。")}

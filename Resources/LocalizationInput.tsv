@@ -1,0 +1,259 @@
+按键按下	Key Down
+按键松开	Key Up
+按键长按	Key Hold
+替换按键	Replace Key
+按钮按下/组合	Button Down / Combination
+按钮松开	Button Up
+按钮长按	Button Hold
+滚轮方向/组合	Wheel Direction / Combination
+鼠标自由绘图	Freehand Mouse Gesture
+屏幕热角停留	Dwell in Screen Corner
+边角点击/滚轮	Edge Click / Scroll
+多点触控（实验）	Multitouch (Experimental)
+压力点按	Pressure Click
+动作库	Action Library
+输出快捷键	Send Shortcut
+模拟鼠标点击	Simulate Mouse Click
+模拟滚动	Simulate Scrolling
+应用菜单项	App Menu Item
+新脚本	New Script
+新规则	New Rule
+滚轮设置	Wheel Settings
+规则名称或应用范围无效	Invalid rule name or app scope
+键码或按钮编号无效	Invalid key code or button number
+时间或识别阈值无效	Invalid time or recognition threshold
+规则节流间隔必须为0–60秒	Rule throttling interval must be 0–60 seconds
+此触发只可监听，不能阻止系统原始手势	This trigger only observes events and cannot block native system gestures
+按键替换必须选择输出快捷键	Key replacement requires a shortcut output
+动作快捷键至少使用一个修饰键；普通键替换请显式使用替换按键	Action shortcuts need at least one modifier; use Replace Key explicitly for ordinary keys
+绘图请指定修饰键，避免误触	Specify a modifier for drawing to prevent accidental triggers
+请先绘制至少三个点的轨迹	Draw a path with at least three points first
+触控规则无效；压力规则使用系统压力事件	Invalid touch rule; pressure rules use system pressure events
+压力阈值或级别无效	Invalid pressure threshold or stage
+屏幕边角无效	Invalid screen edge or corner
+边段必须位于0–1内，长度至少0.01，边缘宽度2–80pt	Edge segments must be within 0–1, at least 0.01 long, with a 2–80 pt edge width
+边角触发方式无效	Invalid edge trigger
+输出鼠标按钮无效	Invalid output mouse button
+输出滚动值无效	Invalid output scroll values
+系统动作无效	Invalid system action
+脚本为空或超过 64 KiB	Script is empty or exceeds 64 KiB
+请选择目标应用和完整菜单路径	Choose a target app and a complete menu path
+请选择动作	Choose an action
+输入配置超过 500 条规则或 100 个设备配置。	Input configuration exceeds 500 rules or 100 device profiles.
+输入配置存在重复 ID。	Input configuration contains duplicate IDs.
+HID按钮存在相同设备/应用/触发冲突，配置未启动。	HID button mappings conflict for the same device, app and trigger. The configuration was not started.
+HID设备配置无效。	Invalid HID device profile.
+HID按钮Usage超出1–32。	HID button Usage must be within 1–32.
+脚本库项目无效或超过64KiB。	Script library item is invalid or exceeds 64 KiB.
+滚轮速度、加速度或平滑时长无效。	Invalid wheel speed, acceleration or smoothing duration.
+高级输入未启用	Advanced Input Is Off
+高级输入存在相同触发冲突，相关规则已暂停。	Advanced input triggers conflict. The affected rules are paused.
+逐个物理鼠标滚轮规则尚不可用：公开 CGEvent 不提供可靠设备标识。该配置不会退化为修改所有鼠标。	Per-physical-mouse wheel rules are unavailable: public CGEvent APIs provide no reliable device identity. This profile will not fall back to changing all mice.
+按键替换需要辅助功能权限。原始输入仍保留。	Key replacement requires Accessibility access. Original input is preserved.
+绘图与多个规则过于接近，未执行；请调整模板。	The drawing matches multiple rules too closely. Nothing was run; adjust the templates.
+模拟滚动需要辅助功能权限。	Simulated scrolling requires Accessibility access.
+未知系统动作。	Unknown system action.
+模拟鼠标需要辅助功能权限和有效目标。	Simulated mouse input requires Accessibility access and a valid target.
+不能生成鼠标事件。	Mouse events could not be created.
+模拟按键需要辅助功能权限，且不能在安全输入状态使用。	Simulated keystrokes require Accessibility access and cannot be used during Secure Input.
+无法发送按键，目标应用可能已退出。	The keystroke could not be sent. The target app may have quit.
+上一个输入脚本仍在执行，请等待或暂停输入以停止它。	The previous input script is still running. Wait, or pause input to stop it.
+脚本执行失败：	Script failed: 
+脚本运行超过 15 秒，已发送停止请求。	The script exceeded 15 seconds. A stop request was sent.
+中键拖移的目标或辅助功能权限已失效。	The middle-button drag target or Accessibility access is no longer valid.
+触控动作匹配多个解释，未执行。	The touch action has multiple interpretations. Nothing was run.
+按钮/滚轮/压力仅表示HID描述符有相应元素，不证明实际投递；未公开元素也不证明硬件不具备。授权为CG事件监听预检，HID按钮还须实测。连续滚动无法从CGEvent绑定此设备；TipTap为默认关闭的实验私有触控算法；逐设备速度未应用。	Button, wheel and pressure flags only indicate matching HID descriptor elements, not actual event delivery. Missing elements do not prove absent hardware capabilities. Authorization reflects the CG event-listening preflight; HID buttons still need real testing. CGEvent continuous scrolling cannot be bound to this device. TipTap uses an experimental private touch algorithm that is off by default. Per-device speed is not applied.
+已识别；硬件动作未验收	Identified; Hardware Actions Not Tested
+已识别；输入监听未获授权	Identified; Input Monitoring Not Authorized
+高级输入	Advanced Input
+启用高级规则与滚轮调校	Enable Advanced Rules and Wheel Tuning
+启用实验原始多点触控	Enable Experimental Raw Multitouch
+原始触点使用系统未公开接口，默认关闭；若系统变更或数据不符会停止。它不能阻止系统原有触控手势。压力使用系统 pressure/stage 事件，须在实际目标应用测试投递。	Raw contacts use undocumented system interfaces and are off by default; monitoring stops if the system changes or data does not match. Native gestures cannot be blocked. Pressure uses system pressure/stage events; delivery must be tested in the actual target app.
+添加入门规则	Add Starter Rules
+⌥方向键分屏（暂停状态）	⌥ Arrow-Key Layouts (Paused)
+Fn 单指绘图示例（暂停状态）	Fn Single-Finger Drawing Example (Paused)
+导入规则/脚本	Import Rules / Scripts
+导出规则/脚本	Export Rules / Scripts
+规则	Rules
+添加规则后选择触发方式和动作；新规则默认暂停。	Add a rule, then choose its trigger and action. New rules are paused by default.
+复制规则	Duplicate Rule
+ 副本	 Copy
+删除规则	Delete Rule
+滚轮	Wheel
+输入类型	Input Type
+普通鼠标滚轮	Ordinary Mouse Wheel
+触控板连续滚动	Trackpad Continuous Scrolling
+水平反向	Reverse Horizontally
+垂直反向	Reverse Vertically
+速度	Speed
+加速度	Acceleration
+普通鼠标滚轮平滑	Smooth Ordinary Mouse Wheel
+平滑时长	Smoothing Duration
+按住时临时绕过	Hold to Bypass Temporarily
+CGEvent 没有可靠的物理鼠标编号；这里按普通滚轮/连续滚动分类，不声称逐型号硬件驱动或跟踪速度适配。	CGEvent has no reliable physical mouse identifier. Settings here distinguish ordinary wheels from continuous scrolling; they do not provide model-specific hardware drivers or tracking-speed support.
+删除滚轮配置	Delete Wheel Profile
+添加滚轮配置	Add Wheel Profile
+脚本库	Script Library
+脚本名称	Script Name
+删除脚本	Delete Script
+添加 AppleScript	Add AppleScript
+脚本按绑定运行，最长15秒；系统自动化授权由目标应用按需请求。导入的脚本默认不执行，请先审阅。	Scripts run through their bindings for at most 15 seconds. Target apps request Automation access as needed. Imported scripts do not run by default; review them first.
+文件夹同步	Folder Sync
+同步目录	Sync Folder
+选择 iCloud Drive 或其他同步文件夹	Choose iCloud Drive or Another Sync Folder
+写入同步副本	Write Sync Copy
+读取同步副本	Read Sync Copy
+同步副本由所选文件夹的云服务传输。读取采用合并并保持新规则暂停；不会静默覆盖本机规则。此处不等同于 BAB 私有云服务或无损格式兼容。	The selected folder’s cloud service transfers the sync copy. Reading merges rules and keeps new rules paused; it never silently overwrites local rules. This is not BAB’s private cloud service or lossless format compatibility.
+HID 鼠标设备	HID Mouse Devices
+设备实测	Test Device
+已导出规则与脚本。	Rules and scripts exported.
+同步目录不存在或无法读取，请重新选择。	The sync folder does not exist or cannot be read. Choose it again.
+同步副本已写入；原有副本已备份。	Sync copy written; the previous copy was backed up.
+规则名称	Rule Name
+限定应用 Bundle ID（空白为所有应用）	Restrict to App Bundle ID (Blank for All Apps)
+触发修饰键	Trigger Modifiers
+键码	Key Code
+组合按住按钮（逗号分隔）	Buttons Held Together (Comma-Separated)
+允许系统按键自动重复	Allow System Key Auto-Repeat
+规则最短执行间隔（秒，0为不节流）	Minimum Rule Interval (Seconds; 0 Disables Throttling)
+长按/停留秒数	Hold/Dwell Duration in Seconds
+屏幕边角	Screen Edges and Corners
+左边	Left Edge
+右边	Right Edge
+上边	Top Edge
+下边	Bottom Edge
+边段起点(0–1)	Edge Segment Start (0–1)
+终点(0–1)	End (0–1)
+边缘宽度(pt)	Edge Width (pt)
+左右边从上到下、上下边从左到右；例如0.33–0.67限定中间段。相邻段只触发其中一个；角落使用宽度范围。	Left and right edges run from top to bottom; top and bottom edges run from left to right. For example, 0.33–0.67 selects the middle segment. Adjacent segments trigger only one rule; corners use the width range.
+触发	Trigger
+点击	Click
+向上滚动	Scroll Up
+向下滚动	Scroll Down
+向左滚动	Scroll Left
+向右滚动	Scroll Right
+方向	Direction
+上	Up
+下	Down
+左	Left
+右	Right
+设备	Device
+任意触控设备	Any Touch Device
+原设备：	Original Device: 
+触控手势	Touch Gesture
+轻点	Tap
+双拍	Double Tap
+点按	Press
+滑动	Swipe
+捏合	Pinch In
+张开	Pinch Out
+左旋转	Rotate Left
+右旋转	Rotate Right
+自由绘图	Freehand Drawing
+锚指＋其他指轻拍 TipTap	Anchor Finger + Other Finger Taps (TipTap)
+模拟中键拖移	Simulate Middle-Button Drag
+起始区域	Starting Region
+任意	Any
+左侧	Left Side
+右侧	Right Side
+顶边	Top Edge
+底边	Bottom Edge
+左上	Top Left
+右上	Top Right
+左下	Bottom Left
+右下	Bottom Right
+需要另一个触点停留底边（拇指锚点）	Require Another Touch at the Bottom Edge (Thumb Anchor)
+设备编号仅在当前监听会话内有效；断接后需重选。多指系统手势仍会同时生效。Magic Mouse 与其他外置设备需分别实测。	Device numbers are valid only within the current monitoring session; select the device again after reconnecting. System gestures with multiple fingers still run at the same time. Test Magic Mouse and other external devices separately.
+阶段内压力阈值	Pressure Threshold Within Stage
+压力事件由目标应用/系统决定是否投递，全局可用性须实际验收。	The target app and system determine whether pressure events are delivered. Global availability must be verified through actual testing.
+清空轨迹	Clear Path
+识别容差	Recognition Tolerance
+阻止原始输入（需辅助功能权限）	Block Original Input (Requires Accessibility Access)
+这个触控手势直接发送中键按下、拖动和松开；需要辅助功能权限，建议设置Fn条件避免与系统滚动重叠。	This touch gesture directly sends middle-button down, drag, and up events. It requires Accessibility access. A Fn condition is recommended to avoid overlap with system scrolling.
+执行	Run
+输出修饰键	Output Modifiers
+水平像素	Horizontal Pixels
+垂直像素	Vertical Pixels
+媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。	Media and brightness controls depend on the hardware and foreground player. System desktop actions use your actual system shortcuts.
+从脚本库复制	Copy from Script Library
+排除应用 Bundle ID（逗号分隔）	Exclude App Bundle IDs (Comma-Separated)
+点击后按快捷键	Click, Then Press the Shortcut
+请按快捷键…	Press a Shortcut…
+ · 点击录制	 · Click to Record
+按住鼠标或触控板绘制单笔轨迹	Hold the Mouse or Trackpad to Draw a Single-Stroke Path
+将光标移入下方，再轻点、滑动或按压触控板。这里只测量实际传感器输入，不代替其他应用中的全局触发验收。	Move the pointer into the area below, then tap, swipe, or press the trackpad. This only measures actual sensor input; it does not replace testing global triggers in other apps.
+真实压力样本 %d · stage %d · pressure %.3f · transition %.3f	Actual Pressure Sample %d · stage %d · pressure %.3f · transition %.3f
+触控板 / 压力实测区域	Trackpad / Pressure Test Area
+请选择完整菜单路径，包含顶层菜单和最终菜单项。	Select the complete menu path, including the top-level menu and final item.
+菜单项目超过安全读取预算。	The number of menu items exceeded the safe reading limit.
+菜单已变化或尚未公开，请重新选择菜单项。	The menu changed or is not yet exposed. Select the menu item again.
+同级菜单存在重名，已停止以免点错。	Sibling menu items have duplicate names. Stopped to avoid choosing the wrong item.
+目标菜单项当前不可用。	The target menu item is currently unavailable.
+该菜单项未提供公开的辅助功能点按动作。	This menu item does not provide a public Accessibility press action.
+浏览和点按菜单需要辅助功能权限。	Browsing and pressing menus requires Accessibility access.
+该应用没有公开可读取的菜单栏。	This app does not expose a readable menu bar.
+菜单来源应用已退出或身份无法确认。	The menu’s source app quit or its identity cannot be confirmed.
+菜单读取超过预算，请选择较小的菜单或重试。	Menu reading exceeded its limit. Choose a smaller menu or try again.
+菜单读取超过预算，请重试。	Menu reading exceeded its limit. Try again.
+读取期间应用已重启，请重新选择。	The app restarted during reading. Select it again.
+菜单目标与当前应用不匹配，已停止。	The menu target does not match the current app. Stopped.
+菜单解析超过预算，未执行。	Menu resolution exceeded its limit. Nothing was executed.
+菜单目标、焦点或可用状态已变化，已停止。	The menu target, focus, or availability changed. Stopped.
+菜单目标应用 Bundle ID	Menu Target App Bundle ID
+浏览运行中应用的菜单	Browse Menus of Running Apps
+未读取到菜单项；应用可能只在展开后公开菜单。	No menu items could be read. The app may expose menus only after they are opened.
+选择菜单项只保存规则，不会点按。	Selecting a menu item only saves the rule; it does not press the item.
+菜单路径	Menu Path
+请选择	Select
+（当前不可用）	(Currently Unavailable)
+尚未选择菜单项	No Menu Item Selected
+执行时仅点按匹配目标应用的确切路径；重名、失效或禁用时停止。应用语言改变后需重选；动态、未公开菜单需在目标应用内处理。系统接受点按不代表业务已完成。	Execution presses only the exact path in the matching target app and stops if names are duplicated, the target is invalid, or the item is disabled. Select the item again after changing the app’s language. Handle dynamic or unexposed menus inside the target app. System acceptance of a press does not mean the task is complete.
+绘图手势	Drawing Gesture
+鼠标中键	Middle Mouse Button
+右键拖动	Right-Button Drag
+空格	Space
+未选择动作	No Action Selected
+快捷键至少需要一个修饰键	A shortcut requires at least one modifier key.
+鼠标映射仅支持中键及额外按钮（编号 2–31）	Mouse mappings support only the middle and extra buttons (numbers 2–31).
+绘图手势必须包含 Option 修饰键	Drawing gestures must include the Option modifier.
+手势方向无效	Invalid gesture direction.
+窗口拖动或吸附尚未连接窗口管理器，功能未启动。	Window dragging or snapping is not connected to the window manager; the feature has not started.
+请在系统设置的“隐私与安全性 → 输入监控”中允许搞操作。授权后会自动重试。	Allow GaoCaoZuo in System Settings → Privacy & Security → Input Monitoring. It will retry automatically after access is granted.
+快捷键、鼠标按钮与绘图手势尚未获得输入监听权限，或权限已失效。	Keyboard shortcuts, mouse buttons, and drawing gestures do not have input monitoring access, or access has expired.
+系统正处于安全输入状态，键盘快捷键可能暂时不可用；离开密码输入后会自动恢复。	Secure input is active. Keyboard shortcuts may be temporarily unavailable and will recover automatically after leaving password entry.
+窗口拖动与边缘吸附需要辅助功能权限；其他已授权输入规则仍可使用。	Window dragging and edge snapping require Accessibility access. Other authorized input rules remain available.
+按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。	Key replacement, blocking original input, and scroll modification require Accessibility access. Only monitoring actions are retained.
+系统未能启动输入监听。请检查输入监控权限及其他输入工具的兼容性。	The system could not start input monitoring. Check Input Monitoring access and compatibility with other input tools.
+无法创建输入监听事件源。	Could not create the input monitoring event source.
+设备按钮	Device Button
+设备配置	Device Configuration
+未知	Unknown
+尚未监听设备	Not Monitoring Devices
+正在识别已连接HID接口；未录制按钮。	Identifying connected HID interfaces; button recording is off.
+HID监听已开启；只记录鼠标按钮，保留系统原输入。	HID monitoring is active. Only mouse buttons are recorded; original system input is preserved.
+设备监听已停止	Device Monitoring Stopped
+鼠标/指针设备	Mouse / Pointer Device
+按下	Down
+松开	Up
+刷新设备识别	Refresh Device Identification
+开始按钮录制	Start Button Recording
+停止录制	Stop Recording
+未提供	Not Provided
+内置	Built-In
+外置/未知	External / Unknown
+尚未识别到接口；不会假定内置触控板或外置鼠标已连接。刷新识别不代表硬件动作验收。	No interface has been identified. A built-in trackpad or external mouse is not assumed to be connected. Refreshing identification does not verify hardware actions.
+添加此设备配置	Add Configuration for This Device
+录制读取公开HID鼠标按钮报告，不读取键盘文字；原始按钮保持不变。设备未连接、按钮报告未提供或权限被拒绝时，规则不会回退至其他鼠标。无位置ID的设备断接后须重新绑定。	Recording reads public HID mouse-button reports, not keyboard text, and leaves the original buttons unchanged. If the device is disconnected, button reports are absent, or access is denied, rules do not fall back to another mouse. Devices without a location ID must be rebound after reconnecting.
+配置名称	Configuration Name
+录制列表未发现此设备；实际监听时仍按完整设备ID匹配。	This device was not found in the recording list. Live monitoring still matches the complete device ID.
+按钮名称	Button Name
+松开时触发	Trigger on Release
+限定应用Bundle ID	Restrict to App Bundle ID
+排除应用Bundle ID（逗号分隔）	Exclude App Bundle IDs (Comma-Separated)
+删除按钮映射	Delete Button Mapping
+添加录制按钮映射	Add Recorded Button Mapping
+保留逐设备跟踪调校意向	Keep Per-Device Tracking Preferences
+请求速度（暂未应用）	Requested Speed (Not Yet Applied)
+请求加速度（暂未应用）	Requested Acceleration (Not Yet Applied)
+当前公开用户态接口未提供可靠的逐设备跟踪控制，以上值仅保留在配置中，不会修改系统全局鼠标设置。需要此功能时仍需原驱动或原应用。	Current public user-space APIs do not provide reliable per-device tracking control. These values are only saved in the configuration and do not change global system mouse settings. Keep using the original driver or app if you need this feature.
+删除设备配置	Delete Device Configuration

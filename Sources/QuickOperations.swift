@@ -16,9 +16,9 @@ struct QueuedQuickOperation {
 
 @MainActor extension OperationStore {
     func notify(_ title:String,failed:Bool=false,outputs:[URL]=[]) {
-        message=title
+        message=L10n.text(title)
         if !outputs.isEmpty {lastOutputs=outputs}
-        feedback=OperationFeedback(kind:failed ? .failure : .success,title:title,outputs:outputs)
+        feedback=OperationFeedback(kind:failed ? .failure : .success,title:L10n.text(title),outputs:outputs)
         showFeedback?()
     }
     func enqueueQuick(_ title:String,run:@escaping @MainActor () async throws -> [URL]) {

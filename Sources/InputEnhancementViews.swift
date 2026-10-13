@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
                 Toggle("启用高级规则与滚轮调校",isOn:$configuration.enabled)
                 Toggle("启用实验原始多点触控",isOn:$configuration.experimentalRawTouch)
                 Text("原始触点使用系统未公开接口，默认关闭；若系统变更或数据不符会停止。它不能阻止系统原有触控手势。压力使用系统 pressure/stage 事件，须在实际目标应用测试投递。") .font(.caption).foregroundStyle(.secondary)
-                if !status.isEmpty {Text(status).font(.caption)}
+                if !status.isEmpty {Text(L10n.text(status)).font(.caption)}
                 ForEach(devices,id:\.self) {Text($0).font(.caption.monospaced())}
                 HStack {
                     Button("添加规则") {configuration.rules.append(EnhancedInputRule())}
@@ -25,7 +25,7 @@ import UniformTypeIdentifiers
                     Button("导入规则/脚本") {importRules()}
                     Button("导出规则/脚本") {exportRules()}
                 }
-                if let message {Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)}
+                if let message {Text(L10n.text(message)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)}
             }
             Section("规则") {
                 if configuration.rules.isEmpty {Text("添加规则后选择触发方式和动作；新规则默认暂停。").foregroundStyle(.secondary)}
@@ -36,7 +36,7 @@ import UniformTypeIdentifiers
                             Button("复制规则") {var copy=rule;copy.id=UUID();copy.name += " 副本";copy.enabled=false;configuration.rules.append(copy)}
                             Button("删除规则",role:.destructive) {configuration.rules.removeAll{$0.id==rule.id}}
                         }
-                    } label: {HStack {Toggle("",isOn:$rule.enabled).labelsHidden();Text(rule.name);Spacer();Text(rule.trigger.title).foregroundStyle(.secondary)}}
+                    } label: {HStack {Toggle("",isOn:$rule.enabled).labelsHidden();Text(rule.name);Spacer();Text(L10n.text(rule.trigger.title)).foregroundStyle(.secondary)}}
                 }
             }
             Section("滚轮") {
@@ -114,7 +114,7 @@ import UniformTypeIdentifiers
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             TextField("规则名称",text:$rule.name)
-            Picker("触发方式",selection:$rule.trigger) {ForEach(EnhancedInputTrigger.allCases) {Text($0.title).tag($0)}}
+            Picker("触发方式",selection:$rule.trigger) {ForEach(EnhancedInputTrigger.allCases) {Text(L10n.text($0.title)).tag($0)}}
             TextField("限定应用 Bundle ID（空白为所有应用）",text:$rule.appBundleID)
             AppExclusionEditor(values:$rule.excludedApps)
             ModifierSelection(value:$rule.modifiers,title:"触发修饰键")
@@ -125,8 +125,14 @@ import UniformTypeIdentifiers
             if [.buttonDown,.buttonUp,.buttonHold,.scroll,.drawing].contains(rule.trigger) {
                 TextField("组合按住按钮（逗号分隔）",text:Binding(get:{rule.heldButtons.map(String.init).joined(separator:",")},set:{rule.heldButtons=$0.split(separator:",").compactMap{Int($0.trimmingCharacters(in:.whitespaces))}}))
             }
+            if rule.trigger == .keyDown {Toggle("允许系统按键自动重复",isOn:$rule.allowKeyRepeat)}
+            TextField("规则最短执行间隔（秒，0为不节流）",value:$rule.minimumIntervalSeconds,format:.number)
             if [.keyHold,.buttonHold,.hotCorner].contains(rule.trigger) {LabeledContent("长按/停留秒数") {Slider(value:$rule.holdSeconds,in:0.2...3);Text(rule.holdSeconds,format:.number.precision(.fractionLength(1)))}}
             if [.hotCorner,.screenEdge].contains(rule.trigger) {Picker("屏幕边角",selection:$rule.corner) {Text("左上角").tag("topLeft");Text("右上角").tag("topRight");Text("左下角").tag("bottomLeft");Text("右下角").tag("bottomRight");if rule.trigger == .screenEdge {Text("左边").tag("left");Text("右边").tag("right");Text("上边").tag("top");Text("下边").tag("bottom")}}}
+            if rule.trigger == .screenEdge {
+                HStack {TextField("边段起点(0–1)",value:$rule.edgeStart,format:.number);TextField("终点(0–1)",value:$rule.edgeEnd,format:.number);TextField("边缘宽度(pt)",value:$rule.edgeWidth,format:.number)}
+                Text("左右边从上到下、上下边从左到右；例如0.33–0.67限定中间段。相邻段只触发其中一个；角落使用宽度范围。").font(.caption).foregroundStyle(.secondary)
+            }
             if rule.trigger == .screenEdge {Picker("触发",selection:$rule.direction) {Text("点击").tag("click");Text("向上滚动").tag("scrollUp");Text("向下滚动").tag("scrollDown");Text("向左滚动").tag("scrollLeft");Text("向右滚动").tag("scrollRight")}}
             if rule.trigger == .scroll || rule.trigger == .touch && rule.touchGesture == "swipe" {Picker("方向",selection:$rule.direction){Text("上").tag("up");Text("下").tag("down");Text("左").tag("left");Text("右").tag("right")}}
             if rule.trigger == .touch {
@@ -141,26 +147,27 @@ import UniformTypeIdentifiers
             if rule.trigger == .drawing || rule.trigger == .touch && rule.touchGesture == "drawing" {GestureDrawingPad(points:$rule.drawing).frame(height:160).background(.quaternary,in:RoundedRectangle(cornerRadius:8));Button("清空轨迹"){rule.drawing=[]};LabeledContent("识别容差") {Slider(value:$rule.recognitionThreshold,in:0.05...0.5)}}
             if ![.touch,.pressure,.hotCorner].contains(rule.trigger) {Toggle("阻止原始输入（需辅助功能权限）",isOn:$rule.consume)}
             if rule.trigger == .touch && rule.touchGesture == "middleDrag" {Text("这个触控手势直接发送中键按下、拖动和松开；需要辅助功能权限，建议设置Fn条件避免与系统滚动重叠。").font(.caption).foregroundStyle(.secondary)} else {
-            Picker("执行",selection:$rule.effect.kind){ForEach(InputEffectKind.allCases){Text($0.title).tag($0)}}
+            Picker("执行",selection:$rule.effect.kind){ForEach(InputEffectKind.allCases){Text(L10n.text($0.title)).tag($0)}}
             switch rule.effect.kind {
-            case .action:Picker("动作",selection:$rule.effect.actionID){ForEach(actions){Text($0.title).tag($0.id)}}
+            case .action:Picker("动作",selection:$rule.effect.actionID){ForEach(actions){Text(L10n.text($0.title)).tag($0.id)}}
             case .shortcut:InputKeyRecorder(code:$rule.effect.keyCode,modifiers:$rule.effect.modifiers);ModifierSelection(value:$rule.effect.modifiers,title:"输出修饰键")
             case .mouseClick:Stepper("输出鼠标按钮：\(rule.effect.mouseButton)",value:$rule.effect.mouseButton,in:0...31)
             case .scroll:HStack {TextField("水平像素",value:$rule.effect.scrollX,format:.number);TextField("垂直像素",value:$rule.effect.scrollY,format:.number)}
-            case .systemPreset:Picker("系统控制",selection:$rule.effect.systemPreset){ForEach(EnhancedSystemPreset.allCases){Text($0.title).tag($0.rawValue)}};Text("媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。").font(.caption).foregroundStyle(.secondary)
+            case .systemPreset:Picker("系统控制",selection:$rule.effect.systemPreset){ForEach(EnhancedSystemPreset.allCases){Text(L10n.text($0.title)).tag($0.rawValue)}};Text("媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。").font(.caption).foregroundStyle(.secondary)
+            case .menuItem:InputMenuSelectionView(bundleID:$rule.effect.menuBundleID,path:$rule.effect.menuPath)
             case .appleScript:
                 Menu("从脚本库复制") {ForEach(scripts) {script in Button(script.name){rule.effect.script=script.source}}}
                 TextEditor(text:$rule.effect.script).font(.system(.body,design:.monospaced)).frame(minHeight:100)
             }
             }
-            if let error=EnhancedInputValidation.error(rule) {Text(error).font(.caption).foregroundStyle(.orange)}
+            if let error=EnhancedInputValidation.error(rule) {Text(L10n.text(error)).font(.caption).foregroundStyle(.orange)}
         }.padding(.vertical,8)
         .onChange(of:rule.trigger) {_,value in if value == .screenEdge {rule.direction="click"};if [.touch,.pressure,.hotCorner].contains(value) {rule.consume=false}}
     }
 }
 @MainActor private struct ModifierSelection:View {
     @Binding var value:UInt64;var title:String
-    var body:some View {HStack {Text(title);ForEach([("⌘",NSEvent.ModifierFlags.command),("⌃",.control),("⌥",.option),("⇧",.shift),("Fn",.function)],id:\.0){label,flag in Toggle(label,isOn:Binding(get:{value & UInt64(flag.rawValue) != 0},set:{if $0 {value |= UInt64(flag.rawValue)} else {value &= ~UInt64(flag.rawValue)}})).toggleStyle(.button)}}}
+    var body:some View {HStack {Text(L10n.text(title));ForEach([("⌘",NSEvent.ModifierFlags.command),("⌃",.control),("⌥",.option),("⇧",.shift),("Fn",.function)],id:\.0){label,flag in Toggle(label,isOn:Binding(get:{value & UInt64(flag.rawValue) != 0},set:{if $0 {value |= UInt64(flag.rawValue)} else {value &= ~UInt64(flag.rawValue)}})).toggleStyle(.button)}}}
 }
 @MainActor private struct AppExclusionEditor:View {
     @Binding var values:[String]

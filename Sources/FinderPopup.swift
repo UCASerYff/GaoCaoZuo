@@ -31,10 +31,16 @@ import AppKit
         let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
         let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         guard !FinderMenuContext.isExcluded(urls+[container],appBundleID:frontApp,preferences:snapshot.preferences) else {notify("此目录或当前应用已排除访达菜单",failed:true);return}
-        let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:hasSelection,target:self,selector:#selector(finderPopupAction(_:)))
+        let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:hasSelection,target:self,selector:#selector(finderPopupAction(_:)),appBundleID:frontApp)
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
     }
     @objc private func finderPopupAction(_ sender:NSMenuItem) {
-        if let id=sender.representedObject as? String,FinderActionRequest.isAllowed(id) {let files=FinderMenuContext.usesContainer(id) ? finderPopupContainer.map{[$0]} ?? [] : finderPopupSelection.isEmpty ? finderPopupContainer.map{[$0]} ?? [] : finderPopupSelection;prepare(id,files:files)}
+        if let id=sender.representedObject as? String,FinderActionRequest.isAllowed(id) {
+            let files=FinderMenuContext.usesContainer(id) ? finderPopupContainer.map{[$0]} ?? [] : finderPopupSelection.isEmpty ? finderPopupContainer.map{[$0]} ?? [] : finderPopupSelection
+            let preferences=FinderMenuSnapshot.read()?.preferences ?? finderPreferences.preferences
+            let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            guard !FinderMenuContext.isExcluded(files+(finderPopupContainer.map{[$0]} ?? []),appBundleID:frontApp,preferences:preferences) else {notify("此目录或当前应用已排除访达菜单",failed:true);return}
+            prepare(id,files:files)
+        }
     }
 }

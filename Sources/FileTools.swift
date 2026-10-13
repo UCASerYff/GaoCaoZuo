@@ -13,10 +13,10 @@ enum FileToolsError: LocalizedError {
     case unsupported(URL)
     var errorDescription: String? {
         switch self {
-        case .invalid(let message): return message
-        case .conflict(let url): return "已存在同名项目，未覆盖：\(url.path)"
-        case .changed(let url): return "文件已发生变化，为保护资料无法恢复：\(url.path)"
-        case .unsupported(let url): return "暂不处理符号链接、特殊文件或无法读取的项目：\(url.path)"
+        case .invalid(let message): return L10n.text(message)
+        case .conflict(let url): return L10n.format("已存在同名项目，未覆盖：%@",url.path)
+        case .changed(let url): return L10n.format("文件已发生变化，为保护资料无法恢复：%@",url.path)
+        case .unsupported(let url): return L10n.format("暂不处理符号链接、特殊文件或无法读取的项目：%@",url.path)
         }
     }
 }

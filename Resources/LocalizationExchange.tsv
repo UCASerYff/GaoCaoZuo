@@ -1,0 +1,28 @@
+# Cross-app exchange interface; protocol identifiers remain stable.
+跨应用任务	Cross-App Tasks
+跨应用任务…	Cross-App Tasks…
+接收跨应用结果	Receive Cross-App Result
+动作	Action
+提供方声明	Declared Provider
+提供方报告状态	Provider-Reported Status
+附件	Attachments
+来源声明与 nonce 不证明发送者身份。附件已复制到本App私有暂存；接受不会覆盖原件或自动执行附件。	The declared source and nonce do not authenticate the sender. Attachments were copied into this app's private staging. Accepting does not overwrite originals or run attachments.
+接受并显示副本	Accept and Reveal Copies
+保留待核对	Keep for Review
+递交只表示提供方收到打开请求；实际状态来自关联结果。来源声明不是身份认证。未完成副本不会按时间自动删除。	Handoff only means the provider received an open request. Actual status comes from a matching result. Source declarations are not authentication. Unfinished copies are never automatically deleted by age.
+在 Finder 显示交接目录	Reveal Exchange Folder in Finder
+暂无跨应用任务	No Cross-App Tasks
+在 Finder 显示私有包	Reveal Private Package in Finder
+核对并接受结果	Review and Accept Result
+重新递交副本…	Resend Copies…
+重新递交跨应用动作	Resend Cross-App Action
+这会建立一个新的请求。原请求可能仍在提供方运行；请先核对提供方状态，避免重复业务。引用原件会重新校验，附件只使用本App保留副本。	This creates a new request. The original may still be running in the provider. Check its status first to avoid repeating work. Original references are rechecked; attachments use only copies retained by this app.
+建立并递交新请求	Create and Send New Request
+提供方动作尚不可用	Provider Action Is Unavailable
+导出私有交接包	Export Private Exchange Package
+结果保留待核对，原件未改变。	Result kept for review. Originals were not changed.
+提供方未就绪，动作未执行。	Provider is not ready. The action was not performed.
+交接包已保存在本App私有资料目录；动作尚未执行。	The exchange package is in this app's private data folder. The action has not been performed.
+已重新递交，等待提供方确认与结果。	Resent. Waiting for provider confirmation and results.
+请选择一个真实应用包以进入卸载复核。	Choose one actual app bundle to open uninstall review.
+请选择一个要分析的目录。	Choose one folder to inspect.

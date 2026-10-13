@@ -96,7 +96,7 @@ struct ReceiptDocument: Codable { var schema = 1; var records: [FileOperationRec
 
 enum DataFailure: LocalizedError {
     case message(String)
-    var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    var errorDescription: String? { if case .message(let text) = self { return L10n.text(text) }; return nil }
 }
 
 final class LocalData {

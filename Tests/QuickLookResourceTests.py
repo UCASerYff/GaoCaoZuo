@@ -68,10 +68,12 @@ def main():
         executable=root/"native-tests"
         sources=root/"QuickLookExtension"
         shutil.copytree(PROJECT/"QuickLookExtension",sources)
+        localization=root/"GaoLocalization.swift"
+        shutil.copyfile(PROJECT/"Shared/GaoLocalization.swift",localization)
         subprocess.run([
             "swiftc","-swift-version","5","-Xfrontend","-disable-sandbox","-O",
             "-target","arm64-apple-macos14.0","-module-cache-path",str(root/"cache"),
-            *[str(p) for p in sorted(sources.glob("*.swift"))],str(runner),
+            *[str(p) for p in sorted(sources.glob("*.swift"))],str(localization),str(runner),
             "-framework","AppKit","-framework","QuickLookUI","-o",str(executable)
         ],check=True,timeout=60)
         def preview(path,mode="normal"):
@@ -89,6 +91,9 @@ def main():
             text=preview(fixtures/name)
             assert "run.sh" in text and "4 项" in text,(name,text)
         assert "hello" in preview(fixtures/"hello.lz")
+        for name,member in (("original.ar","payload.txt"),("original.cpio","payload.txt"),("original.cab","hello.txt"),("original.iso","hello.txt")):
+            text=preview(fixtures/name)
+            assert member in text and "PREVIEW_ERROR" not in text,(name,text)
         assert "ACE" in preview(fixtures/"original.ace") and "PREVIEW_ERROR" in preview(fixtures/"original.ace")
         for mode in ("entries","declared","listing"):
             text=preview(archive,mode)
@@ -98,7 +103,7 @@ def main():
         assert "PREVIEW_ERROR" in preview(root/"损坏.zip")
         assert "PREVIEW_ERROR" in preview(root)
         many_text=preview(many)
-        assert "4001 项" in many_text and "仅显示前 4000 项" in many_text and "entry3999" in many_text and "entry4000" not in many_text
+        assert ("4001 项" in many_text or "4,001 项" in many_text) and "仅显示前 4000 项" in many_text and "entry3999" in many_text and "entry4000" not in many_text,(many_text[:300],many_text[-300:])
         assert archive.exists() and not (root/"目录").exists()
         print("Quick Look native regression passed: ZIP/AES/7Z/RAR4/TAR/gzip/bzip2/xz/lzip; Unicode, unknown size, encryption, entry/read/deadline/listing/declared budgets; no extraction")
 

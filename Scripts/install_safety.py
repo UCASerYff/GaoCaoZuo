@@ -305,7 +305,12 @@ def rollback(manifest, path):
     ensure_not_running(target, simulate)
     # If a registration command failed after the old app was restored, a retry
     # resumes that exact recovery rather than replacing the saved failed candidate.
-    restored = manifest["had_previous"] and failed.exists() and not previous.exists()
+    # A prepared transaction may have stopped before moving the old program,
+    # including halfway through unregistering its pair. Match the whole saved
+    # inventory before treating that in-place program as the recovery copy.
+    old_in_place = (manifest["had_previous"] and not previous.exists() and target.exists()
+                    and inventory(target, permit_symlinks=True) == manifest.get("previous_inventory"))
+    restored = old_in_place
     if restored:
         verify_signature(target, simulate)
         if inventory(target, permit_symlinks=True) != manifest.get("previous_inventory"):
@@ -339,6 +344,16 @@ def rollback(manifest, path):
         register(failed, simulate, remove=True)
     if manifest["had_previous"]:
         register(target, simulate)
+    candidate = stage / "candidate.app"
+    if candidate.exists():
+        ensure_not_running(candidate, simulate)
+        verify_signature(candidate, simulate)
+        if inventory(candidate, permit_symlinks=True) != manifest.get("candidate_inventory"):
+            fail("未投递候选发生变化，保留现场并停止回滚。")
+        register(candidate, simulate, remove=True)
+        manifest["undelivered_candidate"] = {"inventory": manifest["candidate_inventory"], "removed_after_registration": True}
+        atomic_json(path, manifest)
+        shutil.rmtree(str(candidate))
     if failed.exists():
         shutil.rmtree(str(failed))
         manifest["failed_candidate"]["removed_after_registration"] = True
@@ -428,8 +443,10 @@ def install(args):
             manifest["state"] = "prepared"
             atomic_json(path, manifest)
             if had_previous:
-                register(target, args.simulate, remove=True)
+                # register() consists of several external commands; even its first
+                # partial failure requires restoring this exact old pair.
                 unregistered_previous = True
+                register(target, args.simulate, remove=True)
                 target.rename(previous)
                 changed_target = True
             candidate.rename(target)
@@ -450,7 +467,7 @@ def install(args):
         except Exception as error:
             manifest["failure"] = str(error)
             atomic_json(path, manifest)
-            if changed_target:
+            if changed_target or unregistered_previous:
                 try:
                     rollback(manifest, path)
                 except Exception as rollback_error:
@@ -458,8 +475,6 @@ def install(args):
                     atomic_json(path, manifest)
                     fail(str(error) + "\n自动恢复未完成：" + str(rollback_error) + "\n请保留安装记录：" + str(path))
             else:
-                if unregistered_previous and target.exists():
-                    register(target, args.simulate)
                 manifest["state"] = "preparation_failed"
                 atomic_json(path, manifest)
             raise
@@ -472,11 +487,13 @@ def finalize(args):
         if manifest["state"] in ("verified", "rolled_back"):
             print("安装事务已完成：" + manifest["state"])
             return
-        if manifest["state"] != "installed_pending_verification":
-            fail("此安装事务未处于待验收状态，禁止清理或覆盖。")
         if args.rollback:
+            if manifest["state"] not in ("prepared", "installed_pending_verification"):
+                fail("此安装事务没有可核验的已准备程序，禁止回滚。")
             rollback(manifest, path)
             return
+        if manifest["state"] != "installed_pending_verification":
+            fail("此安装事务未处于待验收状态，禁止清理或覆盖。")
         verify_backup(manifest)
         target = Path(manifest["target_app"])
         stage = Path(manifest["stage_dir"])

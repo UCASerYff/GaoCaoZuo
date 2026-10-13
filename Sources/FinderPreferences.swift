@@ -11,6 +11,12 @@ import SwiftUI
         do {
             if var value=try data.load("finder-menu.json",as:FinderMenuPreferences.self) {
                 guard value.schema == 1 else {throw DataFailure.message("右键配置来自更新版本，原配置已保留。")}
+                let legacyTitles=["file.ishot":"打开 iShot","file.ishot.markup":"用 iShot 打开图片","file.diskmap":"DiskMap 分析"]
+                let defaults=Dictionary(uniqueKeysWithValues:FinderMenuPreferences.defaults.map{($0.id,$0.title)})
+                for index in value.items.indices {
+                    let item=value.items[index]
+                    if legacyTitles[item.id] == item.title,let replacement=defaults[item.id] {value.items[index].title=replacement}
+                }
                 let ids=Set(value.items.map(\.id));value.items += FinderMenuPreferences.defaults.filter{!ids.contains($0.id)}
                 preferences=value
             }
@@ -30,7 +36,7 @@ import SwiftUI
         let folders=store.settings.folders.map{FinderMenuFolder(id:$0.id.uuidString,name:$0.name,path:$0.path)}
         let templates=store.settings.templates.map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:false)} + store.fileEnhancements.settings.templates.map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:true)}
         let apps=store.fileEnhancements.settings.apps.map{FinderMenuApplication(id:$0.id.uuidString,name:$0.name)}
-        FinderMenuSnapshot(preferences:preferences,folders:folders,templates:templates,applications:apps).publish()
+        FinderMenuSnapshot(preferences:preferences,folders:folders,templates:templates,applications:apps,language:store.settings.language).publish()
     }
 }
 struct FinderPreferenceView:View {

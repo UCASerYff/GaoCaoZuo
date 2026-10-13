@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 
 enum SystemControlError: LocalizedError {
     case message(String)
-    var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    var errorDescription: String? { if case .message(let text) = self { return L10n.text(text) }; return nil }
 }
 
 enum WindowAction: String, CaseIterable, Identifiable, Codable {
@@ -21,53 +21,53 @@ enum WindowAction: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .leftHalf: return "左半屏"
-        case .rightHalf: return "右半屏"
-        case .topHalf: return "上半屏"
-        case .bottomHalf: return "下半屏"
-        case .topLeft: return "左上角"
-        case .topRight: return "右上角"
-        case .bottomLeft: return "左下角"
-        case .bottomRight: return "右下角"
-        case .thirdLeft: return "左侧三分之一"
-        case .thirdCenter: return "中间三分之一"
-        case .thirdRight: return "右侧三分之一"
-        case .maximize: return "铺满工作区"
-        case .center: return "窗口居中"
-        case .smaller: return "缩小窗口"
-        case .larger: return "放大窗口"
-        case .nextDisplay: return "移到下一显示器"
-        case .previousDisplay: return "移到上一显示器"
-        case .restore: return "恢复原位置"
-        case .nearMaximize: return "接近最大化"
-        case .centerHalf: return "中间半屏"
-        case .leftTwoThirds: return "左侧三分之二"
-        case .rightTwoThirds: return "右侧三分之二"
-        case .maximizeHeight: return "高度最大化"
-        case .maximizeWidth: return "宽度最大化"
-        case .quarterFirst: return "第一列四分之一"
-        case .quarterSecond: return "第二列四分之一"
-        case .quarterThird: return "第三列四分之一"
-        case .quarterFourth: return "第四列四分之一"
-        case .leftThreeQuarters: return "左侧四分之三"
-        case .rightThreeQuarters: return "右侧四分之三"
-        case .sixthTopLeft: return "左上六分之一"
-        case .sixthTopCenter: return "中上六分之一"
-        case .sixthTopRight: return "右上六分之一"
-        case .sixthBottomLeft: return "左下六分之一"
-        case .sixthBottomCenter: return "中下六分之一"
-        case .sixthBottomRight: return "右下六分之一"
-        case .moveLeft: return "移至左边缘"
-        case .moveRight: return "移至右边缘"
-        case .moveUp: return "移至上边缘"
-        case .moveDown: return "移至下边缘"
-        case .minimize: return "最小化窗口"
-        case .minimizeAll: return "最小化此应用所有窗口"
-        case .unminimizeAll: return "还原此应用最小化窗口"
-        case .close: return "关闭窗口"
-        case .toggleFullScreen: return "切换窗口全屏"
-        case .nextWindow: return "此应用下一窗口"
-        case .previousWindow: return "此应用上一窗口"
+        case .leftHalf: return L10n.text("左半屏")
+        case .rightHalf: return L10n.text("右半屏")
+        case .topHalf: return L10n.text("上半屏")
+        case .bottomHalf: return L10n.text("下半屏")
+        case .topLeft: return L10n.text("左上角")
+        case .topRight: return L10n.text("右上角")
+        case .bottomLeft: return L10n.text("左下角")
+        case .bottomRight: return L10n.text("右下角")
+        case .thirdLeft: return L10n.text("左侧三分之一")
+        case .thirdCenter: return L10n.text("中间三分之一")
+        case .thirdRight: return L10n.text("右侧三分之一")
+        case .maximize: return L10n.text("铺满工作区")
+        case .center: return L10n.text("窗口居中")
+        case .smaller: return L10n.text("缩小窗口")
+        case .larger: return L10n.text("放大窗口")
+        case .nextDisplay: return L10n.text("移到下一显示器")
+        case .previousDisplay: return L10n.text("移到上一显示器")
+        case .restore: return L10n.text("恢复原位置")
+        case .nearMaximize: return L10n.text("接近最大化")
+        case .centerHalf: return L10n.text("中间半屏")
+        case .leftTwoThirds: return L10n.text("左侧三分之二")
+        case .rightTwoThirds: return L10n.text("右侧三分之二")
+        case .maximizeHeight: return L10n.text("高度最大化")
+        case .maximizeWidth: return L10n.text("宽度最大化")
+        case .quarterFirst: return L10n.text("第一列四分之一")
+        case .quarterSecond: return L10n.text("第二列四分之一")
+        case .quarterThird: return L10n.text("第三列四分之一")
+        case .quarterFourth: return L10n.text("第四列四分之一")
+        case .leftThreeQuarters: return L10n.text("左侧四分之三")
+        case .rightThreeQuarters: return L10n.text("右侧四分之三")
+        case .sixthTopLeft: return L10n.text("左上六分之一")
+        case .sixthTopCenter: return L10n.text("中上六分之一")
+        case .sixthTopRight: return L10n.text("右上六分之一")
+        case .sixthBottomLeft: return L10n.text("左下六分之一")
+        case .sixthBottomCenter: return L10n.text("中下六分之一")
+        case .sixthBottomRight: return L10n.text("右下六分之一")
+        case .moveLeft: return L10n.text("移至左边缘")
+        case .moveRight: return L10n.text("移至右边缘")
+        case .moveUp: return L10n.text("移至上边缘")
+        case .moveDown: return L10n.text("移至下边缘")
+        case .minimize: return L10n.text("最小化窗口")
+        case .minimizeAll: return L10n.text("最小化此应用所有窗口")
+        case .unminimizeAll: return L10n.text("还原此应用最小化窗口")
+        case .close: return L10n.text("关闭窗口")
+        case .toggleFullScreen: return L10n.text("切换窗口全屏")
+        case .nextWindow: return L10n.text("此应用下一窗口")
+        case .previousWindow: return L10n.text("此应用上一窗口")
         }
     }
     var icon: String {
@@ -269,11 +269,13 @@ final class WindowManager: ObservableObject {
     // Retain the original application object: a recycled PID must never select a new process.
     private var targetApplication: NSRunningApplication?
     private var targetLaunchDate: Date?
-    private struct OriginalFrame { let element: AXUIElement; let pid: pid_t; let frame: CGRect }
+    private struct OriginalFrame { let element: AXUIElement; let pid: pid_t; let launchDate:Date; let frame: CGRect }
     private var originalFrames: [OriginalFrame] = []
     private struct DragSession {
         let window: AXUIElement
         let pid: pid_t
+        let application:NSRunningApplication
+        let launchDate:Date
         var initialFrame: CGRect
         var initialPointer: CGPoint
         let moveWithPointer: Bool
@@ -375,7 +377,7 @@ final class WindowManager: ObservableObject {
                 throw SystemControlError.message("请先退出目标窗口的全屏模式，再调整布局。")
             }
             let current = try readFrame(window)
-            let originalIndex = originalFrames.firstIndex { $0.pid == pid && CFEqual($0.element, window) }
+            let originalIndex = originalFrames.firstIndex { $0.pid == pid && $0.launchDate == launchDate && CFEqual($0.element, window) }
             let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
             let screens = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:primaryTop),configuration:configuration) }
             let desired: CGRect
@@ -425,15 +427,17 @@ final class WindowManager: ObservableObject {
             isTrusted = AXIsProcessTrusted()
             guard isTrusted else { throw SystemControlError.message("拖动窗口与边缘吸附需要辅助功能权限。") }
             captureTarget(at: configuration.targetUnderPointer ? pointer : nil)
-            guard let window = target, let pid = targetPID, pid == front.processIdentifier else {
+            guard let window = target, let pid = targetPID, pid == front.processIdentifier,
+                  let application=targetApplication,let launchDate=targetLaunchDate else {
                 throw SystemControlError.message("这个应用没有可读取的标准前台窗口，无法开始拖动或吸附。")
             }
             AXUIElementSetMessagingTimeout(window, 0.15)
+            try validateTarget(window,pid:pid,application:application,launchDate:launchDate)
             let frame = try readFrame(window)
             guard frame.contains(pointer) else { return false }
             try ensureNotFullScreen(window)
             try checkSettable(window, attribute: kAXPositionAttribute)
-            dragSession = DragSession(window: window, pid: pid, initialFrame: frame,
+            dragSession = DragSession(window: window, pid: pid, application:application,launchDate:launchDate,initialFrame: frame,
                                       initialPointer: pointer, moveWithPointer: moveWithPointer, snapEnabled: snapEnabled)
             lastError = nil
             return true
@@ -442,18 +446,22 @@ final class WindowManager: ObservableObject {
 
     func updateWindowDrag(to pointer: CGPoint) throws {
         guard !windowOperationBusy else { return }
-        guard var drag = dragSession else { return }
+        guard let drag = dragSession else { return }
+        do {try checkDragApplication(drag)} catch {
+            dragSession=nil;snapPreview.hide();lastError=error.localizedDescription;throw error
+        }
         let distance = hypot(pointer.x-drag.initialPointer.x,pointer.y-drag.initialPointer.y)
         if configuration.restoreWhenUnsnapped, distance >= 8,
            try drag.moveWithPointer || WindowDragGeometry.isWindowDrag(initialFrame:drag.initialFrame,currentFrame:readFrame(drag.window),initialPointer:drag.initialPointer,pointer:pointer),
-           let snapped = snappedFrames.first(where: { $0.pid == drag.pid && CFEqual($0.element,drag.window) }),
-           let original = originalFrames.first(where: { $0.pid == drag.pid && CFEqual($0.element,drag.window) }) {
+           let snapped = snappedFrames.first(where: { $0.pid == drag.pid && $0.launchDate == drag.launchDate && CFEqual($0.element,drag.window) }),
+           let original = originalFrames.first(where: { $0.pid == drag.pid && $0.launchDate == drag.launchDate && CFEqual($0.element,drag.window) }) {
             try checkDragApplication(drag)
             let restored = WindowEnhancementGeometry.restoredDragFrame(original:original.frame,snapped:snapped.frame,pointer:pointer)
             try checkSettable(drag.window,attribute:kAXSizeAttribute)
-            try apply(restored,to:drag.window,resize:true)
-            drag.initialFrame = restored; drag.initialPointer = pointer; dragSession = drag
-            snappedFrames.removeAll { $0.pid == drag.pid && CFEqual($0.element,drag.window) }
+            // Restoring size is an asynchronous AX transaction too. Do not resume dragging or
+            // discard the snapped state until position and size have actually settled.
+            beginUnsnapping(drag,requested:restored,pointer:pointer)
+            return
         }
         if !drag.moveWithPointer { try updateSnapPreview(pointer:pointer,drag:drag); return }
         do {
@@ -484,6 +492,30 @@ final class WindowManager: ObservableObject {
         }
     }
 
+    private func beginUnsnapping(_ captured:DragSession,requested:CGRect,pointer:CGPoint) {
+        let generation=dragGeneration
+        windowOperationBusy=true;dragSession=nil;snapPreview.hide()
+        Task { @MainActor [weak self] in
+            guard let self else{return}
+            defer {self.windowOperationBusy=false}
+            do {
+                try self.checkDragApplication(captured)
+                let current=try self.readFrame(captured.window)
+                let outcome=try await self.applyLayout(requested,original:current,window:captured.window,pid:captured.pid,
+                    application:captured.application,launchDate:captured.launchDate,capturedPID:captured.pid,
+                    workArea:nil,restoring:false,saveFrame:captured.initialFrame,additionalValidation:{
+                        guard self.dragGeneration==generation else {throw CancellationError()}
+                    })
+                guard outcome.isExact else {throw SystemControlError.message("应用限制了拖离恢复尺寸，已停止拖动；原位置记录保留。")}
+                self.snappedFrames.removeAll {$0.pid==captured.pid && $0.launchDate==captured.launchDate && CFEqual($0.element,captured.window)}
+                var resumed=captured;resumed.initialFrame=outcome.actual;resumed.initialPointer=pointer
+                if self.dragGeneration==generation,NSEvent.pressedMouseButtons & 1 != 0,
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier==captured.pid {self.dragSession=resumed}
+                self.lastError=nil
+            } catch {self.lastError=error.localizedDescription}
+        }
+    }
+
     func endWindowDrag(at pointer: CGPoint, snap: Bool) async throws {
         guard let drag = dragSession else { return }
         let generation = dragGeneration
@@ -504,7 +536,7 @@ final class WindowManager: ObservableObject {
             try ensureNotFullScreen(drag.window)
             try checkSettable(drag.window, attribute: kAXPositionAttribute)
             try checkSettable(drag.window, attribute: kAXSizeAttribute)
-            guard let application = NSRunningApplication(processIdentifier: drag.pid) else { throw SystemControlError.message("原目标应用已经退出。") }
+            let application=drag.application
             let workArea = WindowEnhancementGeometry.workArea(snapTarget.visibleFrame, configuration: configuration)
             let desired = WindowEnhancementGeometry.inset(try WindowGeometry.targetFrame(action:snapTarget.action,current:current,visibleFrames:[workArea]),gap:configuration.windowGap)
             windowOperationBusy = true
@@ -512,15 +544,15 @@ final class WindowManager: ObservableObject {
             dragSession = nil // Pending pointer events must not modify a window during final verification.
             snapPreview.hide()
             let outcome = try await applyLayout(desired, original: current, window: drag.window, pid: drag.pid,
-                application: application, launchDate: application.launchDate, capturedPID: drag.pid,
+                application: application, launchDate: drag.launchDate, capturedPID: drag.pid,
                 workArea: workArea, restoring: false, saveFrame: drag.initialFrame,
                 additionalValidation: {
                     guard self.dragGeneration == generation else { throw CancellationError() }
                 })
-            snappedFrames.removeAll { $0.pid == drag.pid && CFEqual($0.element,drag.window) }
-            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,frame:outcome.actual))
+            snappedFrames.removeAll { $0.pid == drag.pid && $0.launchDate == drag.launchDate && CFEqual($0.element,drag.window) }
+            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,launchDate:drag.launchDate,frame:outcome.actual))
             self.target = drag.window; targetPID = drag.pid
-            targetApplication = application; targetLaunchDate = application.launchDate
+            targetApplication = application; targetLaunchDate = drag.launchDate
             lastError = outcome.isExact ? nil : outcomeMessage(outcome,title:snapTarget.action.title,application:application)
         } catch { lastError = error.localizedDescription; throw error }
     }
@@ -613,6 +645,7 @@ final class WindowManager: ObservableObject {
                              application: NSRunningApplication, launchDate: Date?, capturedPID: pid_t?,
                              workArea: CGRect?, restoring: Bool, saveFrame: CGRect? = nil,
                              additionalValidation: () throws -> Void = {}) async throws -> WindowLayoutOutcome {
+        guard let launchDate else {throw SystemControlError.message("无法确认目标应用启动身份，请重新选择窗口。")}
         func validateIdentity() throws {
             guard AXIsProcessTrusted() else { throw SystemControlError.message("辅助功能权限已失效，已停止窗口操作。") }
             try validateTarget(window,pid:pid,application:application,launchDate:launchDate)
@@ -628,10 +661,10 @@ final class WindowManager: ObservableObject {
             }, validateRollback:validateIdentity, read:{try self.readFrame(window)},
             setSize:{try self.setSize($0,to:window)},setPosition:{try self.setPosition($0,to:window)},
             saveOriginal: {
-                if !restoring { self.rememberOriginal(DragSession(window:window,pid:pid,initialFrame:saveFrame ?? original,initialPointer:.zero,moveWithPointer:false)) }
+                if !restoring { self.rememberOriginal(DragSession(window:window,pid:pid,application:application,launchDate:launchDate,initialFrame:saveFrame ?? original,initialPointer:.zero,moveWithPointer:false)) }
             }, didRestore: {
-                self.originalFrames.removeAll { $0.pid == pid && CFEqual($0.element,window) }
-                self.snappedFrames.removeAll { $0.pid == pid && CFEqual($0.element,window) }
+                self.originalFrames.removeAll { $0.pid == pid && $0.launchDate == launchDate && CFEqual($0.element,window) }
+                self.snappedFrames.removeAll { $0.pid == pid && $0.launchDate == launchDate && CFEqual($0.element,window) }
             })
     }
 
@@ -683,7 +716,8 @@ final class WindowManager: ObservableObject {
         guard pid != ProcessInfo.processInfo.processIdentifier,
               application.processIdentifier == pid, !application.isTerminated,
               let current = NSRunningApplication(processIdentifier: pid), !current.isTerminated,
-              application.launchDate == launchDate, current.launchDate == launchDate else {
+              application.launchDate == launchDate,
+              WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launchDate,currentPID:current.processIdentifier,currentLaunchDate:current.launchDate) else {
             throw SystemControlError.message("原目标应用已经退出或失效，请重新选择窗口。")
         }
         var actualPID: pid_t = 0
@@ -704,14 +738,20 @@ final class WindowManager: ObservableObject {
         guard isTrusted else { throw SystemControlError.message("辅助功能权限已失效，已停止窗口拖动。") }
         guard drag.pid != ProcessInfo.processInfo.processIdentifier,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == drag.pid,
-              NSRunningApplication(processIdentifier: drag.pid)?.isTerminated == false else {
-            throw SystemControlError.message("前台应用已变化，已取消这次窗口拖动。")
+              !drag.application.isTerminated,
+              let current=NSRunningApplication(processIdentifier:drag.pid),!current.isTerminated,
+              WindowProcessIdentity.matches(capturedPID:drag.pid,capturedLaunchDate:drag.launchDate,currentPID:current.processIdentifier,currentLaunchDate:current.launchDate) else {
+            throw SystemControlError.message("前台应用或启动身份已变化，已取消这次窗口拖动。")
         }
+        try validateTarget(drag.window,pid:drag.pid,application:drag.application,launchDate:drag.launchDate)
     }
     private func rememberOriginal(_ drag: DragSession) {
-        guard !originalFrames.contains(where: { $0.pid == drag.pid && CFEqual($0.element, drag.window) }) else { return }
-        originalFrames.removeAll { NSRunningApplication(processIdentifier: $0.pid)?.isTerminated != false }
-        originalFrames.append(OriginalFrame(element: drag.window, pid: drag.pid, frame: drag.initialFrame))
+        guard !originalFrames.contains(where: { $0.pid == drag.pid && $0.launchDate == drag.launchDate && CFEqual($0.element, drag.window) }) else { return }
+        originalFrames.removeAll {record in
+            guard let current=NSRunningApplication(processIdentifier:record.pid),!current.isTerminated else{return true}
+            return !WindowProcessIdentity.matches(capturedPID:record.pid,capturedLaunchDate:record.launchDate,currentPID:current.processIdentifier,currentLaunchDate:current.launchDate)
+        }
+        originalFrames.append(OriginalFrame(element: drag.window, pid: drag.pid, launchDate:drag.launchDate,frame: drag.initialFrame))
     }
     private func ensureNotFullScreen(_ window: AXUIElement) throws {
         var value: CFTypeRef?

@@ -11,16 +11,21 @@ enum OperationSection: String, CaseIterable, Identifiable {
 }
 struct OperationAction: Identifiable {
     let id: String
-    let title: String
-    let detail: String
+    private let sourceTitle: String
+    private let sourceDetail: String
+    var title: String { L10n.text(sourceTitle) }
+    var detail: String { L10n.text(sourceDetail) }
     let icon: String
     let section: OperationSection
     var keywords: String = ""
     var files = false
+    init(id:String,title:String,detail:String,icon:String,section:OperationSection,keywords:String="",files:Bool=false) {
+        self.id=id;self.sourceTitle=title;self.sourceDetail=detail;self.icon=icon;self.section=section;self.keywords=keywords;self.files=files
+    }
     func matches(_ query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if q.isEmpty { return true }
-        let text = title + " " + detail + " " + keywords + " " + id
+        let text = title + " " + detail + " " + sourceTitle + " " + sourceDetail + " " + keywords + " " + id
         let pinyin = title.applyingTransform(.toLatin, reverse: false)?.applyingTransform(.stripCombiningMarks, reverse: false)?.replacingOccurrences(of: " ", with: "") ?? ""
         return text.lowercased().contains(q) || pinyin.lowercased().contains(q)
     }

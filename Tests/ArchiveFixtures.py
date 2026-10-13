@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate original, tiny archive fixtures; no third-party sample data or personal files."""
-import bz2, gzip, io, lzma, pathlib, struct, sys, tarfile, zlib
+import bz2, gzip, io, lzma, pathlib, struct, sys, tarfile, zlib, subprocess, tempfile, hashlib, json
 
 root = pathlib.Path(sys.argv[1]); root.mkdir(parents=True, exist_ok=True)
 payload = b'GaoCaoZuo archive fixture\n'
@@ -44,3 +44,30 @@ def legacy_zip(filename, data):
     return local+central+struct.pack('<IHHHHIIH',0x06054b50,0,0,1,1,len(central),len(local),0)
 (root/'cp932.zip').write_bytes(legacy_zip('\u30c6\u30b9\u30c8.txt'.encode('cp932'),payload))
 (root/'payload.txt').write_bytes(payload)
+
+# Small self-generated containers using public formats and macOS independent tools.
+# No package or document from an installed competitor is used.
+# macOS ar is an object-file librarian and drops plain text members. Generate
+# the portable System V 60-byte header directly, then verify with independent ar.
+ar_header=(b'payload.txt/'.ljust(16)+b'0'.ljust(12)+b'0'.ljust(6)+b'0'.ljust(6)+b'100644'.ljust(8)+str(len(payload)).encode().ljust(10)+b'`\n')
+(root/'original.ar').write_bytes(b'!<arch>\n'+ar_header+payload+(b'\n' if len(payload)%2 else b''))
+independent_ar=subprocess.run(['/usr/bin/ar','-p',str(root/'original.ar')],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+assert independent_ar.stdout == payload
+cpio=subprocess.run(['/usr/bin/cpio','-o','-H','newc'],input=b'payload.txt\n',cwd=root,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+(root/'original.cpio').write_bytes(cpio.stdout)
+# MS-CAB: one uncompressed folder, one file, checksum intentionally absent (zero).
+# https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cab/
+name=b'hello.txt\0'
+files_offset=36+8
+data_offset=files_offset+16+len(name)
+cab_size=data_offset+8+len(payload)
+header=struct.pack('<4sIIIIIBBHHHHH',b'MSCF',0,cab_size,0,files_offset,0,3,1,1,1,0,0,0)
+folder=struct.pack('<IHH',data_offset,1,0)
+file_entry=struct.pack('<IIHHHH',len(payload),0,0,0,0,0x20)+name
+(root/'original.cab').write_bytes(header+folder+file_entry+struct.pack('<IHH',0,len(payload),len(payload))+payload)
+with tempfile.TemporaryDirectory(prefix='gao-iso-') as temporary:
+    iso_source=pathlib.Path(temporary)/'source';iso_source.mkdir();(iso_source/'hello.txt').write_bytes(payload)
+    # hdiutil is Apple's independent ISO producer, not part of our decoder.
+    subprocess.run(['/usr/bin/hdiutil','makehybrid','-iso','-joliet','-o',str(root/'original.iso'),str(iso_source),'-quiet'],check=True,stdout=subprocess.DEVNULL)
+# Fingerprints cover generated inputs only; no user paths or content enter reports.
+(root/'fixture-sha256.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.iterdir()) if p.is_file()},sort_keys=True,indent=2)+'\n')

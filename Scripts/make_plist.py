@@ -10,7 +10,7 @@ quicklook = '--quicklook' in sys.argv[4:]
 info = dict(CFBundleIdentifier='com.gaoseries.GaoCaoZuo', CFBundleName='搞操作',
     CFBundleDisplayName='搞操作', CFBundleExecutable='GaoCaoZuo', CFBundlePackageType='APPL',
     CFBundleShortVersionString=version, CFBundleVersion=build, CFBundleIconFile='AppIcon',
-    CFBundleDevelopmentRegion='zh_CN', CFBundleLocalizations=['zh-Hans'], LSMinimumSystemVersion='14.0',
+    CFBundleDevelopmentRegion='zh-Hans', CFBundleLocalizations=['zh-Hans','zh-Hant','en','ja','de','fr','es','it','ko','pt'], LSMinimumSystemVersion='14.0',
     NSHighResolutionCapable=True, NSPrincipalClass='NSApplication', NSSupportsAutomaticTermination=False,
     NSHumanReadableCopyright='搞系列 · 搞操作', LSApplicationCategoryType='public.app-category.utilities')
 archive_types=['public.zip-archive','org.7-zip.7-zip-archive','com.rarlab.rar-archive','public.tar-archive','org.gnu.gnu-zip-archive','public.bzip2-archive','org.tukaani.xz-archive','com.gaoseries.ace-archive','com.gaoseries.lzip-archive']
@@ -35,8 +35,9 @@ else:
         NSNetworkVolumesUsageDescription='处理您选择的网络磁盘文件。')
     info['CFBundleURLTypes'] = [dict(CFBundleURLName='搞操作动作入口',CFBundleTypeRole='Viewer',CFBundleURLSchemes=['gaocaozuo'])]
     info['CFBundleDocumentTypes'] = [dict(CFBundleTypeName='文件和文件夹',CFBundleTypeRole='Viewer',
-        LSHandlerRank='Alternate',LSItemContentTypes=['public.item']),dict(CFBundleTypeName='压缩包',CFBundleTypeRole='Viewer',LSHandlerRank='Alternate',LSItemContentTypes=archive_types)]
+        LSHandlerRank='Alternate',LSItemContentTypes=['public.item']),dict(CFBundleTypeName='压缩包',CFBundleTypeRole='Viewer',LSHandlerRank='Alternate',LSItemContentTypes=archive_types),dict(CFBundleTypeName='GaoAction V1',CFBundleTypeRole='Viewer',LSHandlerRank='Alternate',LSItemContentTypes=['com.gaoseries.action-package'])]
     info['UTImportedTypeDeclarations']=[dict(UTTypeIdentifier=identifier,UTTypeConformsTo=['public.archive'],UTTypeDescription=label,UTTypeTagSpecification={'public.filename-extension':extensions}) for identifier,label,extensions in [('com.gaoseries.ace-archive','ACE Archive',['ace']),('com.gaoseries.lzip-archive','LZIP Archive',['lz','lzip'])]]
+    info['UTImportedTypeDeclarations'].append(dict(UTTypeIdentifier='com.gaoseries.action-package',UTTypeConformsTo=['com.apple.package'],UTTypeDescription='GaoAction V1 Package',UTTypeTagSpecification={'public.filename-extension':['gaoaction']}))
     info['NSServices'] = [dict(NSMenuItem={'default':'搞操作…'},NSMessage='receiveFiles',
         NSPortName='搞操作',NSSendTypes=['public.file-url','NSFilenamesPboardType'],
         NSRequiredContext={})] + [dict(NSMenuItem={'default':title},NSMessage='receiveText',NSUserData=action,NSPortName='搞操作',NSSendTypes=['public.utf8-plain-text'],NSRequiredContext={}) for title,action in [('用百度翻译','text.baidu'),('用谷歌翻译','text.google'),('文字转二维码','text.qrcode.clipboard')]]

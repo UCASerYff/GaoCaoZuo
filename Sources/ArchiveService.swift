@@ -294,7 +294,17 @@ final class ArchiveService: ObservableObject {
             let target=try Self.resolvedLink(entry.hardLink!,from:entry.path,hard:true)
             let result=payload.appendingPathComponent(entry.path)
             try fm.createDirectory(at:result.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-            try fm.copyItem(at:payload.appendingPathComponent(target),to:result)
+            // Both paths were validated inside our private staging tree. Links are
+            // created before symbolic links, so no archive-controlled ancestor can redirect them.
+            let rootFD = open(payload.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard rootFD >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            defer { close(rootFD) }
+            var identity = stat()
+            guard fstatat(rootFD, target, &identity, AT_SYMLINK_NOFOLLOW) == 0,
+                  identity.st_mode & S_IFMT == S_IFREG,
+                  linkat(rootFD, target, rootFD, entry.path, 0) == 0 else {
+                throw ArchiveError.invalid("无法在安全输出目录内保留硬链接；未提交结果。")
+            }
         }
         for entry in expected where entry.symbolicLink != nil {
             let result=payload.appendingPathComponent(entry.path)
@@ -422,7 +432,12 @@ final class ArchiveService: ObservableObject {
             let nonemptyKeys = fields.filter { !$0.value.isEmpty }.keys.map { $0.lowercased() }
             let symbolic = fields["Symbolic Link"].flatMap { $0.isEmpty ? nil : $0 }
             let hard = fields["Hard Link"].flatMap { $0.isEmpty ? nil : $0 }
-            let unknownLink = nonemptyKeys.contains { ($0.contains("link") && $0 != "symbolic link" && $0 != "hard link") }
+            let unknownLink = nonemptyKeys.contains { ($0.contains("link") && $0 != "symbolic link" && $0 != "hard link" && $0 != "links") }
+            // 7zz's CPIO "Links" field is a numeric link count, not a target.
+            // It never authorizes a filesystem link; only explicit validated Hard Link does.
+            if let count = fields["Links"], !count.isEmpty {
+                guard let value = UInt64(count), value > 0, value <= UInt64(options.maximumEntries) else { throw ArchiveError.invalid("压缩包链接计数无效。") }
+            }
             let special = attributes.split(separator:" ").contains { ["b","c","p","s"].contains($0.first.map(String.init) ?? "") }
             let modeLink = attributes.split(separator:" ").contains { $0.first == "l" }
             guard !special, !unknownLink, !(symbolic != nil && hard != nil), !modeLink || symbolic != nil else {throw ArchiveError.invalid("压缩包含有不支持的特殊文件或链接元数据。")}
@@ -462,14 +477,14 @@ final class ArchiveService: ObservableObject {
             }
         }
         try validateLinks(entries)
-        // Hard links are materialized as independent files, so account for their copied bytes.
+        // Conservatively budget logical bytes for each hard-link directory entry.
         let lookup = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
         var actualExpanded: UInt64 = 0
         for entry in entries where !entry.isDirectory {
             let amount: UInt64
             if let target = entry.hardLink { amount = lookup[try resolvedLink(target, from: entry.path, hard: true)]?.size ?? entry.size }
             else { amount = entry.size }
-            guard amount <= options.maximumBytes, actualExpanded <= options.maximumBytes - amount else { throw ArchiveError.invalid("解压内容（含硬链接副本）超过当前容量预算。") }
+            guard amount <= options.maximumBytes, actualExpanded <= options.maximumBytes - amount else { throw ArchiveError.invalid("解压内容（含硬链接逻辑大小）超过当前容量预算。") }
             actualExpanded += amount
         }
         return entries
@@ -573,6 +588,27 @@ final class ArchiveService: ObservableObject {
                 if allowed[path] == nil { allowed[path] = .init(path: path, size: 0, isDirectory: true) }
             }
         }
+        // Exact inode groups must match declared links, with no additional names
+        // outside this isolated root. Equal bytes alone do not prove a hard link.
+        var hardLinkGroups: [String: Set<String>] = [:]
+        for entry in expected where entry.hardLink != nil {
+            let target = try resolvedLink(entry.hardLink!, from: entry.path, hard: true)
+            hardLinkGroups[target, default: [target]].insert(entry.path)
+        }
+        var groupForPath: [String: Set<String>] = [:]
+        for (target, members) in hardLinkGroups {
+            var targetInfo = stat()
+            guard lstat(root.appendingPathComponent(target).path, &targetInfo) == 0,
+                  targetInfo.st_mode & S_IFMT == S_IFREG else { throw ArchiveError.invalid("硬链接目标不再是普通文件。") }
+            for path in members {
+                var info = stat()
+                guard lstat(root.appendingPathComponent(path).path, &info) == 0,
+                      info.st_mode & S_IFMT == S_IFREG,
+                      info.st_dev == targetInfo.st_dev, info.st_ino == targetInfo.st_ino,
+                      info.st_nlink == members.count else { throw ArchiveError.invalid("硬链接身份或输出根内引用数量不符。") }
+                groupForPath[path] = members
+            }
+        }
         var seen = Set<String>()
         for url in try ArchiveMacMetadata.allURLs(in: root) {
             let relative = String(url.path.dropFirst(root.path.count + 1))
@@ -588,14 +624,14 @@ final class ArchiveService: ObservableObject {
                 let expectedSize:UInt64
                 if let link=entry.hardLink,let target=allowed[try resolvedLink(link,from:entry.path,hard:true)] {expectedSize=target.size} else {expectedSize=entry.size}
                 guard (attributes[.size] as? NSNumber)?.uint64Value == expectedSize,
-                      (attributes[.referenceCount] as? NSNumber)?.intValue == 1 else { throw ArchiveError.invalid("解压结果大小不符或包含硬链接。") }
+                      (attributes[.referenceCount] as? NSNumber)?.intValue == (groupForPath[relative]?.count ?? 1) else { throw ArchiveError.invalid("解压结果大小或硬链接数量不符。") }
             }
             seen.insert(relative)
         }
         guard expected.allSatisfy({ seen.contains($0.path) }) else { throw ArchiveError.invalid("解压结果不完整，未保存到目标目录：" + expected.filter { !seen.contains($0.path) }.prefix(5).map(\.path).joined(separator: "、")) }
         // Apply metadata only after all bytes/types/paths verify. Descendants first preserves directory mtimes.
         for entry in allowed.values.sorted(by: { $0.path.split(separator: "/").count > $1.path.split(separator: "/").count }) {
-            if entry.symbolicLink != nil {continue}
+            if entry.symbolicLink != nil || entry.hardLink != nil {continue}
             let url = root.appendingPathComponent(entry.path)
             // Keep the owner able to verify/read results without making read-only archives writable.
             // Never restore setuid/setgid/sticky bits or another user's ownership.

@@ -9,7 +9,7 @@ struct OperationRootView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $store.section) {
-                ForEach(OperationSection.allCases) { section in Label(section.rawValue,systemImage:section.icon).tag(section) }
+                ForEach(OperationSection.allCases) { section in Label(L10n.text(section.rawValue),systemImage:section.icon).tag(section) }
             }.navigationSplitViewColumnWidth(min:160,ideal:180,max:230)
             .safeAreaInset(edge:.bottom) {
                 Button { store.showSettings?() } label: { Label("设置…",systemImage:"gearshape").frame(maxWidth:.infinity,alignment:.leading) }.buttonStyle(.plain).padding()
@@ -33,7 +33,7 @@ struct OperationRootView: View {
         }
         .sheet(item:$store.sheet) { request in ToolSheet(store:store,request:request) }
         .sheet(item:$fileEnhancements.request) { _ in FileEnhancementToolView(controller:store.fileEnhancements,store:store) }
-        .alert("操作提示",isPresented:Binding(get:{store.error != nil},set:{if !$0 {store.error = nil}})) { Button("知道了"){store.error = nil} } message: { Text(store.error ?? "") }
+        .alert("操作提示",isPresented:Binding(get:{store.error != nil},set:{if !$0 {store.error = nil}})) { Button("知道了"){store.error = nil} } message: { Text(L10n.text(store.error ?? "")) }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { providers in acceptDrop(providers,store:store) }
     }
     @ViewBuilder private var sectionContent: some View {
@@ -100,7 +100,7 @@ struct ActionWorkspace: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:20) {
-                HStack { Text(store.section.rawValue).font(.title3.weight(.semibold)); Spacer(); TextField("搜索动作、关键词或拼音",text:$store.query).textFieldStyle(.roundedBorder).frame(maxWidth:330) }
+                HStack { Text(L10n.text(store.section.rawValue)).font(.title3.weight(.semibold)); Spacer(); TextField("搜索动作、关键词或拼音",text:$store.query).textFieldStyle(.roundedBorder).frame(maxWidth:330) }
                 if store.section == .windows { WindowPermissionCard(manager:store.windows) }
                 if store.visibleActions.isEmpty { ContentUnavailableView("暂无匹配动作",systemImage:"magnifyingglass",description:Text("可以更换关键词，或将动作加入收藏。")) }
                 LazyVGrid(columns:[GridItem(.adaptive(minimum:220),spacing:12)],spacing:12) {

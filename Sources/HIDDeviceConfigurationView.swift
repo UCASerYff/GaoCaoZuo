@@ -7,9 +7,18 @@ import SwiftUI
     @StateObject private var monitor=HIDInputDevices()
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
-            Text(monitor.status).font(.caption)
-            HStack {Button("开始识别和按钮录制"){monitor.start()};Button("停止录制"){monitor.stop()}}
+            Text(L10n.text(monitor.status)).font(.caption)
+            HStack {Button("刷新设备识别"){monitor.start(recordButtons:false)};Button("开始按钮录制"){monitor.start()};Button("停止录制"){monitor.stop()}}
             if !monitor.lastButton.isEmpty {Text(monitor.lastButton).font(.caption.monospaced()).textSelection(.enabled)}
+            ForEach(InputDeviceMatrix.currentMatrix(devices:monitor.devices,monitoringAuthorized:CGPreflightListenEventAccess())) {entry in
+                VStack(alignment:.leading) {
+                    Text(entry.identity.productName + " · " + L10n.text(entry.verificationState))
+                    Text("VID " + (entry.identity.vendorID==0 ? L10n.text("未提供"):String(entry.identity.vendorID)) + " / PID " + (entry.identity.productID==0 ? L10n.text("未提供"):String(entry.identity.productID)) + " / 位置 \(entry.identity.locationID) · " + entry.identity.transport + " · " + (entry.identity.isBuiltIn ? L10n.text("内置"):L10n.text("外置/未知"))).font(.caption)
+                    Text("接口 \(entry.identity.registryID) · Usage " + entry.identity.usagePairs.joined(separator:", ")).font(.caption.monospaced())
+                    Text(L10n.text(entry.capabilities.notes)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if monitor.devices.isEmpty {Text("尚未识别到接口；不会假定内置触控板或外置鼠标已连接。刷新识别不代表硬件动作验收。").font(.caption)}
             ForEach(monitor.devices) {device in
                 HStack {VStack(alignment:.leading){Text(device.name);Text("\(device.id) · 按钮Usage："+device.buttonUsages.map(String.init).joined(separator:",")).font(.caption.monospaced())};Spacer();Button("添加此设备配置"){var profile=HIDDeviceProfile();profile.name=device.name;profile.deviceID=device.id;profiles.append(profile)}}
             }
@@ -26,7 +35,7 @@ import SwiftUI
                             Toggle("松开时触发",isOn:$button.whenReleased)
                             TextField("限定应用Bundle ID",text:$button.appBundleID)
                             TextField("排除应用Bundle ID（逗号分隔）",text:Binding(get:{button.excludedApps.joined(separator:",")},set:{button.excludedApps=$0.split(separator:",").map{$0.trimmingCharacters(in:.whitespaces)}}))
-                            Picker("动作",selection:$button.effect.actionID){ForEach(actions){Text($0.title).tag($0.id)}}
+                            Picker("动作",selection:$button.effect.actionID){ForEach(actions){Text(L10n.text($0.title)).tag($0.id)}}
                             Button("删除按钮映射",role:.destructive){profile.buttons.removeAll{$0.id==button.id}}
                         }
                     }
@@ -40,6 +49,6 @@ import SwiftUI
                     Button("删除设备配置",role:.destructive){profiles.removeAll{$0.id==profile.id}}
                 } label:{Toggle(profile.name,isOn:$profile.enabled)}
             }
-        }.onDisappear {monitor.stop()}
+        }.onAppear {monitor.start(recordButtons:false)}.onDisappear {monitor.stop()}
     }
 }

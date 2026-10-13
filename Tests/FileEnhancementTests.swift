@@ -4,6 +4,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 @MainActor func runFileEnhancementTests() async throws {
+    try runFileAppAdapterTests()
     let fm=FileManager.default
     let root=URL(fileURLWithPath:"/private/tmp/GaoCaoZuo-FileEnhancementTests-"+UUID().uuidString,isDirectory:true)
     try fm.createDirectory(at:root,withIntermediateDirectories:false)

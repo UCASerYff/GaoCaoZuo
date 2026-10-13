@@ -30,6 +30,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var drawing:(points:[CGPoint],rules:[EnhancedInputRule],pid:pid_t,flags:UInt64,button:Int)?
     private var corner:String?
     private var lastScrollFire:TimeInterval = 0
+    private var deliveryState=InputRuleDeliveryState()
     private var smoothTimer:Timer?
     private var scrollRemaining = CGPoint.zero
     private var scrollTarget:pid_t?
@@ -52,7 +53,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     }
     var needsEvents:Bool {configuration.enabled && (configuration.rules.contains(where: \.enabled) || configuration.scrollProfiles.contains(where: \.enabled) || configuration.hidProfiles.contains(where: \.enabled))}
     var capabilityStatus:String {
-        guard configuration.enabled else{return "高级输入未启用"}
+        guard configuration.enabled else{return L10n.text("高级输入未启用")}
         var details=["高级输入已配置：\(configuration.rules.filter(\.enabled).count)条规则"]
         if configuration.hidProfiles.contains(where: \.enabled) {details.append(hid.status)}
         if configuration.experimentalRawTouch {details.append(touch.status+"；实际触点帧：\(touch.observedFrames)")}
@@ -65,7 +66,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         stop();self.configuration=configuration;self.excludedApps=excludedApps;self.handler=handler;self.report=reportCallback
         guard configuration.enabled else {return}
         do {try EnhancedInputValidation.validate(configuration)} catch {self.configuration.enabled=false;report?(error.localizedDescription);return}
-        let conflicts=Dictionary(grouping:configuration.rules.filter { $0.enabled && $0.trigger != .drawing && !($0.trigger == .touch && $0.touchGesture == "drawing") },by:EnhancedInputValidation.signature).values.filter{$0.count>1}.flatMap{$0.map(\.id)}
+        let conflicts=EnhancedInputValidation.conflictingIDs(configuration.rules)
         if !conflicts.isEmpty {self.configuration.rules.removeAll {conflicts.contains($0.id)};report?("高级输入存在相同触发冲突，相关规则已暂停。")}
         if configuration.scrollProfiles.contains(where:{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}) {report?("逐个物理鼠标滚轮规则尚不可用：公开 CGEvent 不提供可靠设备标识。该配置不会退化为修改所有鼠标。")}
     }
@@ -91,7 +92,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         timers.values.forEach{$0.invalidate()};timers.removeAll();smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero
         for (_,value) in replacements {try? sendKey(value.0,down:false,pid:value.1)}
         replacements.removeAll();keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll();drawing=nil;corner=nil
-        activeScript?.terminate();activeScript=nil
+        activeScript?.terminate();activeScript=nil;deliveryState=InputRuleDeliveryState()
     }
     private func matching(_ trigger:EnhancedInputTrigger,flags:UInt64,app:String)->[EnhancedInputRule] {
         configuration.rules.filter { $0.enabled && $0.trigger == trigger && $0.modifiers & EnhancedInputValidation.modifiers == flags & EnhancedInputValidation.modifiers && ($0.appBundleID.isEmpty || $0.appBundleID == app) && !$0.excludedApps.contains(app) }.sorted { !$0.appBundleID.isEmpty && $1.appBundleID.isEmpty }
@@ -99,12 +100,13 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func buttonMatches(_ r:EnhancedInputRule,_ button:Int)->Bool {r.button == button && Set(r.heldButtons).isSubset(of:buttons)}
     private func scheduleHold(_ r:EnhancedInputRule,key:String,pid:pid_t) {
         timers[key]?.invalidate()
+        guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
         timers[key]=Timer.scheduledTimer(withTimeInterval:r.holdSeconds,repeats:false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else{return};self.timers[key]=nil
                 let mask=r.keyCode==63 && r.trigger == .keyHold ? EnhancedInputValidation.modifiers & ~UInt64(NSEvent.ModifierFlags.function.rawValue):EnhancedInputValidation.modifiers
-                guard self.allowed(pid:pid),!IsSecureEventInputEnabled(),UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask else{return}
-                self.execute(r.effect,pid:pid)
+                guard self.allowed(pid:pid),NSRunningApplication(processIdentifier:pid)?.launchDate==launch,!IsSecureEventInputEnabled(),UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask else{return}
+                self.executeRule(r,pid:pid)
             }
         }
     }
@@ -134,39 +136,42 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
                 do {try sendKey(r.effect,down:true,pid:pid);replacements[code]=(r.effect,pid);keys.insert(code);return true} catch {report?(error.localizedDescription);return false}
             }
             keys.insert(code)
-            if repeatKey {return consumedKeys.contains(code)}
-            if let r=matching(.keyDown,flags:flags,app:app).first(where:{$0.keyCode==code}) {executeLater(r.effect,pid:pid);consume=r.consume}
+            if repeatKey {
+                if let rule=matching(.keyDown,flags:flags,app:app).first(where:{$0.keyCode==code && $0.allowKeyRepeat}) {executeLater(rule,pid:pid)}
+                return consumedKeys.contains(code)
+            }
+            if let r=matching(.keyDown,flags:flags,app:app).first(where:{$0.keyCode==code}) {executeLater(r,pid:pid);consume=r.consume}
             if let r=matching(.keyHold,flags:flags,app:app).first(where:{$0.keyCode==code}) {scheduleHold(r,key:"k\(code)",pid:pid);consume = consume || r.consume}
             if let r=matching(.keyUp,flags:flags,app:app).first(where:{$0.keyCode==code}),r.consume {consume=true}
             if consume {consumedKeys.insert(code)}
         case .keyUp:
             keys.remove(code);timers.removeValue(forKey:"k\(code)")?.invalidate()
             consume=consumedKeys.remove(code) != nil
-            if !IsSecureEventInputEnabled(),let r=matching(.keyUp,flags:flags,app:app).first(where:{$0.keyCode==code}) {executeLater(r.effect,pid:pid);consume = consume || r.consume}
+            if !IsSecureEventInputEnabled(),let r=matching(.keyUp,flags:flags,app:app).first(where:{$0.keyCode==code}) {executeLater(r,pid:pid);consume = consume || r.consume}
         case .flagsChanged:
             // Fn is a modifier in matching and also has key code 63 for explicit Fn down/up rules.
             let down=code==63 ? event.flags.contains(.maskSecondaryFn) : false
             if code==63 {
                 let fnFlags=flags & ~UInt64(NSEvent.ModifierFlags.function.rawValue)
-                if let r=matching(down ? .keyDown:.keyUp,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {executeLater(r.effect,pid:pid);consume=r.consume}
+                if let r=matching(down ? .keyDown:.keyUp,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {executeLater(r,pid:pid);consume=r.consume}
                 if down,let r=matching(.keyHold,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {scheduleHold(r,key:"fn",pid:pid)}
                 if !down {timers.removeValue(forKey:"fn")?.invalidate()}
             }
             if drawing?.flags != flags {drawing=nil}
         case .leftMouseDown,.rightMouseDown,.otherMouseDown:
             let button=Int(event.getIntegerValueField(.mouseEventButtonNumber));buttons.insert(button)
-            if let r=matching(.buttonDown,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r.effect,pid:pid);consume=r.consume}
+            if let r=matching(.buttonDown,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r,pid:pid);consume=r.consume}
             if let r=matching(.buttonHold,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {scheduleHold(r,key:"b\(button)",pid:pid);consume = consume || r.consume}
             let drawRules=matching(.drawing,flags:flags,app:app).filter{buttonMatches($0,button)}
             if !drawRules.isEmpty {drawing=([event.location],drawRules,pid,flags,button);consume = consume || drawRules.contains(where: \.consume)}
             if matching(.buttonUp,flags:flags,app:app).contains(where:{buttonMatches($0,button) && $0.consume}) {consume=true}
             if consume {consumedButtons.insert(button)}
             if type == .leftMouseDown {receiveTouchClick(pid:pid,flags:flags,app:app)}
-            if let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="click" && $0.button==button && Self.matchesEdge($0.corner,at:event.location)}) {executeLater(r.effect,pid:pid);consume = consume || r.consume}
+            if let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="click" && $0.button==button && Self.matchesEdge($0.corner,at:event.location,start:$0.edgeStart,end:$0.edgeEnd,width:$0.edgeWidth)}) {executeLater(r,pid:pid);consume = consume || r.consume}
         case .leftMouseUp,.rightMouseUp,.otherMouseUp:
             if type == .leftMouseUp {pressureLatched=false}
             let button=Int(event.getIntegerValueField(.mouseEventButtonNumber));timers.removeValue(forKey:"b\(button)")?.invalidate()
-            if let r=matching(.buttonUp,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r.effect,pid:pid);consume=r.consume}
+            if let r=matching(.buttonUp,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r,pid:pid);consume=r.consume}
             if let d=drawing,d.button==button {
                 defer {drawing=nil}
                 if d.pid==pid,d.flags==flags {recognizeDrawing(d.points+[event.location],rules:d.rules,pid:pid)}
@@ -181,8 +186,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         case .scrollWheel:
             let y=event.getDoubleValueField(.scrollWheelEventDeltaAxis1),x=event.getDoubleValueField(.scrollWheelEventDeltaAxis2)
             let direction=abs(y)>=abs(x) ? (y>=0 ? "up":"down"):(x>=0 ? "left":"right")
-            if now-lastScrollFire>0.15,let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="scroll"+direction.prefix(1).uppercased()+direction.dropFirst() && Self.matchesEdge($0.corner,at:event.location)}) {lastScrollFire=now;executeLater(r.effect,pid:pid);consume=r.consume}
-            if !consume,now-lastScrollFire>0.15,let r=matching(.scroll,flags:flags,app:app).first(where:{$0.direction==direction && Set($0.heldButtons).isSubset(of:buttons)}) {lastScrollFire=now;executeLater(r.effect,pid:pid);consume=r.consume}
+            if now-lastScrollFire>0.15,let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="scroll"+direction.prefix(1).uppercased()+direction.dropFirst() && Self.matchesEdge($0.corner,at:event.location,start:$0.edgeStart,end:$0.edgeEnd,width:$0.edgeWidth)}) {lastScrollFire=now;executeLater(r,pid:pid);consume=r.consume}
+            if !consume,now-lastScrollFire>0.15,let r=matching(.scroll,flags:flags,app:app).first(where:{$0.direction==direction && Set($0.heldButtons).isSubset(of:buttons)}) {lastScrollFire=now;executeLater(r,pid:pid);consume=r.consume}
             if !consume {consume=transformScroll(event,pid:pid,app:app,flags:flags)}
         case .mouseMoved:
             updateHotCorner(point:event.location,pid:pid,flags:flags,app:app)
@@ -190,12 +195,10 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         }
         return consume && AXIsProcessTrusted()
     }
-    static func matchesEdge(_ name:String,at point:CGPoint,frames:[CGRect]?=nil)->Bool {
+    static func matchesEdge(_ name:String,at point:CGPoint,frames:[CGRect]?=nil,start:Double=0,end:Double=1,width:Double=8)->Bool {
         let top=NSScreen.screens.first?.frame.maxY ?? 0
-        let rectangles=frames ?? NSScreen.screens.map { WindowGeometry.accessibilityRect(fromAppKit:$0.frame,primaryTop:top) }
-        guard let f=rectangles.first(where:{$0.insetBy(dx:-1,dy:-1).contains(point)}) else{return false}
-        let left=point.x<f.minX+8,right=point.x>f.maxX-8,up=point.y<f.minY+8,down=point.y>f.maxY-8
-        switch name {case "topLeft":return left && up;case "topRight":return right && up;case "bottomLeft":return left && down;case "bottomRight":return right && down;case "left":return left;case "right":return right;case "top":return up;case "bottom":return down;default:return false}
+        let rectangles=frames ?? NSScreen.screens.map {WindowGeometry.accessibilityRect(fromAppKit:$0.frame,primaryTop:top)}
+        return InputScreenEdgeGeometry.matches(name,point:point,frames:rectangles,start:start,end:end,width:width)
     }
     private func receivePressure(_ event:NSEvent) {
         observedPressureEvents += 1
@@ -204,7 +207,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         guard !pressureLatched else{return}
         let rules=matching(.pressure,flags:UInt64(event.modifierFlags.rawValue),app:front.bundleIdentifier ?? "")
         guard let rule=rules.first(where:{event.stage >= $0.pressureStage && Double(event.pressure)>=$0.pressureThreshold}) else{return}
-        pressureLatched=true;executeLater(rule.effect,pid:front.processIdentifier)
+        pressureLatched=true;executeLater(rule,pid:front.processIdentifier)
     }
     private func recognizeDrawing(_ points:[CGPoint],rules:[EnhancedInputRule],pid:pid_t) {
         guard DrawingRecognition.length(points)>=40 else{return}
@@ -212,7 +215,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         guard let best=ranked.first,best.1<best.0.recognitionThreshold else{return}
         // Ambiguous similar templates do not choose arbitrarily.
         if ranked.count>1,ranked[1].1-best.1<0.035 {report?("绘图与多个规则过于接近，未执行；请调整模板。");return}
-        executeLater(best.0.effect,pid:pid)
+        executeLater(best.0,pid:pid)
     }
     private func updateHotCorner(point:CGPoint,pid:pid_t,flags:UInt64,app:String) {
         let top=NSScreen.screens.first?.frame.maxY ?? 0
@@ -259,8 +262,25 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         if ix != 0 || iy != 0,let e=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:iy,wheel2:ix,wheel3:0) {e.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);e.postToPid(pid)}
         if abs(scrollRemaining.x)<0.5,abs(scrollRemaining.y)<0.5 {smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero}
     }
+    private func executeRule(_ rule:EnhancedInputRule,pid:pid_t) {
+        guard deliveryState.accept(id:rule.id,interval:rule.minimumIntervalSeconds,now:ProcessInfo.processInfo.systemUptime) else{return}
+        execute(rule.effect,pid:pid)
+    }
+    private func executeLater(_ rule:EnhancedInputRule,pid:pid_t) {
+        guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
+        DispatchQueue.main.async { [weak self] in
+            guard let self,self.allowed(pid:pid),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
+                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
+            self.executeRule(rule,pid:pid)
+        }
+    }
     private func executeLater(_ effect:InputEffect,pid:pid_t) {
-        DispatchQueue.main.async { [weak self] in guard let self,self.allowed(pid:pid) else{return};self.execute(effect,pid:pid) }
+        guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
+        DispatchQueue.main.async { [weak self] in
+            guard let self,self.allowed(pid:pid),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
+                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
+            self.execute(effect,pid:pid)
+        }
     }
     private func execute(_ effect:InputEffect,pid:pid_t) {
         do {
@@ -274,6 +294,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             case .systemPreset:
                 guard let preset=EnhancedSystemPreset(rawValue:effect.systemPreset) else {throw SystemControlError.message("未知系统动作。")};try EnhancedSystemControls.perform(preset)
             case .appleScript:try executeScript(effect.script)
+            case .menuItem:try InputMenuAction.perform(path:effect.menuPath,bundleID:effect.menuBundleID,pid:pid)
             }
         } catch {report?(error.localizedDescription)}
     }
@@ -326,7 +347,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             guard sequence.pid==pid else{touchSession[frame.deviceID]=nil;return}
             if frame.contacts.count<sequence.current.count,sequence.isTipTap(remaining:frame.contacts,ended:frame.timestamp) {
                 let flags=UInt64(NSEvent.modifierFlags.rawValue)&EnhancedInputValidation.modifiers
-                if let rule=matching(.touch,flags:flags,app:app.bundleIdentifier ?? "").first(where:{$0.touchGesture=="tipTap" && $0.fingers==sequence.maxFingers && ($0.touchDevice=="any" || $0.touchDevice==frame.deviceID) && sequence.matches(region:$0.touchRegion)}) {executeLater(rule.effect,pid:pid);sequence=TouchSequence(pid:pid,start:frame.timestamp,contacts:frame.contacts);sequence.hadClick=true}
+                if let rule=matching(.touch,flags:flags,app:app.bundleIdentifier ?? "").first(where:{$0.touchGesture=="tipTap" && $0.fingers==sequence.maxFingers && ($0.touchDevice=="any" || $0.touchDevice==frame.deviceID) && sequence.matches(region:$0.touchRegion)}) {executeLater(rule,pid:pid);sequence=TouchSequence(pid:pid,start:frame.timestamp,contacts:frame.contacts);sequence.hadClick=true}
             }
             sequence.update(frame.contacts,timestamp:frame.timestamp);touchSession[frame.deviceID]=sequence
             updateTouchDrag(frame,pid:pid,app:app.bundleIdentifier ?? "")
@@ -360,7 +381,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func receiveTouchClick(pid:pid_t,flags:UInt64,app:String) {
         for (device,s) in touchSession where s.pid==pid {
             touchSession[device]?.hadClick=true
-            if let r=matching(.touch,flags:flags,app:app).first(where:{$0.touchGesture=="click" && $0.fingers==s.maxFingers && ($0.touchDevice=="any" || $0.touchDevice==device) && s.matches(region:$0.touchRegion) && (!$0.thumbAtBottom || s.hasBottomAnchor)}) {executeLater(r.effect,pid:pid)}
+            if let r=matching(.touch,flags:flags,app:app).first(where:{$0.touchGesture=="click" && $0.fingers==s.maxFingers && ($0.touchDevice=="any" || $0.touchDevice==device) && s.matches(region:$0.touchRegion) && (!$0.thumbAtBottom || s.hasBottomAnchor)}) {executeLater(r,pid:pid)}
         }
     }
     private func evaluateTouch(_ s:TouchSequence,device:String,app:String,ended:Double) {
@@ -383,12 +404,12 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             }
         }
         if ended-s.start<0.3,s.travel<0.045 {lastTouchTap=(device,s.maxFingers,ended)}
-        if let double=matched.first(where:{$0.touchGesture=="doubleTap"}) {timers.removeValue(forKey:"tap-"+device)?.invalidate();executeLater(double.effect,pid:s.pid);return}
+        if let double=matched.first(where:{$0.touchGesture=="doubleTap"}) {timers.removeValue(forKey:"tap-"+device)?.invalidate();executeLater(double,pid:s.pid);return}
         if let tap=matched.first(where:{$0.touchGesture=="tap"}),candidates.contains(where:{$0.touchGesture=="doubleTap"}) {
-            timers["tap-"+device]?.invalidate();timers["tap-"+device]=Timer.scheduledTimer(withTimeInterval:0.4,repeats:false) { [weak self] _ in MainActor.assumeIsolated {guard let self,self.allowed(pid:s.pid) else{return};self.execute(tap.effect,pid:s.pid);self.timers["tap-"+device]=nil} };return
+            timers["tap-"+device]?.invalidate();timers["tap-"+device]=Timer.scheduledTimer(withTimeInterval:0.4,repeats:false) { [weak self] _ in MainActor.assumeIsolated {guard let self,self.allowed(pid:s.pid) else{return};self.executeLater(tap,pid:s.pid);self.timers["tap-"+device]=nil} };return
         }
         // A scoped rule overrides an otherwise identical global rule. Different interpretations remain ambiguous.
-        if let first=matched.first {if matched.dropFirst().contains(where:{$0.touchGesture != first.touchGesture}) {report?("触控动作匹配多个解释，未执行。")} else {executeLater(first.effect,pid:s.pid)}}
+        if let first=matched.first {if matched.dropFirst().contains(where:{$0.touchGesture != first.touchGesture}) {report?("触控动作匹配多个解释，未执行。")} else {executeLater(first,pid:s.pid)}}
     }
 }
 

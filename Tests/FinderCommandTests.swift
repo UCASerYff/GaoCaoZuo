@@ -1,7 +1,8 @@
 import Foundation
+import AppKit
 
 /// Pure request/URL tests: never issue or consume a native pasteboard ticket.
-func runFinderCommandTests() throws {
+@MainActor func runFinderCommandTests() throws {
     var checks = 0
     func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
         checks += 1
@@ -97,5 +98,31 @@ func runFinderCommandTests() throws {
     }
     // A parsed nonce still needs matching native bytes; URL syntax alone carries no paths or authority.
     try check(!accepted(rawPaths, matching: parsed(validURL)), "browser payload cannot become a request through valid ticket syntax")
-    print("PASS: \(checks) Finder ticket checks; pure data only, no pasteboard or file access")
+    var prefs = FinderMenuPreferences()
+    prefs.excludedApps = ["com.apple.finder", "com.example.Excluded"]
+    prefs.excludedPaths = ["/temporary/excluded"]
+    try check(FinderMenuContext.isExcluded([URL(fileURLWithPath:"/temporary/normal")],appBundleID:"com.apple.finder",preferences:prefs), "Finder application exclusion is independent of input exclusions")
+    try check(!FinderMenuContext.isExcluded([URL(fileURLWithPath:"/temporary/normal")],appBundleID:"com.example.Allowed",preferences:prefs), "unlisted app remains allowed")
+    try check(FinderMenuContext.isExcluded([URL(fileURLWithPath:"/temporary/excluded/child")],preferences:prefs), "excluded directory descendants are blocked")
+    try check(!FinderMenuContext.isExcluded([URL(fileURLWithPath:"/temporary/excluded-sibling")],preferences:prefs), "directory exclusion does not match path prefix siblings")
+    prefs.items = [FinderMenuItemDefinition(id:"new.text",title:"新建文本",icon:"doc",group:"新建"), FinderMenuItemDefinition(id:"file.openApp",title:"应用",icon:"app",group:"应用"), FinderMenuItemDefinition(id:"unknown.future.action",title:"未来功能",icon:"app",group:"未知")]
+    let customID=UUID().uuidString
+    let snapshot=FinderMenuSnapshot(preferences:prefs,applications:[FinderMenuApplication(id:customID,name:"自定义应用")])
+    let target=NSObject(), selector=NSSelectorFromString("perform:")
+    let urls=[URL(fileURLWithPath:"/temporary/normal")]
+    try check(FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:true,target:target,selector:selector,appBundleID:"com.example.Excluded").items.isEmpty, "builder itself blocks default and custom menu actions for excluded app")
+    let allowed=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:true,target:target,selector:selector,appBundleID:"com.example.Allowed")
+    let content=allowed.items.first?.submenu
+    try check(content?.items.contains(where:{$0.representedObject as? String == "new.text"}) == true, "allowed default action appears")
+    try check(content?.items.flatMap({$0.submenu?.items ?? []}).contains(where:{$0.representedObject as? String == "file.open."+customID}) == true, "allowed custom action appears")
+    try check(content?.items.contains(where:{$0.title == "未来功能"}) == false, "preserved unknown action cannot execute")
+    var encoded=try JSONSerialization.jsonObject(with:JSONEncoder().encode(prefs)) as! [String:Any]
+    encoded["futureTop"]=["nested":["retain",NSNull(),true],"integer":Int64.max]
+    var items=encoded["items"] as! [[String:Any]];items[0]["futureItem"]=["privateRule":"keep"];encoded["items"]=items
+    var reread=try JSONDecoder().decode(FinderMenuPreferences.self,from:JSONSerialization.data(withJSONObject:encoded))
+    reread.showIcons=false;reread.items[0].title="自定义名称"
+    let roundtrip=try JSONSerialization.jsonObject(with:JSONEncoder().encode(reread)) as! [String:Any]
+    try check((roundtrip["futureTop"] as? NSDictionary) == (encoded["futureTop"] as? NSDictionary), "unknown nested menu fields and 64-bit integers survive editing")
+    try check(((roundtrip["items"] as! [[String:Any]])[0]["futureItem"] as? NSDictionary) == (items[0]["futureItem"] as? NSDictionary), "unknown per-item fields survive editing")
+    print("PASS: \(checks) Finder ticket, actual menu exclusion and unknown-field preservation checks; no ticket pasteboard or user files")
 }

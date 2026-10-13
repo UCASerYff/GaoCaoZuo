@@ -56,7 +56,7 @@ struct ToolSheet: View {
     var running: Bool { working || store.busy || archive.isRunning }
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack { Text(title).font(.title2.weight(.semibold)); Spacer(); if running { ProgressView().controlSize(.small) } }.padding(20)
+            HStack { Text(L10n.text(title)).font(.title2.weight(.semibold)); Spacer(); if running { ProgressView().controlSize(.small) } }.padding(20)
             Divider()
             if request.actionID == "templates.edit" { TemplateEditorView(store:store) }
             else {

@@ -92,7 +92,7 @@ final class GaoFinderSync: FIFinderSync {
         let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
         let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences) else{return nil}
-        let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)))
+        let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)),appBundleID:frontApp)
         guard registry.assignTags(in:menu,selector:#selector(openAction(_:))) else {return nil}
         return menu
     }
@@ -104,7 +104,10 @@ final class GaoFinderSync: FIFinderSync {
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
         let containerAction=FinderMenuContext.usesContainer(action)
         let urls=containerAction ? controller.targetedURL().map{[$0]} ?? selection : selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
-        guard let url=FinderActionRequest.issue(action:action,urls:urls) else{return}
+        let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
+        let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard !FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences),
+              let url=FinderActionRequest.issue(action:action,urls:urls) else{return}
         let extensionURL=Bundle.main.bundleURL,pluginsURL=extensionURL.deletingLastPathComponent(),contentsURL=extensionURL.deletingLastPathComponent().deletingLastPathComponent(),appURL=extensionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         guard extensionURL.pathExtension == "appex",pluginsURL.lastPathComponent == "PlugIns",contentsURL.lastPathComponent == "Contents",appURL.pathExtension == "app",Bundle(url:appURL)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else{return}
         let config=NSWorkspace.OpenConfiguration();config.activates=false;config.allowsRunningApplicationSubstitution=false;config.arguments=["--background-action"]

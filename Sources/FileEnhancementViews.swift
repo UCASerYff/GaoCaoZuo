@@ -47,9 +47,8 @@ extension FileEnhancementController {
                 let name:NSSharingService.Name=id=="file.airdrop" ? .sendViaAirDrop : .composeEmail
                 guard let service=NSSharingService(named:name),service.canPerform(withItems:files) else{throw FileToolsError.invalid("系统当前无法使用该分享服务。")};service.perform(withItems:files)
             case "file.terminal":try terminal(directory,newWindow:settings.terminalNewWindow)
-            case "file.ishot":try launchInstalled(["cn.better365.iShotPro","cn.better365.ishot"],files:files,description:"iShot")
-            case "file.ishot.markup":try launchInstalled(["cn.better365.iShotPro","cn.better365.ishot"],files:files,description:"iShot")
-            case "file.diskmap":try launchInstalled(["com.Aodo365.DiskMap","com.Aodo365.DiskMapOffline"],files:files,description:"DiskMap")
+            case "file.ishot","file.ishot.markup","file.diskmap","file.capture.window","file.capture.display","file.images.pin","file.ocr","file.storage.duplicates","file.cleanup.review","file.apps.uninstall.review":
+                sendGaoAction(id:id,files:files,directory:directory,store:store)
             case "images.webp","images.icns","images.macicons","images.iosicons":let kind=String(id.dropFirst(7));store.work("转换图片"){try FileEnhancementImages.create(files,kind:kind)}
             case "text.baidu","text.google":guard let text=NSPasteboard.general.string(forType:.string),!text.isEmpty else{throw FileToolsError.invalid("剪贴板没有文字。")};try translate(text,provider:id)
             default:throw FileToolsError.invalid("尚未找到对应文件增强动作。")
@@ -64,28 +63,9 @@ extension FileEnhancementController {
         guard let target=url.url,NSWorkspace.shared.open(target) else{throw FileToolsError.invalid("无法打开翻译网页。")}
     }
     func terminal(_ directory:URL,newWindow:Bool) throws {
-        _ = try EnhancedFileTools.checked(directory)
-        guard let terminalApp=NSWorkspace.shared.urlForApplication(withBundleIdentifier:"com.apple.Terminal") else {
-            throw FileToolsError.invalid("找不到系统终端应用。")
-        }
-        if newWindow {
-            let config=NSWorkspace.OpenConfiguration()
-            config.activates=true
-            NSWorkspace.shared.open([directory],withApplicationAt:terminalApp,configuration:config){_,failure in
-                if let failure {Task{@MainActor in self.error=failure.localizedDescription}}
-            }
-            return
-        }
-        func literal(_ value:String)->String {"\""+value.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"\"",with:"\\\"").replacingOccurrences(of:"\n",with:"\\n").replacingOccurrences(of:"\r",with:"\\r")+"\""}
-        let command="cd -- '"+directory.path.replacingOccurrences(of:"'",with:"'\\''")+"'"
-        let script="tell application id \"com.apple.Terminal\"\nactivate\nif (count of windows) is 0 then\ndo script "+literal(command)+"\nelse\ntell application \"System Events\" to keystroke \"t\" using command down\ndo script "+literal(command)+" in selected tab of front window\nend if\nend tell"
-        var error:NSDictionary?
-        guard let apple=NSAppleScript(source:script) else{throw FileToolsError.invalid("终端脚本无效。")}
-        apple.executeAndReturnError(&error)
-        if let error {
-            let config=NSWorkspace.OpenConfiguration();config.activates=true
-            NSWorkspace.shared.open([directory],withApplicationAt:terminalApp,configuration:config,completionHandler:nil)
-            throw FileToolsError.invalid("终端新标签页需要系统自动化权限（已在独立窗口打开）：\(error[NSAppleScript.errorMessage] ?? "")")
+        guard let app=NSWorkspace.shared.urlForApplication(withBundleIdentifier:"com.apple.Terminal") else {throw FileToolsError.invalid("找不到系统终端应用。")}
+        try FileAppAdapter.open(files:[directory],bundleID:"com.apple.Terminal",appURL:app,disposition:newWindow ? .newWindow : .reuseWindow) { [weak self] failure in
+            if let failure {Task{@MainActor in self?.error=failure.localizedDescription}}
         }
     }
     func addApplication() throws {
@@ -97,11 +77,50 @@ extension FileEnhancementController {
         let saved=URL(fileURLWithPath:app.path)
         let url=(Bundle(url:saved)?.bundleIdentifier==app.bundleID ? saved : nil) ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier:app.bundleID)
         guard let url else{throw FileToolsError.invalid("未找到应用：\(app.name)")}
-        NSWorkspace.shared.open(files,withApplicationAt:url,configuration:NSWorkspace.OpenConfiguration()){[weak self] _,failure in if let failure{Task{@MainActor in self?.error=failure.localizedDescription}}}
+        let disposition:FileAppAdapter.Disposition = FileAppAdapter.terminalIDs.contains(app.bundleID) && settings.terminalNewWindow ? .newWindow : .reuseWindow
+        try FileAppAdapter.open(files:files,bundleID:app.bundleID,appURL:url,disposition:disposition) { [weak self] failure in
+            if let failure {Task{@MainActor in self?.error=failure.localizedDescription}}
+        }
     }
-    private func launchInstalled(_ ids:[String],files:[URL],description:String) throws {
-        guard let app=ids.compactMap({NSWorkspace.shared.urlForApplication(withBundleIdentifier:$0)}).first else{throw FileToolsError.invalid("尚未安装 \(description)；未执行外部工具操作。")}
-        NSWorkspace.shared.open(files,withApplicationAt:app,configuration:NSWorkspace.OpenConfiguration()){[weak self] _,failure in if let failure{Task{@MainActor in self?.error=failure.localizedDescription}}}
+    private func sendGaoAction(id:String,files:[URL],directory:URL,store:OperationStore) {
+        Task { @MainActor in
+            do {
+                let action:String,target:String
+                var inputs:[URL]=[],references:[GaoActionReference]=[],parameters:[String:Any]=[:]
+                switch id {
+                case "file.ishot":action="capture.region";target="com.gaoseries.GaoJieTu"
+                case "file.capture.window":action="capture.window";target="com.gaoseries.GaoJieTu"
+                case "file.capture.display":action="capture.display";target="com.gaoseries.GaoJieTu"
+                case "file.ishot.markup":action="images.annotate";target="com.gaoseries.GaoJieTu";inputs=files
+                case "file.images.pin":action="images.pin";target="com.gaoseries.GaoJieTu";inputs=files
+                case "file.ocr":action="ocr.files";target="com.gaoseries.GaoJieTu";inputs=files
+                case "file.cleanup.review":action="cleanup.review";target="com.gaoseries.GaoJiLing"
+                case "file.apps.uninstall.review":
+                    action="apps.uninstall.review";target="com.gaoseries.GaoJiLing"
+                    guard files.count==1 else {throw FileToolsError.invalid("请选择一个真实应用包以进入卸载复核。")}
+                    references=[try GaoActionV1.reference(for:files[0])]
+                default:
+                    action="storage.inspect";target="com.gaoseries.GaoJiLing"
+                    if !files.isEmpty,files.count != 1 {throw FileToolsError.invalid("请选择一个要分析的目录。")}
+                    let selected=files.first ?? directory
+                    references=[try GaoActionV1.reference(for:selected)]
+                    if id=="file.storage.duplicates" {parameters=["mode":"duplicates"]}
+                }
+                let client=GaoActionClient(dataDirectory:store.data.directory)
+                do {
+                    _ = try await client.sendRequest(action:action,targetBundleID:target,parameters:parameters,inputFiles:inputs,references:references)
+                    store.notify("已递交 \(action)，等待提供方确认与实际结果。")
+                } catch GaoActionError.providerNotReady(let reason) {
+                    store.activateForDialog?()
+                    let alert=NSAlert();alert.messageText="提供方动作尚不可用";alert.informativeText=reason+"\n本次动作未执行。可导出仅含本次所选副本/引用的私有交接包；交接包有效期为120秒，重新发送时需重新生成。"
+                    alert.addButton(withTitle:"返回");alert.addButton(withTitle:"导出私有交接包")
+                    if alert.runModal() == .alertSecondButtonReturn {
+                        let package=try await client.exportRequest(action:action,targetBundleID:target,parameters:parameters,inputFiles:inputs,references:references)
+                        NSWorkspace.shared.activateFileViewerSelecting([package]);store.notify("交接包已保存在本App私有资料目录；动作尚未执行。")
+                    } else {store.notify("提供方未就绪，动作未执行。",failed:true)}
+                }
+            } catch {store.notify(error.localizedDescription,failed:true)}
+        }
     }
     func createOffice(_ ext:String,in directory:URL,resourceDirectory:URL?=nil) throws -> FileOperationReceipt {
         guard FileEnhancements.documentFormats.contains(ext) else{throw FileToolsError.invalid("该格式请导入你自己的有效模板。")}
@@ -124,8 +143,8 @@ extension FileEnhancementController {
                 Toggle("新建内置文档时先显示窗口",isOn:Binding(get:{controller.settings.newFileViaWindow},set:{v in change{$0.newFileViaWindow=v}}))
                 Toggle("剪切时隐藏文件（粘贴或取消后恢复）",isOn:Binding(get:{controller.settings.cutHidesFiles},set:{v in change{$0.cutHidesFiles=v}}))
                 Toggle("彻底删除前再次确认",isOn:Binding(get:{controller.settings.confirmPermanentDelete},set:{v in change{$0.confirmPermanentDelete=v}}))
-                Toggle("Terminal 使用新窗口（关闭则新标签页）",isOn:Binding(get:{controller.settings.terminalNewWindow},set:{v in change{$0.terminalNewWindow=v}}))
-                Text("控制 Terminal 会按需请求自动化权限；新标签页还需系统事件与辅助功能权限。").font(.caption).foregroundStyle(.secondary)
+                Toggle("Terminal 使用新窗口",isOn:Binding(get:{controller.settings.terminalNewWindow},set:{v in change{$0.terminalNewWindow=v}}))
+                Text("Terminal 仅支持安全的新窗口；关闭此项时停止调用。iTerm 支持明确创建标签页。").font(.caption).foregroundStyle(.secondary)
                 TextField("自定义复制路径前缀",text:Binding(get:{controller.settings.customPathPrefix},set:{v in change{$0.customPathPrefix=v}}))
                 Button("取消当前剪切并恢复隐藏属性"){do{try controller.cancelCut();message="已取消剪切"}catch{message=error.localizedDescription}}
             }

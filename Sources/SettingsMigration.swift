@@ -15,6 +15,14 @@ private struct ReplacementMigrationJournal:Codable {
     var note:String
 }
 
+private struct ReplacementMigrationEvidence: Codable {
+    var schema = 1
+    var sourceSHA256: String
+    var originalFile: String
+    var unmappedKeys: [String:[String]]
+    var note = "仅已证明语义的字段参与映射；全部原始值（含未知嵌套字段）完整保存在私有原文件。模板附件、自定义应用、菜单树、原密码库未迁移，暂停规则需逐项启用。"
+}
+
 @MainActor extension OperationStore {
     func importReplacementSettings(_ url:URL) throws {
         guard dataHealthy else {throw DataFailure.message("资料保护模式，停止迁移。")}
@@ -40,6 +48,27 @@ private struct ReplacementMigrationJournal:Codable {
         }
         guard let document=try PropertyListSerialization.propertyList(from:bytes,format:nil) as? [String:Any],document["schema"] as? Int == 1,
               let right=document["right"] as? [String:Any],let archive=document["archive"] as? [String:Any],let pane=document["pane"] as? [String:Any],let inputDocument=document["input"] as? [String:Any] else {throw DataFailure.message("迁移文件结构不完整；未更改任何设置。")}
+        // Preserve every source byte before touching settings. An unknown field is
+        // evidence to retain, never an empty default to write over the source.
+        let originalName = "replacement-source-" + digest + ".plist"
+        let originalURL = data.directory.appendingPathComponent(originalName)
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: originalURL.path)
+            guard try data.verifiedData(originalName, maximumSize: 8_000_000) == bytes else { throw DataFailure.message("原始迁移快照不一致，停止覆盖。") }
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            try data.createFile(bytes, name: originalName)
+            guard try data.verifiedData(originalName, maximumSize: 8_000_000) == bytes else { throw DataFailure.message("原始迁移快照核验失败。") }
+        }
+        let mapped: [String:Set<String>] = [
+            "right": ["shouldShowStatusBarIcon", "shouldPlayNewFileSound", "commonDirList", "sendFileToDirList", "shouldAutoOpenNewFile", "shouldMergeFinderMenuItems", "shouldShowMenuOnExternalDisk", "shouldShowMenuIconOfToolbox"],
+            "archive": ["cpuUseCount", "shouldAppendDateAfterFileNameWhenCompress", "shouldOpenOriginDirectoryAfterCompress", "shouldOpenOriginDirectoryAfterDecompress", "shouldExcludeIgnoreFilesWhenCompress", "ignoreFilesWhenCompress", "shouldAutoSaveDecompressPassword", "shouldAutoSaveCompressPassword", "shouldAutoTryDecompressPassword"],
+            "pane": ["isUnsnapRestore", "isHapticFeedbackOnSnap", "isHiddenScreenEdgeText"]]
+        var unknown: [String:[String]] = [:]
+        for (name, fields) in [("right", right), ("archive", archive), ("pane", pane)] { unknown[name] = fields.keys.filter { !(mapped[name] ?? []).contains($0) }.sorted() }
+        unknown["input"] = inputDocument.keys.sorted() // the BAB importer separately reports partial mappings
+        unknown["root"] = document.keys.filter { !["schema", "right", "archive", "pane", "input"].contains($0) }.sorted()
+        _ = try data.load("replacement-migration-evidence.json", as: ReplacementMigrationEvidence.self)
+        try data.save(ReplacementMigrationEvidence(sourceSHA256: digest, originalFile: originalName, unmappedKeys: unknown), name: "replacement-migration-evidence.json")
         var next=settings
         if let v=right["shouldShowStatusBarIcon"] as? Bool {next.showMenuBarIcon=v}
         if let v=right["shouldPlayNewFileSound"] as? Bool {next.playNewFileSound=v}

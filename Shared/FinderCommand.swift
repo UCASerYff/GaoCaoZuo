@@ -27,6 +27,7 @@ struct FinderActionRequest: Codable {
         "file.icon", "file.icon.clear", "file.airdrop", "file.mail", "file.wallpaper", "file.openApp",
         "file.terminal", "file.path.real", "file.path.custom", "file.template.import", "file.template.create",
         "file.new.office", "file.metadata.undo", "file.ishot", "file.ishot.markup", "file.diskmap",
+        "file.capture.window", "file.capture.display", "file.images.pin", "file.ocr", "file.storage.duplicates", "file.cleanup.review", "file.apps.uninstall.review",
         "images.webp", "images.icns", "images.macicons", "images.iosicons", "file.fixNames", "file.icon.builtin",
         "file.new.docx", "file.new.xlsx", "file.new.pptx", "file.new.rtf", "file.new.xml", "file.new.psd", "file.new.ai", "file.new.pages", "file.new.numbers", "file.new.key",
         "archive.quick.zip", "archive.quick.7z", "archive.separate.zip", "archive.separate.7z", "archive.extract.here", "archive.create.trash", "archive.extract.trash", "archive.preferences", "archive.passwords"
