@@ -198,6 +198,32 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         if id.hasPrefix("system.") {
             do { try SystemActions.perform(id:id); awake = SystemActions.isPreventingSleep; notify(id == "system.preventSleep.toggle" ? (awake ? "保持唤醒已开启" : "保持唤醒已关闭") : "已发送系统请求") } catch { notify(error.localizedDescription,failed:true) }; return
         }
+        if id == "cleaner.start" { CleanerController.shared.startCleaning(); return }
+        if id == "flykey.show" { FlyKeyController.shared.showHUD(); return }
+        if id == "selection.bar.show" {
+            if let snapshot = SelectionSnapshot.capture() {
+                SelectionActionBar.shared.showBar(snapshot: snapshot)
+            } else if let clip = NSPasteboard.general.string(forType: .string), !clip.isEmpty {
+                let fallback = SelectionSnapshot(pid: 0, bundleID: nil, launchIdentity: nil, element: nil, selectedText: clip, range: nil, isFromClipboardFallback: true)
+                SelectionActionBar.shared.showBar(snapshot: fallback)
+            } else {
+                notify("未检测到活动选中文本，请选中文字后重试，或先复制文本", failed: true)
+            }
+            return
+        }
+        if id.hasPrefix("inputsource.") {
+            handleInputSourceAction(id)
+            return
+        }
+        if id == "clipboard.stack.paste" {
+            do { try clipboard.pasteFromStack(); notify("已粘贴堆栈顶部文本") } catch { notify(error.localizedDescription, failed: true) }
+            return
+        }
+        if id == "clipboard.stack.clear" {
+            PasteStack.shared.clear()
+            notify("已清空粘贴堆栈")
+            return
+        }
         if id == "clipboard.pasteplain" {
             do { try clipboard.pastePlainText(); notify("已发送纯文本粘贴") } catch { notify(error.localizedDescription,failed:true) };return
         }
@@ -349,5 +375,28 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             do{try process.run()}catch{process.terminationHandler=nil;continuation.resume(throwing:error)}
         }
         try Task.checkCancellation()
+    }
+    private func handleInputSourceAction(_ id: String) {
+        if id == "inputsource.switch.abc" {
+            let success = InputSourceCatalog.shared.selectInputSource(sourceID: "com.apple.keylayout.ABC")
+            notify(success ? "已切换至英文键盘 (ABC)" : "英文输入法不可用", failed: !success)
+        } else if id == "inputsource.switch.pinyin" {
+            let pinyin = InputSourceCatalog.shared.availableKeyboardInputSources().first { $0.id.contains("SCIM") || $0.name.contains("拼音") }
+            if let pinyin {
+                let success = InputSourceCatalog.shared.selectInputSource(sourceID: pinyin.id)
+                notify(success ? "已切换至 \(pinyin.name)" : "切换拼音输入法失败", failed: !success)
+            } else {
+                notify("未找到拼音输入法", failed: true)
+            }
+        } else if id == "inputsource.toggle" {
+            let sources = InputSourceCatalog.shared.availableKeyboardInputSources()
+            guard sources.count >= 2, let current = InputSourceCatalog.shared.currentInputSource() else {
+                notify("当前只有一个可用输入法", failed: true)
+                return
+            }
+            let next = sources.first { $0.id != current.id } ?? sources[0]
+            let success = InputSourceCatalog.shared.selectInputSource(sourceID: next.id)
+            notify(success ? "已切换至 \(next.name)" : "切换输入法失败", failed: !success)
+        }
     }
 }

@@ -5,6 +5,11 @@ import Darwin
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
+        if let index=CommandLine.arguments.firstIndex(of:"--provider-interop") {
+            guard CommandLine.arguments.count>index+1 else {throw DataFailure.message("Provider interop requires a package-pair directory.")}
+            try runProviderPackageInteropTests(directory:URL(fileURLWithPath:CommandLine.arguments[index+1],isDirectory:true))
+            return
+        }
         if CommandLine.arguments.contains("--migration-only") {
             GaoLocale.shared.setLanguage(.zhHans)
             try runMigrationTests()
@@ -26,6 +31,7 @@ import Darwin
         try runReplacementMigrationV2Tests()
         try await runGaoActionTests()
         try runEnhancementIntegrationTests()
+        try runExtensionIntegrationTests()
         try runInputEnhancementTests()
         try runBABMigrationTests()
         try runSystemTests()

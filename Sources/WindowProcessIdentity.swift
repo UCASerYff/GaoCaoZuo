@@ -59,4 +59,8 @@ enum WindowProcessIdentity {
               currentLaunchDate.timeIntervalSinceReferenceDate.isFinite else{return false}
         return capturedLaunchDate==currentLaunchDate
     }
+    static func auditTokenString(for pid: pid_t) -> String? {
+        guard let token = readToken(for: pid) else { return nil }
+        return "\(token.pid)-\(token.startSeconds)-\(token.startMicroseconds)"
+    }
 }

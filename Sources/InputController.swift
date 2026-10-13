@@ -269,7 +269,7 @@ final class InputController: ObservableObject {
     }
 
     private func installTap(authorization:InputListenerAuthorization) {
-        var types: [CGEventType] = [.keyDown, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
+        var types: [CGEventType] = [.keyDown, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp, .flagsChanged]
         if enhanced.needsEvents { types += [.keyUp,.flagsChanged,.leftMouseDown,.leftMouseUp,.leftMouseDragged,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
         let active=enhanced.needsActiveTap && authorization.accessibility
         tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
@@ -395,7 +395,10 @@ final class InputController: ObservableObject {
                     }
                 }
             }
+        case .flagsChanged:
+            FlyKeyController.shared.handleFlagsChanged(event: event)
         case .keyDown:
+            FlyKeyController.shared.resetTapDetector()
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
             matched = InputRules.match(in: bindings, trigger: .hotkey, modifiers: flags,
                                        keyCode: UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode)), appBundleID: app)

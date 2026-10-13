@@ -17,7 +17,11 @@ final class NativeArchivePreview: NSView {
             let preview = PDFView(); preview.document = document; preview.autoScales = true
             install(preview); return
         }
-        if let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) {
+        // ImageIO can return an empty source for ordinary text. Only a recognized
+        // image type enters this branch; recognized corrupt/oversized images must
+        // still fail here rather than falling through to the text preview.
+        if let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+           CGImageSourceGetType(source) != nil {
             guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                   let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
                   let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
