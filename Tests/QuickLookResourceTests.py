@@ -109,7 +109,7 @@ def main():
             "swiftc","-swift-version","5","-Xfrontend","-disable-sandbox","-O",
             "-target","arm64-apple-macos14.0","-module-cache-path",str(root/"cache"),
             *[str(p) for p in sorted(sources.glob("*.swift"))],str(localization),str(runner),
-            "-framework","AppKit","-framework","QuickLookUI","-o",str(executable)
+            "-framework","AppKit","-framework","QuickLookUI","-framework","PDFKit","-framework","ImageIO","-framework","CryptoKit","-o",str(executable)
         ],check=True,timeout=60)
         def preview(path,mode="normal"):
             result=subprocess.run([str(executable),str(path),mode],check=True,capture_output=True,text=True,timeout=10)

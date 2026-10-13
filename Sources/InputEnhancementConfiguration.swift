@@ -9,8 +9,9 @@ struct InputEnhancementConfiguration: Codable, Equatable {
     var syncFolder: String = ""
     var scriptLibrary: [InputScript] = []
     var hidProfiles: [HIDDeviceProfile] = []
+    var migrationSources:[InputMigrationSource] = []
     init() {}
-    enum CodingKeys: String, CodingKey { case enabled,rules,scrollProfiles,experimentalRawTouch,syncFolder,scriptLibrary,hidProfiles }
+    enum CodingKeys: String, CodingKey { case enabled,rules,scrollProfiles,experimentalRawTouch,syncFolder,scriptLibrary,hidProfiles,migrationSources }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy:CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self,forKey:.enabled) ?? false
@@ -20,6 +21,7 @@ struct InputEnhancementConfiguration: Codable, Equatable {
         syncFolder = try c.decodeIfPresent(String.self,forKey:.syncFolder) ?? ""
         scriptLibrary = try c.decodeIfPresent([InputScript].self,forKey:.scriptLibrary) ?? []
         hidProfiles = try c.decodeIfPresent([HIDDeviceProfile].self,forKey:.hidProfiles) ?? []
+        migrationSources = try c.decodeIfPresent([InputMigrationSource].self,forKey:.migrationSources) ?? []
     }
 }
 enum EnhancedInputTrigger: String, Codable, CaseIterable, Identifiable {
@@ -32,9 +34,12 @@ enum EnhancedInputTrigger: String, Codable, CaseIterable, Identifiable {
     }
 }
 enum InputEffectKind:String,Codable,CaseIterable,Identifiable {
-    case action,shortcut,mouseClick,scroll,systemPreset,appleScript,menuItem
+    case action,shortcut,mouseClick,scroll,systemPreset,appleScript,menuItem,openTargets
     var id:String {rawValue}
-    var title:String { switch self {case .action:return L10n.text("动作库");case .shortcut:return L10n.text("输出快捷键");case .mouseClick:return L10n.text("模拟鼠标点击");case .scroll:return L10n.text("模拟滚动");case .systemPreset:return L10n.text("系统控制");case .appleScript:return "AppleScript";case .menuItem:return L10n.text("应用菜单项")} }
+    var title:String { switch self {case .action:return L10n.text("动作库");case .shortcut:return L10n.text("输出快捷键");case .mouseClick:return L10n.text("模拟鼠标点击");case .scroll:return L10n.text("模拟滚动");case .systemPreset:return L10n.text("系统控制");case .appleScript:return "AppleScript";case .menuItem:return L10n.text("应用菜单项");case .openTargets:return L10n.text("打开指定应用、网址或路径")} }
+}
+enum InputWindowTargetMode:String,Codable,CaseIterable {
+    case inheritSettings,frontmost,underPointer
 }
 struct InputEffect:Codable,Equatable {
     var kind:InputEffectKind = .action
@@ -48,8 +53,11 @@ struct InputEffect:Codable,Equatable {
     var systemPreset = "missionControl"
     var menuBundleID = ""
     var menuPath:[String] = []
+    var mouseModifiers:UInt64 = 0
+    var openTargets:[String] = []
+    var windowTargetMode:InputWindowTargetMode = .inheritSettings
     init() {}
-    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset,menuBundleID,menuPath}
+    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset,menuBundleID,menuPath,mouseModifiers,openTargets,windowTargetMode}
     init(from decoder:Decoder)throws {
         self.init();let c=try decoder.container(keyedBy:CodingKeys.self)
         kind=try c.decodeIfPresent(InputEffectKind.self,forKey:.kind) ?? .action
@@ -63,6 +71,9 @@ struct InputEffect:Codable,Equatable {
         systemPreset=try c.decodeIfPresent(String.self,forKey:.systemPreset) ?? "missionControl"
         menuBundleID=try c.decodeIfPresent(String.self,forKey:.menuBundleID) ?? ""
         menuPath=try c.decodeIfPresent([String].self,forKey:.menuPath) ?? []
+        mouseModifiers=try c.decodeIfPresent(UInt64.self,forKey:.mouseModifiers) ?? 0
+        openTargets=try c.decodeIfPresent([String].self,forKey:.openTargets) ?? []
+        windowTargetMode=try c.decodeIfPresent(InputWindowTargetMode.self,forKey:.windowTargetMode) ?? .inheritSettings
     }
 }
 struct InputScript:Codable,Equatable,Identifiable {
@@ -105,8 +116,9 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
     var pressureThreshold: Double = 0.8
     var thumbAtBottom = false
     var excludedApps: [String] = []
+    var migrationOrigin:InputRuleMigrationOrigin? = nil
     init() {}
-    enum CodingKeys:String,CodingKey {case id,name,enabled,trigger,keyCode,modifiers,button,heldButtons,holdSeconds,allowKeyRepeat,minimumIntervalSeconds,direction,corner,edgeStart,edgeEnd,edgeWidth,appBundleID,consume,effect,drawing,recognitionThreshold,touchDevice,fingers,touchGesture,touchRegion,pressureStage,pressureThreshold,thumbAtBottom,excludedApps}
+    enum CodingKeys:String,CodingKey {case id,name,enabled,trigger,keyCode,modifiers,button,heldButtons,holdSeconds,allowKeyRepeat,minimumIntervalSeconds,direction,corner,edgeStart,edgeEnd,edgeWidth,appBundleID,consume,effect,drawing,recognitionThreshold,touchDevice,fingers,touchGesture,touchRegion,pressureStage,pressureThreshold,thumbAtBottom,excludedApps,migrationOrigin}
     init(from decoder:Decoder)throws {
         self.init();let c = try decoder.container(keyedBy:CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self,forKey:.id) ?? UUID();name = try c.decodeIfPresent(String.self,forKey:.name) ?? "新规则"
@@ -130,6 +142,7 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
         pressureThreshold = try c.decodeIfPresent(Double.self,forKey:.pressureThreshold) ?? 0.8
         thumbAtBottom = try c.decodeIfPresent(Bool.self,forKey:.thumbAtBottom) ?? false
         excludedApps = try c.decodeIfPresent([String].self,forKey:.excludedApps) ?? []
+        migrationOrigin = try c.decodeIfPresent(InputRuleMigrationOrigin.self,forKey:.migrationOrigin)
     }
 }
 struct ScrollDeviceProfile: Codable,Equatable,Identifiable {
@@ -146,7 +159,14 @@ struct ScrollDeviceProfile: Codable,Equatable,Identifiable {
 
 enum EnhancedInputValidation {
     static let modifiers = UInt64(NSEvent.ModifierFlags([.command,.control,.option,.shift,.function]).rawValue)
+    static func migrationBlockReason(_ rule:EnhancedInputRule)->String? {
+        guard let origin=rule.migrationOrigin else{return nil}
+        guard origin.disposition == .exact else {return L10n.text("输入迁移语义尚未复核，此规则不能启动。")}
+        guard Set(origin.requirements).isSubset(of:Set(origin.verifiedRequirements)) else {return L10n.text("输入迁移所需设备或权限行为尚未核验，此规则不能启动。")}
+        return nil
+    }
     static func error(_ rule:EnhancedInputRule)->String? {
+        if rule.enabled,let reason=migrationBlockReason(rule) {return reason}
         guard !rule.name.isEmpty,rule.name.count<=200,rule.appBundleID.count<=256 else {return L10n.text("规则名称或应用范围无效")}
         guard rule.keyCode<=127,rule.effect.keyCode<=127,(0...31).contains(rule.button),rule.heldButtons.allSatisfy({(0...31).contains($0)}),Set(rule.heldButtons).count==rule.heldButtons.count else {return L10n.text("键码或按钮编号无效")}
         guard rule.holdSeconds.isFinite,(0.2...10).contains(rule.holdSeconds),rule.recognitionThreshold.isFinite,(0.05...0.5).contains(rule.recognitionThreshold) else {return L10n.text("时间或识别阈值无效")}
@@ -162,11 +182,13 @@ enum EnhancedInputValidation {
         if rule.trigger == .screenEdge && (!rule.edgeStart.isFinite || !rule.edgeEnd.isFinite || !rule.edgeWidth.isFinite || rule.edgeStart < 0 || rule.edgeEnd > 1 || rule.edgeEnd-rule.edgeStart < 0.01 || !(2...80).contains(rule.edgeWidth)) {return L10n.text("边段必须位于0–1内，长度至少0.01，边缘宽度2–80pt")}
         if rule.trigger == .screenEdge && !["click","scrollUp","scrollDown","scrollLeft","scrollRight"].contains(rule.direction) {return L10n.text("边角触发方式无效")}
         if rule.effect.kind == .mouseClick && !(0...31).contains(rule.effect.mouseButton) {return L10n.text("输出鼠标按钮无效")}
+        if rule.effect.mouseModifiers & ~modifiers != 0 {return L10n.text("输出鼠标修饰键无效")}
         if rule.effect.kind == .scroll && ![rule.effect.scrollX,rule.effect.scrollY].allSatisfy({$0.isFinite && abs($0)<=10000}) {return L10n.text("输出滚动值无效")}
         if rule.effect.kind == .systemPreset && !EnhancedSystemPreset.allCases.map(\.rawValue).contains(rule.effect.systemPreset) {return L10n.text("系统动作无效")}
         if rule.effect.kind == .appleScript && (rule.effect.script.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || rule.effect.script.utf8.count>65536) {return L10n.text("脚本为空或超过 64 KiB")}
         if rule.effect.kind == .menuItem && (rule.effect.menuBundleID.isEmpty || rule.effect.menuBundleID.utf8.count>256 || !(2...10).contains(rule.effect.menuPath.count) || !rule.effect.menuPath.allSatisfy({!$0.isEmpty && $0.utf8.count<=1024})) {return L10n.text("请选择目标应用和完整菜单路径")}
         if rule.effect.kind == .action && rule.effect.actionID.isEmpty {return L10n.text("请选择动作")}
+        if rule.effect.kind == .openTargets {do {_=try InputOpenTargets.urls(rule.effect.openTargets)} catch {return error.localizedDescription}}
         return nil
     }
     static func signature(_ r:EnhancedInputRule)->String {
@@ -184,6 +206,22 @@ enum EnhancedInputValidation {
         return ids
     }
     static func validate(_ c:InputEnhancementConfiguration)throws {
+        guard c.migrationSources.count<=16,c.migrationSources.reduce(0,{$0+$1.operationalPlist.count})<=32*1024*1024,
+              Set(c.migrationSources.map(\.sha256)).count==c.migrationSources.count else {throw SystemControlError.message("输入迁移档案重复或超过保留预算。")}
+        for source in c.migrationSources {try source.verify()}
+        for rule in c.rules {
+            if let origin=rule.migrationOrigin,!c.migrationSources.contains(where:{$0.sha256==origin.sourceDigest && $0.rows.contains(where:{$0.id==origin.rowID})}) {
+                throw SystemControlError.message("输入规则来源档案缺失，停止启动。")
+            }
+        }
+        if c.rules.contains(where:{$0.enabled && $0.migrationOrigin != nil}) {
+            let expected=try InputMigrationExecutionPolicy.expectedRules(c)
+            for rule in c.rules where rule.enabled {
+                if let origin=rule.migrationOrigin,let reason=try InputMigrationExecutionPolicy.blockReason(rule,expected:expected[origin.sourceDigest]?[origin.rowID]) {
+                    throw SystemControlError.message(reason)
+                }
+            }
+        }
         guard c.rules.count<=500,c.scrollProfiles.count<=100,c.scriptLibrary.count<=200,c.hidProfiles.count<=100 else {throw SystemControlError.message("输入配置超过 500 条规则或 100 个设备配置。")}
         guard Set(c.rules.map(\.id)).count==c.rules.count,Set(c.scrollProfiles.map(\.id)).count==c.scrollProfiles.count else {throw SystemControlError.message("输入配置存在重复 ID。")}
         for rule in c.rules {if let error = error(rule) {throw SystemControlError.message(rule.name + "：" + error)}}

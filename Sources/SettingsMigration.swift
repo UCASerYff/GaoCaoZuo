@@ -27,8 +27,11 @@ private struct ReplacementMigrationEvidence: Codable {
     func importReplacementSettings(_ url:URL) throws {
         guard dataHealthy else {throw DataFailure.message("资料保护模式，停止迁移。")}
         let attrs=try FileManager.default.attributesOfItem(atPath:url.path)
-        guard attrs[.type] as? FileAttributeType == .typeRegular,(attrs[.size] as? NSNumber)?.intValue ?? Int.max<=8_000_000 else {throw DataFailure.message("迁移文件无效或过大。")}
-        let bytes=try Data(contentsOf:url)
+        guard attrs[.type] as? FileAttributeType == .typeRegular,(attrs[.size] as? NSNumber)?.intValue ?? Int.max<=32_000_000 else {throw DataFailure.message("迁移文件无效或过大。")}
+        let bytes=try ReplacementMigrationSupport.checkedBytes(url,maximum:32_000_000)
+        if let document=try PropertyListSerialization.propertyList(from:bytes,format:nil) as? [String:Any],document["schema"] as? Int == 2 {
+            try importReplacementV2(document,bytes:bytes);return
+        }
         let digest=SHA256.hash(data:bytes).map{String(format:"%02x",$0)}.joined()
         var journal=try data.load("replacement-migration.json",as:ReplacementMigrationJournal.self)
         if let previous=journal {
@@ -78,8 +81,7 @@ private struct ReplacementMigrationEvidence: Codable {
             if !next.folders.contains(where:{$0.path==path}) {next.folders.append(.init(name:name,path:path));folders += 1}
         }
         let imported=try EnhancedRuleFiles.importBAB(inputDocument)
-        next.inputEnhancements.rules += imported.configuration.rules
-        next.inputEnhancements.scriptLibrary += imported.configuration.scriptLibrary
+        next.inputEnhancements=try EnhancedRuleFiles.mergeInputConfiguration(imported.configuration,into:next.inputEnhancements).configuration
         // Coexistence is intentional until replacement verification: imported triggers remain paused.
         if let v=pane["isUnsnapRestore"] as? Bool {next.windowEnhancements.restoreWhenUnsnapped=v}
         if let v=pane["isHapticFeedbackOnSnap"] as? Bool {next.windowEnhancements.hapticFeedback=v}
@@ -120,6 +122,7 @@ private struct ReplacementMigrationEvidence: Codable {
         notify("配置已迁移：\(folders)个目录、\(imported.configuration.rules.count)条暂停规则；详情保存在本地资料。")
     }
     func recoverInterruptedMigration() throws {
+        try recoverInterruptedReplacementV2()
         guard dataHealthy, var journal=try data.load("replacement-migration.json",as:ReplacementMigrationJournal.self) else {return}
         guard journal.schema == 1,["prepared","restored","complete"].contains(journal.state) else {throw DataFailure.message("迁移日志版本或状态无效，停止写入。")}
         guard journal.state == "prepared" else {return}

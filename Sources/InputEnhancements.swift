@@ -19,6 +19,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     static let syntheticTag:Int64 = 0x47414F43414F
     var configuration = InputEnhancementConfiguration()
     var handler:((String)->Void)?
+    var invocationHandler:((String,InputWindowTargetMode)->Void)?
     var report:((String?)->Void)?
     var excludedApps:Set<String> = []
     private var keys:Set<UInt16> = []
@@ -63,12 +64,15 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     var touchDeviceNames:[String] {touch.deviceNames}
 
     func configure(_ configuration:InputEnhancementConfiguration,excludedApps:Set<String>,handler:@escaping(String)->Void,report reportCallback:@escaping(String?)->Void) {
-        stop();self.configuration=configuration;self.excludedApps=excludedApps;self.handler=handler;self.report=reportCallback
+        stop();self.invocationHandler=nil;self.configuration=configuration;self.excludedApps=excludedApps;self.handler=handler;self.report=reportCallback
         guard configuration.enabled else {return}
         do {try EnhancedInputValidation.validate(configuration)} catch {self.configuration.enabled=false;report?(error.localizedDescription);return}
         let conflicts=EnhancedInputValidation.conflictingIDs(configuration.rules)
         if !conflicts.isEmpty {self.configuration.rules.removeAll {conflicts.contains($0.id)};report?("高级输入存在相同触发冲突，相关规则已暂停。")}
         if configuration.scrollProfiles.contains(where:{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}) {report?("逐个物理鼠标滚轮规则尚不可用：公开 CGEvent 不提供可靠设备标识。该配置不会退化为修改所有鼠标。")}
+        let pending=self.configuration.rules.indices.filter {self.configuration.rules[$0].enabled && EnhancedInputValidation.migrationBlockReason(self.configuration.rules[$0]) != nil}
+        for i in pending {self.configuration.rules[i].enabled=false}
+        if !pending.isEmpty {report?("输入迁移仍有待复核的语义或设备，相关规则保持暂停。")}
     }
     func startMonitoring() {
         guard configuration.enabled else{return}
@@ -285,9 +289,10 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func execute(_ effect:InputEffect,pid:pid_t) {
         do {
             switch effect.kind {
-            case .action:handler?(effect.actionID)
+            case .action:
+                try InputActionDelivery.perform(effect.actionID,mode:effect.windowTargetMode,legacy:handler,invocation:invocationHandler)
             case .shortcut:try sendKey(effect,down:true,pid:pid);try sendKey(effect,down:false,pid:pid)
-            case .mouseClick:try sendMouseClick(effect.mouseButton,pid:pid)
+            case .mouseClick:try sendMouseClick(effect.mouseButton,modifiers:effect.mouseModifiers,pid:pid)
             case .scroll:
                 guard AXIsProcessTrusted(),let event=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:Int32(effect.scrollY),wheel2:Int32(effect.scrollX),wheel3:0) else {throw SystemControlError.message("模拟滚动需要辅助功能权限。")}
                 event.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);event.postToPid(pid)
@@ -295,14 +300,15 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
                 guard let preset=EnhancedSystemPreset(rawValue:effect.systemPreset) else {throw SystemControlError.message("未知系统动作。")};try EnhancedSystemControls.perform(preset)
             case .appleScript:try executeScript(effect.script)
             case .menuItem:try InputMenuAction.perform(path:effect.menuPath,bundleID:effect.menuBundleID,pid:pid)
+            case .openTargets:try InputOpenTargets.perform(effect.openTargets);report?("打开请求已递交；目标应用的后续操作尚未验证。")
             }
         } catch {report?(error.localizedDescription)}
     }
-    private func sendMouseClick(_ button:Int,pid:pid_t)throws {
+    private func sendMouseClick(_ button:Int,modifiers:UInt64,pid:pid_t)throws {
         guard AXIsProcessTrusted(),!IsSecureEventInputEnabled(),NSRunningApplication(processIdentifier:pid)?.isTerminated == false,let point=CGEvent(source:nil)?.location else {throw SystemControlError.message("模拟鼠标需要辅助功能权限和有效目标。")}
         let cgButton=CGMouseButton(rawValue:UInt32(button)) ?? .center
         let types:[CGEventType]=button==0 ? [.leftMouseDown,.leftMouseUp]:button==1 ? [.rightMouseDown,.rightMouseUp]:[.otherMouseDown,.otherMouseUp]
-        for type in types {guard let event=CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:cgButton) else {throw SystemControlError.message("不能生成鼠标事件。")};event.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);event.postToPid(pid)}
+        for type in types {guard let event=CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:cgButton) else {throw SystemControlError.message("不能生成鼠标事件。")};event.flags=CGEventFlags(rawValue:modifiers & EnhancedInputValidation.modifiers);event.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);event.postToPid(pid)}
     }
     private func sendKey(_ effect:InputEffect,down:Bool,pid:pid_t)throws {
         guard AXIsProcessTrusted(),!IsSecureEventInputEnabled() else{throw SystemControlError.message("模拟按键需要辅助功能权限，且不能在安全输入状态使用。")}

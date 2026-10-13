@@ -118,19 +118,33 @@ struct ActionWorkspace: View {
             ForEach(store.settings.folders) { folder in
                 HStack(spacing: 10) {
                     Button { store.openFolder(folder) } label: { Label(folder.name, systemImage: "folder") }
+                        .disabled(!folder.isCommon)
                     Text(folder.path).foregroundStyle(.secondary).font(.caption).lineLimit(1).help(folder.path)
                     Spacer(minLength: 8)
+                    Toggle("常用菜单",isOn:folderRole(folder,"common")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
+                    Toggle("发送菜单",isOn:folderRole(folder,"send")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
                     if !store.selection.isEmpty {
                         Button("复制到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: false) }
-                            .controlSize(.small).disabled(!store.dataHealthy)
+                            .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
                         Button("移动到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: true) }
-                            .controlSize(.small).disabled(!store.dataHealthy)
+                            .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
                     }
                     Button { store.update { $0.folders.removeAll { $0.id == folder.id } } } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.borderless).help("移除收藏")
                 }
             }
         }.padding().background(.quaternary.opacity(0.5),in:RoundedRectangle(cornerRadius:12))
+    }
+    @MainActor private func folderRole(_ folder:FavoriteFolder,_ role:String)->Binding<Bool> {
+        Binding(get:{role == "common" ? folder.isCommon : folder.isSend},set:{enabled in
+            store.update {value in
+                guard let index=value.folders.firstIndex(where:{$0.id == folder.id}) else{return}
+                var roles=value.folders[index].sourceRoles ?? ["common","send"]
+                if enabled,!roles.contains(role) {roles.append(role)}
+                if !enabled {roles.removeAll{$0 == role}}
+                value.folders[index].sourceRoles=roles
+            }
+        })
     }
     private var templates: some View {
         VStack(alignment:.leading,spacing:12) {

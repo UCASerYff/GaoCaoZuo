@@ -13,14 +13,15 @@ struct OperationAction: Identifiable {
     let id: String
     private let sourceTitle: String
     private let sourceDetail: String
-    var title: String { L10n.text(sourceTitle) }
+    private let localizeTitle: Bool
+    var title: String { localizeTitle ? L10n.text(sourceTitle) : sourceTitle }
     var detail: String { L10n.text(sourceDetail) }
     let icon: String
     let section: OperationSection
     var keywords: String = ""
     var files = false
-    init(id:String,title:String,detail:String,icon:String,section:OperationSection,keywords:String="",files:Bool=false) {
-        self.id=id;self.sourceTitle=title;self.sourceDetail=detail;self.icon=icon;self.section=section;self.keywords=keywords;self.files=files
+    init(id:String,title:String,detail:String,icon:String,section:OperationSection,keywords:String="",files:Bool=false,localizeTitle:Bool=true) {
+        self.id=id;self.sourceTitle=title;self.sourceDetail=detail;self.icon=icon;self.section=section;self.keywords=keywords;self.files=files;self.localizeTitle=localizeTitle
     }
     func matches(_ query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -153,7 +154,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     func update(_ body: (inout OperationSettings) -> Void) { var value = settings; body(&value); settings = value }
     func toggleFavorite(_ id: String) { update { if $0.favorites.contains(id) { $0.favorites.removeAll {$0 == id} } else { $0.favorites.append(id) } } }
     var actionChoices:[OperationAction] {
-        OperationAction.all + settings.windowEnhancements.customLayouts.map{OperationAction(id:"window.custom."+$0.id.uuidString,title:$0.name,detail:"自定义窗口布局",icon:"rectangle.split.2x2",section:.windows)} + fileEnhancements.settings.apps.map{OperationAction(id:"file.open."+$0.id.uuidString,title:"用"+$0.name+"打开",detail:"打开所选文件或目录",icon:"app",section:.files,files:true)}
+        var result=OperationAction.all
+        result += settings.windowEnhancements.customLayouts.map{OperationAction(id:"window.custom."+$0.id.uuidString,title:$0.name,detail:"自定义窗口布局",icon:"rectangle.split.2x2",section:.windows,localizeTitle:false)}
+        result += fileEnhancements.settings.apps.filter(\.isEnabled).map{OperationAction(id:"file.open."+$0.id.uuidString,title:$0.name,detail:"打开所选文件或目录",icon:"app",section:.files,files:true,localizeTitle:false)}
+        result += fileEnhancements.settings.templates.filter(\.isEnabled).map{OperationAction(id:"binaryTemplate."+$0.id.uuidString,title:$0.name,detail:"文件模板",icon:"doc",section:.files,localizeTitle:false)}
+        return result
     }
     var visibleActions: [OperationAction] {
         let all = actionChoices.filter {$0.matches(query)}
@@ -217,11 +222,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             notify("已添加到常用目录");return
         }
         for (prefix,move) in [("folder.copy.",false),("folder.move.",true)] where id.hasPrefix(prefix) {
-            guard let uuid=UUID(uuidString:String(id.dropFirst(prefix.count))),let folder=settings.folders.first(where:{$0.id==uuid}) else {notify("常用目录已失效",failed:true);return}
+            guard let uuid=UUID(uuidString:String(id.dropFirst(prefix.count))),let folder=settings.folders.first(where:{$0.id==uuid && $0.isSend}) else {notify("常用目录已失效",failed:true);return}
             let destination=URL(fileURLWithPath:folder.path,isDirectory:true)
             work(move ? "移动到常用目录" : "复制到常用目录"){try FileTools.copy(items:selected,to:destination,move:move)};return
         }
-        if id.hasPrefix("folder.open."),let uuid=UUID(uuidString:String(id.dropFirst(12))),let folder=settings.folders.first(where:{$0.id==uuid}) {openFolder(folder);return}
+        if id.hasPrefix("folder.open."),let uuid=UUID(uuidString:String(id.dropFirst(12))),let folder=settings.folders.first(where:{$0.id==uuid && $0.isCommon}) {openFolder(folder);return}
         if id.hasPrefix("binaryTemplate."),let uuid=UUID(uuidString:String(id.dropFirst(15))) {
             do{let receipt=try fileEnhancements.createTemplate(uuid,directory:directory(for:selected));try record([receipt]);notify("已创建模板文件",outputs:[receipt.destination])}catch{notify(error.localizedDescription,failed:true)};return
         }

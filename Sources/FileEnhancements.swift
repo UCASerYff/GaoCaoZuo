@@ -193,8 +193,21 @@ enum EnhancedFileTools {
 struct BinaryTemplate: Codable, Identifiable {
     struct Entry: Codable { var relative: String; var attachment: String?; var digest: String?; var mode: UInt32 }
     var id = UUID(); var name: String; var filename: String; var directory: Bool; var entries: [Entry]
+    var enabled: Bool? = nil
+    var mainMenu: Bool? = nil
+    var sourceKey: String? = nil
+    var provenance: TemplateProvenance? = nil
+    var unavailableReason: String? = nil
+    var isEnabled: Bool { (enabled ?? true) && unavailableReason == nil }
 }
-struct EnhancedOpenApp: Codable, Identifiable { var id = UUID(); var name: String; var bundleID: String; var path: String }
+struct TemplateProvenance: Codable { var bundleID: String; var version: String; var relativePath: String; var sha256: String }
+struct EnhancedOpenApp: Codable, Identifiable {
+    var id = UUID(); var name: String; var bundleID: String; var path: String
+    var enabled: Bool? = nil
+    var newWindow: Bool? = nil
+    var sourceKey: String? = nil
+    var isEnabled: Bool { enabled ?? true }
+}
 struct FileEnhancementSettings: Codable {
     var schema = 1
     var templates: [BinaryTemplate] = []
@@ -300,6 +313,7 @@ enum FileEnhancements {
     }
     func createTemplate(_ template:BinaryTemplate,in directory:URL) throws -> FileOperationReceipt {
         guard healthy else {throw DataFailure.message(data.failure!)}
+        guard template.isEnabled else {throw FileToolsError.invalid(template.unavailableReason ?? "此模板条目已停用，请先在文件设置复核启用。")}
         var verified:[String:Data]=[:]
         guard !template.entries.isEmpty, Set(template.entries.map(\.relative)).count == template.entries.count,
               template.entries.filter({ $0.relative.isEmpty }).count == 1,
@@ -328,6 +342,7 @@ enum FileEnhancements {
     }
     func createTemplate(_ id:UUID,directory:URL) throws -> FileOperationReceipt {
         guard let template=settings.templates.first(where:{$0.id==id}) else{throw FileToolsError.invalid("未找到该文件模板。")}
+        guard template.isEnabled else {throw FileToolsError.invalid(template.unavailableReason ?? "此模板条目已停用，请先在文件设置复核启用。")}
         return try createTemplate(template,in:directory)
     }
     func changeMetadata(_ files:[URL],kind:String,value:UInt32) throws {

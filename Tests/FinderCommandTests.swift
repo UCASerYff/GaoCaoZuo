@@ -124,5 +124,18 @@ import AppKit
     let roundtrip=try JSONSerialization.jsonObject(with:JSONEncoder().encode(reread)) as! [String:Any]
     try check((roundtrip["futureTop"] as? NSDictionary) == (encoded["futureTop"] as? NSDictionary), "unknown nested menu fields and 64-bit integers survive editing")
     try check(((roundtrip["items"] as! [[String:Any]])[0]["futureItem"] as? NSDictionary) == (items[0]["futureItem"] as? NSDictionary), "unknown per-item fields survive editing")
+    var rolePreferences=FinderMenuPreferences()
+    rolePreferences.items=[.init(id:"folder.open",title:"Open",icon:"folder",group:"Folders"),.init(id:"folder.copy",title:"Copy",icon:"folder",group:"Folders")]
+    let commonID=UUID().uuidString,sendID=UUID().uuidString,bothID=UUID().uuidString
+    let roleSnapshot=FinderMenuSnapshot(preferences:rolePreferences,folders:[
+        .init(id:commonID,name:"Common only",path:"/temporary/common",sourceRoles:["common"]),
+        .init(id:sendID,name:"Send only",path:"/temporary/send",sourceRoles:["send"]),
+        .init(id:bothID,name:"Existing user folder",path:"/temporary/both")])
+    let roleMenu=FinderMenuBuilder.menu(snapshot:roleSnapshot,urls:urls,hasSelection:true,target:target,selector:selector)
+    func menuActions(_ menu:NSMenu)->[String] {menu.items.flatMap {item in (item.representedObject as? String).map{[$0]} ?? item.submenu.map(menuActions) ?? []}}
+    let roleActions=Set(menuActions(roleMenu))
+    try check(roleActions.contains("folder.open."+commonID) && !roleActions.contains("folder.open."+sendID),"source favorites and send destinations retain distinct real menu roles")
+    try check(roleActions.contains("folder.copy."+sendID) && !roleActions.contains("folder.copy."+commonID),"send-only source folder is not widened into common menus")
+    try check(roleActions.contains("folder.open."+bothID) && roleActions.contains("folder.copy."+bothID),"older user folders retain both roles")
     print("PASS: \(checks) Finder ticket, actual menu exclusion and unknown-field preservation checks; no ticket pasteboard or user files")
 }

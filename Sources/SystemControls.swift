@@ -334,7 +334,7 @@ final class WindowManager: ObservableObject {
     }
 
     /// Call before bringing any GaoCaoZuo window or panel to the foreground.
-    func captureTarget(at pointer: CGPoint? = nil) {
+    func captureTarget(at pointer: CGPoint? = nil, underPointer: Bool? = nil) {
         isTrusted = AXIsProcessTrusted()
         guard let application = NSWorkspace.shared.frontmostApplication,
               application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
@@ -344,7 +344,7 @@ final class WindowManager: ObservableObject {
         targetIdentity = nil
         capturedForegroundPID = application.processIdentifier
         guard isTrusted else { return }
-        if configuration.targetUnderPointer || pointer != nil {
+        if (underPointer ?? configuration.targetUnderPointer) || pointer != nil {
             let point = pointer ?? CGEvent(source:nil)?.location ?? .zero
             var element: AXUIElement?
             if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(point.x),Float(point.y),&element) == .success, let element {
@@ -619,7 +619,7 @@ final class WindowManager: ObservableObject {
         let physical = NSScreen.screens.map { WindowGeometry.accessibilityRect(fromAppKit:$0.frame,primaryTop:top) }
         guard let snap = WindowDragGeometry.snapTarget(pointer:pointer,visibleFrames:visible,screenFrames:physical,threshold:CGFloat(max(8,min(80,configuration.snapThreshold)))) else { snapPreview.hide(); return }
         let frame = WindowEnhancementGeometry.inset(try WindowGeometry.targetFrame(action:snap.action,current:current,visibleFrames:[WindowEnhancementGeometry.workArea(snap.visibleFrame,configuration:configuration)]),gap:configuration.windowGap)
-        snapPreview.show(frame:frame,title:snap.action.title,animated:configuration.animatePreview,haptic:configuration.hapticFeedback)
+        snapPreview.show(frame:frame,title:snap.action.title,animated:configuration.animatePreview,haptic:configuration.hapticFeedback,showLabel:configuration.showSnapLabel)
     }
 
     func performCustomLayout(_ id: UUID) async throws -> WindowOperationOutcome {

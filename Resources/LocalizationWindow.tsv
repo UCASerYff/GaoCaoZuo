@@ -49,3 +49,8 @@
 自定义布局|Custom Layout|カスタム配置|Eigene Anordnung|Disposition personnalisée|Diseño personalizado|사용자 지정 배치|Disposição personalizada
 自定义布局必须位于工作区内，尺寸必须大于零。|Custom layouts must fit inside the workspace and have positive dimensions.|配置は作業領域内で、サイズは正の値にしてください。|Eigene Anordnungen müssen im Arbeitsbereich liegen und positive Abmessungen haben.|La disposition doit tenir dans l’espace de travail avec des dimensions positives.|El diseño debe estar dentro del área de trabajo y tener dimensiones positivas.|배치는 작업 영역 안에 있고 크기는 0보다 커야 합니다.|A disposição deve caber na área de trabalho e ter dimensões positivas.
 没有可用的显示器。|No display is available.|利用可能なディスプレイがありません。|Kein Bildschirm verfügbar.|Aucun écran disponible.|No hay pantallas disponibles.|사용 가능한 화면이 없습니다.|Nenhuma tela disponível.
+显示吸附提示文字|Show snap hint text|吸着ヒントを表示|Einrasthinweis anzeigen|Afficher le texte d’ancrage|Mostrar texto de ajuste|스냅 안내 텍스트 표시|Mostrar texto de encaixe
+窗口目标|Window target|対象ウィンドウ|Zielfenster|Fenêtre cible|Ventana objetivo|대상 창|Janela de destino
+跟随窗口设置|Follow window settings|ウィンドウ設定に従う|Fenstereinstellungen folgen|Suivre les réglages des fenêtres|Seguir ajustes de ventanas|창 설정 따르기|Seguir ajustes de janelas
+前台窗口|Frontmost window|最前面のウィンドウ|Vorderstes Fenster|Fenêtre au premier plan|Ventana en primer plano|전경 창|Janela em primeiro plano
+鼠标指向窗口|Window under pointer|ポインタ下のウィンドウ|Fenster unter dem Zeiger|Fenêtre sous le pointeur|Ventana bajo el puntero|포인터 아래 창|Janela sob o cursor

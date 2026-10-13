@@ -2,11 +2,11 @@ import Foundation
 import AppKit
 import Darwin
 
-func runFileAppAdapterTests() throws {
+@MainActor func runFileAppAdapterTests() throws {
     let fm=FileManager.default, root=fm.temporaryDirectory.appendingPathComponent("GaoAdapter-"+UUID().uuidString)
     try fm.createDirectory(at:root,withIntermediateDirectories:false);defer{try? fm.removeItem(at:root)}
     var checks=0
-    func expect(_ value:Bool,_ description:String) throws {checks += 1;guard value else{throw DataFailure.message(description)}}
+    func expect(_ value:@autoclosure () throws -> Bool,_ description:String) throws {checks += 1;guard try value() else{throw DataFailure.message(description)}}
     func rejects(_ description:String,_ body:() throws -> Void) throws {
         do { try body() } catch { checks += 1; return }
         throw DataFailure.message(description)
@@ -29,9 +29,8 @@ func runFileAppAdapterTests() throws {
     try rejects("Terminal tab request must fail closed before generating automation") {
         _ = try FileAppAdapter.terminalScript(bundleID:"com.apple.Terminal",directories:dirs,newWindow:false)
     }
-    try rejects("Terminal tab adapter cannot silently substitute a new window") {
-        _ = try FileAppAdapter.plan(bundleID:"com.apple.Terminal",appURL:root,files:[directory],disposition:.reuseWindow)
-    }
+    guard case .terminalTabs(let serviceDirectories)=try FileAppAdapter.plan(bundleID:"com.apple.Terminal",appURL:root,files:[directory],disposition:.reuseWindow) else {throw DataFailure.message("Terminal tab must use the public folder service, never silently substitute a new window")}
+    try expect(serviceDirectories == [directory],"Terminal tab paths are data for the system folder service")
     guard case .automation(let newWindowScript)=try FileAppAdapter.plan(bundleID:"com.apple.Terminal",appURL:root,files:[directory],disposition:.newWindow) else {throw DataFailure.message("Terminal new-window plan missing")}
     try expect(newWindowScript == terminal,"explicit Terminal new-window disposition remains available")
     try expect(iterm.contains("create tab with default profile command") && !iterm.contains("write text"),"iTerm tabs use documented new-session override")
@@ -47,5 +46,14 @@ func runFileAppAdapterTests() throws {
     let subl=app.appendingPathComponent("Contents/SharedSupport/bin/subl");try fm.createDirectory(at:subl.deletingLastPathComponent(),withIntermediateDirectories:true);try Data().write(to:subl);try fm.setAttributes([.posixPermissions:0o700],ofItemAtPath:subl.path)
     guard case .command(_,let args,_)=try FileAppAdapter.plan(bundleID:"com.sublimetext.4",appURL:app,files:[file,directory]) else {throw DataFailure.message("missing Sublime adapter")}
     try expect(args == ["--add","--",file.path,directory.path],"Sublime file/folder arguments cannot become options")
+    let before=TerminalFolderService.Snapshot(frontID:10,windows:[.init(id:10,ttys:["/dev/ttys001"]),.init(id:20,ttys:["/dev/ttys002"])])
+    try expect(try TerminalFolderService.newTTY(before:before,after:before) == nil,"unchanged TTY identities cannot masquerade as a created tab")
+    let after=TerminalFolderService.Snapshot(frontID:10,windows:[.init(id:20,ttys:["/dev/ttys002"]),.init(id:10,ttys:["/dev/ttys001","/dev/ttys003"])])
+    try expect(try TerminalFolderService.newTTY(before:before,after:after) == "/dev/ttys003","only one new TTY in the captured window proves the new tab")
+    try rejects("old tab disappearance must stop verification") {_ = try TerminalFolderService.newTTY(before:before,after:.init(frontID:10,windows:[.init(id:10,ttys:["/dev/ttys003"]),.init(id:20,ttys:["/dev/ttys002"])]))}
+    try rejects("two concurrent new tabs cannot prove service result") {_ = try TerminalFolderService.newTTY(before:before,after:.init(frontID:10,windows:[.init(id:10,ttys:["/dev/ttys001","/dev/ttys003","/dev/ttys004"]),.init(id:20,ttys:["/dev/ttys002"])]))}
+    try rejects("new tab in another window cannot prove service result") {_ = try TerminalFolderService.newTTY(before:before,after:.init(frontID:10,windows:[.init(id:10,ttys:["/dev/ttys001"]),.init(id:20,ttys:["/dev/ttys002","/dev/ttys003"])]))}
+    try rejects("new window is not silently accepted for tab request") {_ = try TerminalFolderService.newTTY(before:before,after:.init(frontID:30,windows:after.windows+[.init(id:30,ttys:["/dev/ttys004"])]))}
+    try rejects("new front window must stop verification") {_ = try TerminalFolderService.newTTY(before:before,after:.init(frontID:20,windows:after.windows))}
     print("PASS: \(checks) file app adapter tests; simulated bundles are never launched, iTerm/Sublime real UI unverified")
 }

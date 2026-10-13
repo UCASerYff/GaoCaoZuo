@@ -7,6 +7,9 @@ struct FavoriteFolder: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String
     var path: String
+    var sourceRoles: [String]? = nil
+    var isCommon: Bool { sourceRoles?.contains("common") ?? true }
+    var isSend: Bool { sourceRoles?.contains("send") ?? true }
 }
 struct TextTemplate: Codable, Identifiable, Equatable {
     var id = UUID()

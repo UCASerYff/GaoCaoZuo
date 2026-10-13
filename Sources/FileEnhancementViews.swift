@@ -20,7 +20,7 @@ extension FileEnhancementController {
                 let p=NSOpenPanel();p.canChooseFiles=true;p.canChooseDirectories=true;p.treatsFilePackagesAsDirectories=false;p.message="选择你拥有的模板文件或文档包；按原字节保存，不复制其他软件的商业模板。"
                 if p.runModal() == .OK,let source=p.url {try importTemplate(source);store.notify("模板已导入")};return true
             }
-            if id.hasPrefix("file.open."),let uuid=UUID(uuidString:String(id.dropFirst(10))),let app=settings.apps.first(where:{$0.id==uuid}) {try open(files,with:app);return true}
+            if id.hasPrefix("file.open."),let uuid=UUID(uuidString:String(id.dropFirst(10))),let app=settings.apps.first(where:{$0.id==uuid}) {try open(files,with:app){failure in Task{@MainActor in store.notify(failure?.localizedDescription ?? "已发送应用打开请求",failed:failure != nil)}};return true}
             if id.hasPrefix("file.template."),let uuid=UUID(uuidString:String(id.dropFirst(14))) {let receipt=try createTemplate(uuid,directory:directory);try store.record([receipt]);store.completeNewFile(receipt.destination);store.notify("已创建模板文件",outputs:[receipt.destination]);return true}
             switch id {
             case "file.hide","file.unhide","file.hideAll","file.unhideAll":
@@ -46,7 +46,7 @@ extension FileEnhancementController {
             case "file.airdrop","file.mail":
                 let name:NSSharingService.Name=id=="file.airdrop" ? .sendViaAirDrop : .composeEmail
                 guard let service=NSSharingService(named:name),service.canPerform(withItems:files) else{throw FileToolsError.invalid("系统当前无法使用该分享服务。")};service.perform(withItems:files)
-            case "file.terminal":try terminal(directory,newWindow:settings.terminalNewWindow)
+            case "file.terminal":try terminal(directory,newWindow:settings.terminalNewWindow){failure in Task{@MainActor in store.notify(failure?.localizedDescription ?? "已发送终端打开请求",failed:failure != nil)}}
             case "file.ishot","file.ishot.markup","file.diskmap","file.capture.window","file.capture.display","file.images.pin","file.ocr","file.storage.duplicates","file.cleanup.review","file.apps.uninstall.review":
                 sendGaoAction(id:id,files:files,directory:directory,store:store)
             case "images.webp","images.icns","images.macicons","images.iosicons":let kind=String(id.dropFirst(7));store.work("转换图片"){try FileEnhancementImages.create(files,kind:kind)}
@@ -62,10 +62,11 @@ extension FileEnhancementController {
         url.queryItems=provider.contains("baidu") ? [URLQueryItem(name:"query",value:text),URLQueryItem(name:"lang",value:"auto2zh")] : [URLQueryItem(name:"sl",value:"auto"),URLQueryItem(name:"tl",value:"zh-CN"),URLQueryItem(name:"text",value:text),URLQueryItem(name:"op",value:"translate")]
         guard let target=url.url,NSWorkspace.shared.open(target) else{throw FileToolsError.invalid("无法打开翻译网页。")}
     }
-    func terminal(_ directory:URL,newWindow:Bool) throws {
+    func terminal(_ directory:URL,newWindow:Bool,completion:((Error?)->Void)?=nil) throws {
         guard let app=NSWorkspace.shared.urlForApplication(withBundleIdentifier:"com.apple.Terminal") else {throw FileToolsError.invalid("找不到系统终端应用。")}
         try FileAppAdapter.open(files:[directory],bundleID:"com.apple.Terminal",appURL:app,disposition:newWindow ? .newWindow : .reuseWindow) { [weak self] failure in
             if let failure {Task{@MainActor in self?.error=failure.localizedDescription}}
+            completion?(failure)
         }
     }
     func addApplication() throws {
@@ -73,13 +74,16 @@ extension FileEnhancementController {
         guard p.runModal() == .OK,let url=p.url,let bundle=Bundle(url:url),let id=bundle.bundleIdentifier else{return}
         try update{$0.apps.append(.init(name:url.deletingPathExtension().lastPathComponent,bundleID:id,path:url.path))}
     }
-    func open(_ files:[URL],with app:EnhancedOpenApp) throws {
+    func open(_ files:[URL],with app:EnhancedOpenApp,completion:((Error?)->Void)?=nil) throws {
+        guard app.isEnabled else {throw FileToolsError.invalid("此应用条目已停用，请先在文件设置复核启用。")}
         let saved=URL(fileURLWithPath:app.path)
         let url=(Bundle(url:saved)?.bundleIdentifier==app.bundleID ? saved : nil) ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier:app.bundleID)
         guard let url else{throw FileToolsError.invalid("未找到应用：\(app.name)")}
-        let disposition:FileAppAdapter.Disposition = FileAppAdapter.terminalIDs.contains(app.bundleID) && settings.terminalNewWindow ? .newWindow : .reuseWindow
+        let newWindow=app.newWindow ?? (FileAppAdapter.terminalIDs.contains(app.bundleID) && settings.terminalNewWindow)
+        let disposition:FileAppAdapter.Disposition = newWindow ? .newWindow : .reuseWindow
         try FileAppAdapter.open(files:files,bundleID:app.bundleID,appURL:url,disposition:disposition) { [weak self] failure in
             if let failure {Task{@MainActor in self?.error=failure.localizedDescription}}
+            completion?(failure)
         }
     }
     private func sendGaoAction(id:String,files:[URL],directory:URL,store:OperationStore) {
@@ -144,17 +148,26 @@ extension FileEnhancementController {
                 Toggle("剪切时隐藏文件（粘贴或取消后恢复）",isOn:Binding(get:{controller.settings.cutHidesFiles},set:{v in change{$0.cutHidesFiles=v}}))
                 Toggle("彻底删除前再次确认",isOn:Binding(get:{controller.settings.confirmPermanentDelete},set:{v in change{$0.confirmPermanentDelete=v}}))
                 Toggle("Terminal 使用新窗口",isOn:Binding(get:{controller.settings.terminalNewWindow},set:{v in change{$0.terminalNewWindow=v}}))
-                Text("Terminal 仅支持安全的新窗口；关闭此项时停止调用。iTerm 支持明确创建标签页。").font(.caption).foregroundStyle(.secondary)
+                Text("Terminal 标签页使用系统文件夹服务并核验同窗口唯一新标签；请先打开 Terminal 窗口。服务不可用时停止，不向旧会话发送命令。iTerm 使用明确的新会话接口。").font(.caption).foregroundStyle(.secondary)
                 TextField("自定义复制路径前缀",text:Binding(get:{controller.settings.customPathPrefix},set:{v in change{$0.customPathPrefix=v}}))
                 Button("取消当前剪切并恢复隐藏属性"){do{try controller.cancelCut();message="已取消剪切"}catch{message=error.localizedDescription}}
             }
             Section("原样文件模板") {
                 Text("支持你自己的 Office、iWork、WPS、设计文档及文件包。内容逐文件核验；不会把普通文本改后缀冒充文档。单个附件最多 32 MB，模板合计最多 128 MB。").font(.caption).foregroundStyle(.secondary)
-                ForEach(controller.settings.templates){template in HStack{Text(template.name);Spacer();Text(template.filename).foregroundStyle(.secondary);Button("移除"){change{$0.templates.removeAll{$0.id==template.id}}}}}
+                ForEach(controller.settings.templates){template in
+                    VStack(alignment:.leading){
+                        HStack{
+                            Toggle(template.name,isOn:Binding(get:{controller.settings.templates.first(where:{$0.id==template.id})?.isEnabled ?? false},set:{v in change{if let i=$0.templates.firstIndex(where:{$0.id==template.id}){$0.templates[i].enabled=v}}})).disabled(template.unavailableReason != nil)
+                            Spacer();Text(template.filename).foregroundStyle(.secondary)
+                            Button("移除"){change{$0.templates.removeAll{$0.id==template.id}}}
+                        }
+                        if let reason=template.unavailableReason {Text(reason).font(.caption).foregroundStyle(.secondary)}
+                    }
+                }
                 Button("导入模板…"){let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=true;if panel.runModal() == .OK,let url=panel.url{do{try controller.importTemplate(url)}catch{message=error.localizedDescription}}}
             }
             Section("用指定应用打开当前文件") {
-                ForEach(controller.settings.apps){app in HStack{Text(app.name);Spacer();Button("移除"){change{$0.apps.removeAll{$0.id==app.id}}}}}
+                ForEach(controller.settings.apps){app in VStack(alignment:.leading){HStack{Toggle(app.name,isOn:Binding(get:{controller.settings.apps.first(where:{$0.id==app.id})?.isEnabled ?? false},set:{v in change{if let i=$0.apps.firstIndex(where:{$0.id==app.id}){$0.apps[i].enabled=v}}}));Spacer();Button("移除"){change{$0.apps.removeAll{$0.id==app.id}}}};if FileAppAdapter.terminalIDs.contains(app.bundleID){Toggle("使用新窗口",isOn:Binding(get:{controller.settings.apps.first(where:{$0.id==app.id})?.newWindow ?? controller.settings.terminalNewWindow},set:{v in change{if let i=$0.apps.firstIndex(where:{$0.id==app.id}){$0.apps[i].newWindow=v}}}))}}}
                 Button("添加应用…"){do{try controller.addApplication()}catch{message=error.localizedDescription}}
             }
             Section("恢复") {

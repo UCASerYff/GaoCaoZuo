@@ -1,0 +1,97 @@
+# Native archive UI/error keys. Merge into the app and extension native catalog.
+已取消，原压缩包未改变。	Cancelled. The original archive is unchanged.
+原生压缩操作超过时间预算，原压缩包未改变。	The native archive operation exceeded its time budget. The original is unchanged.
+系统原生压缩组件不可用。	The system archive component is unavailable.
+系统原生压缩组件不完整。	The system archive component is incomplete.
+原生预览只接受预算内的普通压缩文件。	Native preview requires a regular archive within the size budget.
+压缩包已变化，请重新打开预览。	The archive changed. Reopen its preview.
+无法创建系统原生解码器。	The system archive reader could not be created.
+此格式不能由系统原生解码器处理。	The system archive reader cannot handle this format.
+此格式需要系统原生库未提供的解码能力。	This format requires decoding support that the system library does not provide.
+密码无效或过长。	The password is invalid or too long.
+系统原生库不支持此密码。	The system library cannot use this password.
+无法原生读取此压缩包，可能已加密、损坏或不受支持。	The archive cannot be read natively. It may be encrypted, damaged or unsupported.
+压缩包目录无法安全读取，可能已加密或损坏。	The archive directory cannot be read safely. It may be encrypted or damaged.
+压缩包声明内容超过原生操作预算。	The archive declares more content than the native operation budget allows.
+原生操作不提取链接或特殊文件。	Native operations do not extract links or special files.
+密码不正确，或系统原生库不支持此加密格式。	The password is incorrect, or the system library does not support this encryption.
+原生解码失败，未提交任何提取结果。	Native decoding failed. No extracted result was committed.
+实际展开内容超过原生操作预算。	The decoded content exceeds the native operation budget.
+提取长度与目录不一致，未提交结果。	The extracted length differs from the directory. No result was committed.
+压缩包包含重名、过多项目或超出展开预算。	The archive contains duplicate names, too many entries or excessive expanded content.
+压缩包文件与目录路径冲突。	Archive file and directory paths conflict.
+压缩包在读取期间发生变化，请重新打开。	The archive changed while being read. Reopen it.
+内嵌内容预览仅接受不超过 16 MiB 的普通文件。	Inline preview supports regular files up to 16 MiB.
+请先选择要提取的文件或目录。	Select files or directories to extract.
+压缩目录已变化或包含重复项目。	The archive directory changed or contains duplicate entries.
+提取结果回读核验失败。	Readback verification of the extracted result failed.
+提取结果不完整，未提交。	Extraction is incomplete. No result was committed.
+压缩包在提取期间发生变化。	The archive changed during extraction.
+原生编辑副本仅支持未加密且不含链接的 ZIP/7Z；原压缩包保留。	Native edited copies support unencrypted ZIP/7Z archives without links. The original is preserved.
+编辑计划没有剩余内容，请保留原压缩包。	The edit plan leaves no content. Keep the original archive.
+编辑副本完整性核验失败，原压缩包未改变。	Edited-copy integrity verification failed. The original archive is unchanged.
+原压缩包已变化，未提交编辑副本。	The original archive changed. The edited copy was not committed.
+无法创建原生压缩写入器。	The native archive writer could not be created.
+系统原生库不支持所需压缩写入模式。	The system library does not support the required compression mode.
+无法配置原生压缩写入器。	The native archive writer could not be configured.
+无法写入原生编辑副本。	The native edited copy could not be written.
+无法创建原生压缩条目。	The native archive entry could not be created.
+原生编辑副本条目写入失败。	Writing an entry to the native edited copy failed.
+编辑暂存内容已变化。	The staged edit content changed.
+原生编辑副本数据写入不完整。	The native edited-copy data was not written completely.
+编辑暂存内容长度已变化。	The staged edit content length changed.
+原生编辑副本未能完整结束。	The native edited copy could not be finalized.
+添加项目重名或超出数量预算。	An added item has a duplicate name or exceeds the entry budget.
+添加目录包含无法无损表示的名称。	An added directory contains a name that cannot be represented faithfully.
+添加目录超出数量预算。	An added directory exceeds the entry budget.
+添加文件超过原生编辑预算。	An added file exceeds the native edit budget.
+添加文件在读取期间发生变化。	An added file changed while being read.
+添加文件在复制期间发生变化。	An added file changed during copying.
+添加文件暂存核验失败。	Verification of an added staged file failed.
+添加项目不接受链接或特殊文件。	Added items cannot be links or special files.
+结果名称必须是单个有效名称。	The result name must be a single valid filename.
+目标目录已变化，未提交结果。	The destination directory changed. No result was committed.
+目标已存在，未覆盖；请更改结果名称。	The destination exists and was not overwritten. Change the result name.
+压缩包包含不安全或无效路径。	The archive contains an unsafe or invalid path.
+PDF 无法读取或超过 100 页内嵌预览预算。	The PDF cannot be read or exceeds the 100-page inline preview budget.
+图片无法读取或超过内嵌预览像素预算。	The image cannot be read or exceeds the inline preview pixel budget.
+此内容不能安全内嵌预览，请明确提取后打开。	This content cannot be previewed safely inline. Extract it explicitly before opening it.
+清理隐藏项目	Remove hidden entries
+压缩包目录	Archive directory
+选择一个普通文件以预览内容。	Select a regular file to preview its contents.
+搜索包内路径	Search archive paths
+展开全部	Expand all
+折叠全部	Collapse all
+预览内容	Preview contents
+提取所选…	Extract selected…
+全部提取…	Extract all…
+计划删除所选	Mark selected for deletion
+添加文件…	Add files…
+撤销编辑计划	Reset edit plan
+保存编辑副本…	Save edited copy…
+提取目录名称	Extraction folder name
+编辑副本名称	Edited copy name
+内容预览与提取在此窗口完成。增删和隐藏项目清理仅写入新的编辑副本，原压缩包保持不变；加密 7Z、ACE 及不受支持内容仍需主应用。	Preview and extract contents here. Additions, deletions and hidden-entry cleanup are saved only to a new edited copy; the original is unchanged. Encrypted 7Z, ACE and unsupported content still require the main app.
+取消操作	Cancel operation
+用搞操作打开	Open in GaoCaoZuo
+提取	Extracted
+编辑	Edited
+正在读取压缩目录…	Reading archive directory…
+已读取 %ld 项；原压缩包保持不变。	Read %ld entries. The original archive is unchanged.
+计划删除	Marked for deletion
+正在停止；等待后台操作结束，原压缩包保持不变。	Stopping. Waiting for background work to finish; the original archive is unchanged.
+正在预览所选内容…	Previewing selected contents…
+正在核验并提取内容…	Verifying and extracting contents…
+加入编辑计划	Add to edit plan
+文件只加入编辑计划；保存新副本前不会写入原压缩包。	Files are added only to the edit plan. The original archive is not modified.
+计划删除 %ld 项，添加 %ld 项；原压缩包尚未改变。	Planned deletions: %ld; additions: %ld. The original archive is unchanged.
+请先选择增删或隐藏项目清理计划。	Choose additions, deletions or hidden-entry cleanup first.
+正在生成并完整核验编辑副本…	Building and fully verifying the edited copy…
+选择结果目录	Choose result directory
+仅访问你选中的目录；同名结果停止，原压缩包保留。	Access is limited to your selected directory. Existing results are not overwritten; the original archive is preserved.
+输入此压缩包密码	Enter this archive's password
+密码仅用于本次原生读取，不保存。系统不支持的加密格式会明确失败。	The password is used only for this native read and is not saved. Unsupported encryption fails explicitly.
+读取	Read
+取消	Cancel
+已核验并保存：%@；原压缩包保持不变。	Verified and saved: %@. The original archive is unchanged.
+请关闭预览，在 Finder 中选择“打开方式”→“搞操作”。	Close the preview, then choose Open With → GaoCaoZuo in Finder.

@@ -465,6 +465,7 @@ private struct WorkflowActionChoice: Identifiable {
                 if let backupMessage { Text(backupMessage).font(.caption).foregroundStyle(.secondary) }
                 Text("本版不提供覆盖式导入或一键重置。保留资料与安全备份后，再处理读取错误。").font(.caption).foregroundStyle(.secondary)
             }
+            ReplacementMigrationView(store:store)
             if let failure=store.data.failure { Section("资料需要检查") { Text(failure).foregroundStyle(.orange).textSelection(.enabled) } }
         }.formStyle(.grouped)
     }

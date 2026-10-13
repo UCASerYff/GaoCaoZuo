@@ -3,6 +3,7 @@ import AppKit
 struct EnhancedRuleImportResult {
     var configuration:InputEnhancementConfiguration
     var note:String
+    var report:InputMigrationSource? = nil
 }
 struct EnhancedRuleDocument:Codable {var format="com.gaoseries.GaoCaoZuo.input";var version=1;var configuration:InputEnhancementConfiguration}
 enum EnhancedRuleFiles {
@@ -19,7 +20,7 @@ enum EnhancedRuleFiles {
         }
         // No NSKeyedUnarchiver: third-party embedded object archives remain untrusted opaque data.
         guard let dictionary=try PropertyListSerialization.propertyList(from:data,options:[],format:nil) as? [String:Any],dictionary.keys.contains(where:{$0.hasPrefix("ruleOf")}) else{throw SystemControlError.message("不是有效的搞操作 JSON 或 BetterAndBetter plist 导出文件。")}
-        return try importBAB(dictionary)
+        return try BABRuleImporter.importRules(dictionary,originalData:data)
     }
     static func write(_ configuration:InputEnhancementConfiguration,to url:URL)throws {
         try EnhancedInputValidation.validate(configuration)
@@ -36,6 +37,11 @@ enum EnhancedRuleFiles {
         rule.drawing=[GesturePoint(x:20,y:20),GesturePoint(x:20,y:120),GesturePoint(x:120,y:120)];return rule
     }
     static func importBAB(_ dictionary:[String:Any])throws->EnhancedRuleImportResult {
+        try BABRuleImporter.importRules(dictionary)
+    }
+    /// Reproduce V1.05 only to identify unchanged legacy rows for a three-way upgrade.
+    /// This parser is never used to create new executable rules.
+    static func legacyImportBAB(_ dictionary:[String:Any])throws->EnhancedRuleImportResult {
         var configuration=InputEnhancementConfiguration(),issues:[String]=[],total=0
         if let library=dictionary["ruleOfAppleScript"] as? [[String:Any]] {
             for entry in library {

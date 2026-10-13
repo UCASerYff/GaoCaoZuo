@@ -5,6 +5,7 @@ struct WindowEnhancementConfiguration: Codable, Equatable {
     var targetUnderPointer = false
     var restoreWhenUnsnapped = true
     var showSnapPreview = true
+    var showSnapLabel = true
     var animatePreview = true
     var hapticFeedback = false
     var movePointerWithWindow = false
@@ -17,12 +18,13 @@ struct WindowEnhancementConfiguration: Codable, Equatable {
     var reservedRight: Double = 0
     var customLayouts: [CustomWindowLayout] = []
     init() {}
-    enum CodingKeys: String, CodingKey { case targetUnderPointer,restoreWhenUnsnapped,showSnapPreview,animatePreview,hapticFeedback,movePointerWithWindow,cycleRepeatedLayouts,warnConflictingApps,snapThreshold,windowGap,nearMaximizeInset,reservedLeft,reservedRight,customLayouts }
+    enum CodingKeys: String, CodingKey { case targetUnderPointer,restoreWhenUnsnapped,showSnapPreview,showSnapLabel,animatePreview,hapticFeedback,movePointerWithWindow,cycleRepeatedLayouts,warnConflictingApps,snapThreshold,windowGap,nearMaximizeInset,reservedLeft,reservedRight,customLayouts }
     init(from decoder: Decoder) throws {
         self.init(); let c = try decoder.container(keyedBy: CodingKeys.self)
         targetUnderPointer = try c.decodeIfPresent(Bool.self, forKey: .targetUnderPointer) ?? false
         restoreWhenUnsnapped = try c.decodeIfPresent(Bool.self, forKey: .restoreWhenUnsnapped) ?? true
         showSnapPreview = try c.decodeIfPresent(Bool.self, forKey: .showSnapPreview) ?? true
+        showSnapLabel = try c.decodeIfPresent(Bool.self, forKey: .showSnapLabel) ?? true
         animatePreview = try c.decodeIfPresent(Bool.self, forKey: .animatePreview) ?? true
         hapticFeedback = try c.decodeIfPresent(Bool.self, forKey: .hapticFeedback) ?? false
         movePointerWithWindow = try c.decodeIfPresent(Bool.self, forKey: .movePointerWithWindow) ?? false
@@ -68,7 +70,7 @@ enum WindowEnhancementGeometry {
 @MainActor final class WindowSnapPreview {
     private var panel: NSPanel?
     private var previous: CGRect?
-    func show(frame: CGRect, title: String, animated: Bool, haptic: Bool) {
+    func show(frame: CGRect, title: String, animated: Bool, haptic: Bool, showLabel: Bool = true) {
         guard frame != previous else { return }; previous = frame
         let top = NSScreen.screens.first?.frame.maxY ?? 0
         let appKitFrame = CGRect(x:frame.minX,y:top-frame.maxY,width:frame.width,height:frame.height)
@@ -83,7 +85,7 @@ enum WindowEnhancementGeometry {
         window.contentView = NSHostingView(rootView:ZStack {
             RoundedRectangle(cornerRadius:12).fill(Color.accentColor.opacity(0.16))
             RoundedRectangle(cornerRadius:12).stroke(Color.accentColor.opacity(0.8),lineWidth:3)
-            Text(title).font(.title2.bold()).padding(16).background(.regularMaterial,in:Capsule())
+            if showLabel { Text(title).font(.title2.bold()).padding(16).background(.regularMaterial,in:Capsule()) }
         }.padding(3))
         window.setFrame(appKitFrame,display:true,animate:animated && window.isVisible)
         window.orderFrontRegardless()
@@ -98,6 +100,7 @@ enum WindowEnhancementGeometry {
             Toggle("操作鼠标指向的窗口",isOn:$configuration.targetUnderPointer)
             Toggle("拖离吸附区域时恢复原尺寸",isOn:$configuration.restoreWhenUnsnapped)
             Toggle("显示吸附范围和文字",isOn:$configuration.showSnapPreview)
+            Toggle("显示吸附提示文字",isOn:$configuration.showSnapLabel).disabled(!configuration.showSnapPreview)
             Toggle("预览范围动画",isOn:$configuration.animatePreview)
             Toggle("触控板触感反馈",isOn:$configuration.hapticFeedback)
             Toggle("跨屏时将光标移到目标窗口",isOn:$configuration.movePointerWithWindow)

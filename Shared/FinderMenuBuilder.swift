@@ -23,7 +23,7 @@ import AppKit
             if ["folder.open","folder.copy","folder.move"].contains(definition.id) {
                 let root=NSMenuItem(title:defaultTitle(definition.title,definition.id),action:nil,keyEquivalent:"")
                 let sub=NSMenu(title:defaultTitle(definition.title,definition.id));sub.autoenablesItems=false
-                for folder in snapshot.folders {sub.addItem(item(folder.name,definition.id+"."+folder.id,"folder",needsSelection:definition.id != "folder.open"))}
+                for folder in snapshot.folders where definition.id == "folder.open" ? folder.isCommon : folder.isSend {sub.addItem(item(folder.name,definition.id+"."+folder.id,"folder",needsSelection:definition.id != "folder.open"))}
                 if definition.id != "folder.open" {
                     if !sub.items.isEmpty{sub.addItem(.separator())}
                     sub.addItem(item(L10n.text("选择其他目录…"),definition.id == "folder.copy" ? "files.copy" : "files.move","folder"))
@@ -38,7 +38,7 @@ import AppKit
                 for template in snapshot.templates {sub.addItem(item(template.name,(template.binary ? "binaryTemplate." : "template.")+template.id,"doc",needsSelection:false))}
                 sub.addItem(item(L10n.text("管理与导入模板…"),"file.template.import","plus",needsSelection:false));root.submenu=sub;content.addItem(root)
             } else {
-                content.addItem(item(definition.title,definition.id,definition.icon,needsSelection:!noSelection.contains(definition.id) && !definition.id.hasPrefix("file.new.")))
+                content.addItem(item(definition.title,definition.id,definition.icon,needsSelection:!noSelection.contains(definition.id) && !definition.id.hasPrefix("file.new.") && !definition.id.hasPrefix("binaryTemplate.") && !definition.id.hasPrefix("file.open.")))
             }
         }
         if prefs.mergeInSubmenu {let root=NSMenuItem(title:"搞操作",action:nil,keyEquivalent:"");root.submenu=content;menu.addItem(root)}

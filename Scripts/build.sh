@@ -30,7 +30,7 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos
   "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoArchiveQuickLook -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
-  "$STAGING"/QuickLookExtension/*.swift "$STAGING/Shared/GaoLocalization.swift" -framework AppKit -framework QuickLookUI -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
+  "$STAGING"/QuickLookExtension/*.swift "$STAGING/Shared/GaoLocalization.swift" -framework AppKit -framework QuickLookUI -framework PDFKit -framework ImageIO -framework CryptoKit -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi

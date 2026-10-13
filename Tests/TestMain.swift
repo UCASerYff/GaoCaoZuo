@@ -5,14 +5,29 @@ import Darwin
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
+        if CommandLine.arguments.contains("--migration-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try runMigrationTests()
+            try runRightMouseMigrationTests()
+            try runReplacementMigrationV2Tests()
+            try runBABMigrationTests()
+            let arguments=CommandLine.arguments
+            if let m=arguments.firstIndex(of:"--private-migration"),let s=arguments.firstIndex(of:"--private-snapshot"),arguments.count>m+1,arguments.count>s+1 {
+                try runPrivateReplacementPreflight(snapshot:URL(fileURLWithPath:arguments[s+1]),payload:URL(fileURLWithPath:arguments[m+1]))
+            }
+            return
+        }
         try runLocalizationTests()
         // Existing behavioral fixtures use Chinese diagnostics; resource tests above
         // exercise explicit language changes independently of the host's language.
         GaoLocale.shared.setLanguage(.zhHans)
         try runMigrationTests()
+        try runRightMouseMigrationTests()
+        try runReplacementMigrationV2Tests()
         try await runGaoActionTests()
         try runEnhancementIntegrationTests()
         try runInputEnhancementTests()
+        try runBABMigrationTests()
         try runSystemTests()
         try runWindowDragTests()
         try await runNativeWindowSnapTests()
@@ -39,5 +54,9 @@ import Darwin
         let wf=OperationWorkflow(name:"等待",steps:[WorkflowStep(actionID:"delay",argument:"0.01")])
         try await store.executeWorkflowStep(wf.steps[0])
         print("配置重启保留与组合步骤测试通过")
+        let arguments=CommandLine.arguments
+        if let m=arguments.firstIndex(of:"--private-migration"),let s=arguments.firstIndex(of:"--private-snapshot"),arguments.count>m+1,arguments.count>s+1 {
+            try runPrivateReplacementPreflight(snapshot:URL(fileURLWithPath:arguments[s+1]),payload:URL(fileURLWithPath:arguments[m+1]))
+        }
     }
 }

@@ -76,7 +76,11 @@ final class OperationPanel: NSPanel {
         if let i=args.firstIndex(of:"--open"),args.count>i+1 {store.selection=[URL(fileURLWithPath:args[i+1])]}
         if !earlyURLs.isEmpty {let urls=earlyURLs;earlyURLs=[];application(NSApp,open:urls)}
     }
-    private func configureInput(){store.windows.configure(enhancements:store.settings.windowEnhancements);store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled,enhancements:store.settings.inputEnhancements){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
+    private func configureInput(){store.windows.configure(enhancements:store.settings.windowEnhancements);store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled,enhancements:store.settings.inputEnhancements,invocationHandler:{[weak self] id,mode in
+            guard let self else{return}
+            self.store.windows.captureTarget(underPointer:mode == .inheritSettings ? nil : mode == .underPointer)
+            self.store.prepare(id)
+        }){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
     private func applyAppearance(){
         NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)
         if let lang=GaoLanguage(rawValue:store.settings.language) {GaoLocale.shared.setLanguage(lang)}

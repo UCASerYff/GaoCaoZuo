@@ -10,6 +10,7 @@ enum FileAppAdapter {
         case workspace([URL])
         case command(executable: URL, arguments: [String], environment: [String:String])
         case automation(String)
+        case terminalTabs([URL])
     }
     static let terminalIDs: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2"]
     static func shellLiteral(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -51,6 +52,7 @@ enum FileAppAdapter {
     static func plan(bundleID: String, appURL: URL, files: [URL], disposition: Disposition = .reuseWindow) throws -> Plan {
         guard !files.isEmpty, files.count <= 1000 else { throw FileToolsError.invalid("请选择 1–1000 个文件或目录。") }
         for file in files { _ = try EnhancedFileTools.checked(file); guard file.isFileURL, !file.path.contains("\0") else { throw FileToolsError.invalid("打开路径无效。") } }
+        if bundleID == "com.apple.Terminal", disposition == .reuseWindow { return .terminalTabs(try workingDirectories(files)) }
         if terminalIDs.contains(bundleID) { return .automation(try terminalScript(bundleID: bundleID, directories: workingDirectories(files), newWindow: disposition == .newWindow)) }
         let isCode = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92"].contains(bundleID)
         if isCode {
@@ -70,6 +72,8 @@ enum FileAppAdapter {
     @MainActor static func open(files: [URL], bundleID: String, appURL: URL, disposition: Disposition = .reuseWindow, completion: @escaping (Error?) -> Void) throws {
         guard Bundle(url: appURL)?.bundleIdentifier == bundleID else { throw FileToolsError.invalid("应用身份已变化，请重新选择应用。") }
         switch try plan(bundleID: bundleID, appURL: appURL, files: files, disposition: disposition) {
+        case .terminalTabs(let directories):
+            try TerminalFolderService.start(directories:directories,appURL:appURL,completion:completion)
         case .workspace(let urls):
             NSWorkspace.shared.open(urls, withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in completion(error) }
         case .automation(let source):
@@ -84,6 +88,99 @@ enum FileAppAdapter {
             task.standardInput = FileHandle.nullDevice; task.standardOutput = FileHandle.nullDevice; task.standardError = FileHandle.nullDevice
             task.terminationHandler = { task in completion(task.terminationStatus == 0 ? nil : FileToolsError.invalid("编辑器命令失败（\(task.terminationStatus)）。")) }
             try task.run()
+        }
+    }
+}
+
+/// The system's documented folder service creates the session itself. No command
+/// is ever typed or sent to an existing tab; only window IDs and TTYs are read.
+@MainActor enum TerminalFolderService {
+    struct Window: Equatable { var id:Int; var ttys:Set<String> }
+    struct Snapshot: Equatable { var frontID:Int; var windows:[Window] }
+    static var running = false
+    static let serviceName = "New Terminal Tab at Folder"
+    static func newTTY(before:Snapshot,after:Snapshot) throws -> String? {
+        let oldIDs=before.windows.map(\.id), newIDs=after.windows.map(\.id)
+        guard !oldIDs.isEmpty, Set(oldIDs).count == oldIDs.count, Set(newIDs).count == newIDs.count,
+              oldIDs.allSatisfy({$0>0}), newIDs.allSatisfy({$0>0}),
+              Set(oldIDs) == Set(newIDs), before.frontID == after.frontID,
+              oldIDs.contains(before.frontID) else { throw FileToolsError.invalid("Terminal 原窗口身份已变化，停止标签页操作。") }
+        var added:Set<String>=[]
+        for old in before.windows {
+            guard let current=after.windows.first(where:{$0.id == old.id}), !old.ttys.isEmpty,
+                  old.ttys.allSatisfy({$0.hasPrefix("/dev/")}), old.ttys.isSubset(of:current.ttys) else { throw FileToolsError.invalid("Terminal 原标签页身份已变化，停止操作。") }
+            let difference=current.ttys.subtracting(old.ttys)
+            guard difference.isEmpty || old.id == before.frontID else { throw FileToolsError.invalid("Terminal 其他窗口出现新标签页，无法证明本次结果。") }
+            added.formUnion(difference)
+        }
+        let allOld=before.windows.flatMap{$0.ttys}, allNew=after.windows.flatMap{$0.ttys}
+        guard Set(allOld).count == allOld.count, Set(allNew).count == allNew.count,
+              added.count <= 1, added.allSatisfy({$0.hasPrefix("/dev/")}), allNew.count == allOld.count+added.count else { throw FileToolsError.invalid("Terminal 新标签页不唯一，无法证明本次结果。") }
+        return added.first
+    }
+    static func readSnapshot() throws -> Snapshot {
+        let source="""
+        tell application id "com.apple.Terminal"
+            if (count of windows) is 0 then error "Terminal has no window" number -1728
+            set capturedFront to id of front window
+            set capturedWindows to {}
+            repeat with w in windows
+                set end of capturedWindows to {id of w, tty of every tab of w}
+            end repeat
+            return {capturedFront, capturedWindows}
+        end tell
+        """
+        var failure:NSDictionary?
+        guard let script=NSAppleScript(source:source) else { throw FileToolsError.invalid("无法建立 Terminal 身份核验请求。") }
+        let result=script.executeAndReturnError(&failure)
+        guard failure == nil, let front=result.atIndex(1), let rows=result.atIndex(2), rows.numberOfItems>0 else { throw FileToolsError.invalid("请先打开一个 Terminal 窗口并允许自动化，或选择新窗口方式；未向任何标签页发送命令。") }
+        var windows:[Window]=[]
+        for index in 1...rows.numberOfItems {
+            guard let row=rows.atIndex(index), let id=row.atIndex(1), let values=row.atIndex(2), values.numberOfItems>0 else { throw FileToolsError.invalid("Terminal 标签页身份不可读取。") }
+            var ttys:Set<String>=[]
+            for position in 1...values.numberOfItems {
+                guard let tty=values.atIndex(position)?.stringValue, tty.hasPrefix("/dev/"), ttys.insert(tty).inserted else { throw FileToolsError.invalid("Terminal 标签页标识无效。") }
+            }
+            windows.append(.init(id:Int(id.int32Value),ttys:ttys))
+        }
+        return .init(frontID:Int(front.int32Value),windows:windows)
+    }
+    static func start(directories:[URL],appURL:URL,completion:@escaping(Error?)->Void) throws {
+        guard !running else { throw FileToolsError.invalid("请等待当前 Terminal 标签页请求完成。") }
+        guard let bundle=Bundle(url:appURL), bundle.bundleIdentifier == "com.apple.Terminal",
+              let services=bundle.object(forInfoDictionaryKey:"NSServices") as? [[String:Any]],
+              services.contains(where:{ ($0["NSMenuItem"] as? [String:String])?["default"] == serviceName && $0["NSMessage"] as? String == "newTerminalAtFolder" && $0["NSUserData"] as? String == "New Tab" }) else { throw FileToolsError.invalid("当前 Terminal 未声明公开的新标签页目录服务。") }
+        running=true
+        Task { @MainActor in
+            defer { running=false }
+            do {
+                for directory in directories {
+                    try Task.checkCancellation()
+                    let applications=NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.Terminal")
+                    guard applications.count == 1, let app=applications.first,
+                          app.bundleURL?.standardizedFileURL == appURL.standardizedFileURL,
+                          let identity=WindowProcessIdentity.capture(pid:app.processIdentifier,launchDate:app.launchDate) else { throw FileToolsError.invalid("请先打开 Terminal 窗口，或选择安全的新窗口方式。") }
+                    let before=try readSnapshot()
+                    _ = try newTTY(before:before,after:before)
+                    let board=NSPasteboard.withUniqueName()
+                    defer { board.releaseGlobally() }
+                    // Use a dedicated request board; never read or replace the
+                    // general clipboard. Paths are data for Apple's own service.
+                    guard board.writeObjects([directory as NSURL]), board.setString(directory.path,forType:.string) else { throw FileToolsError.invalid("无法准备 Terminal 文件夹服务参数。") }
+                    guard WindowProcessIdentity.matches(captured:identity,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate), !app.isTerminated else { throw FileToolsError.invalid("Terminal 进程身份已变化。") }
+                    try Task.checkCancellation()
+                    guard NSPerformService(serviceName,board) else { throw FileToolsError.invalid("系统 Terminal 新标签页服务不可用；未改用旧标签页或新窗口。") }
+                    var proven=false
+                    for _ in 0..<30 {
+                        try Task.checkCancellation()
+                        guard WindowProcessIdentity.matches(captured:identity,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate), !app.isTerminated else { throw FileToolsError.invalid("Terminal 进程身份已变化，结果未核验。") }
+                        if try newTTY(before:before,after:readSnapshot()) != nil { proven=true;break }
+                        try await Task.sleep(nanoseconds:100_000_000)
+                    }
+                    guard proven else { throw FileToolsError.invalid("系统服务已发送，但未核验到同窗口内唯一新标签页；请检查 Terminal，未重复发送请求。") }
+                }
+                completion(nil)
+            } catch { completion(error) }
         }
     }
 }

@@ -33,9 +33,9 @@ import SwiftUI
         update {value in guard let index=value.items.firstIndex(where:{$0.id == id}) else{return};let to=max(0,min(value.items.count-1,index+distance));let item=value.items.remove(at:index);value.items.insert(item,at:to)}
     }
     func publish(store:OperationStore) {
-        let folders=store.settings.folders.map{FinderMenuFolder(id:$0.id.uuidString,name:$0.name,path:$0.path)}
-        let templates=store.settings.templates.map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:false)} + store.fileEnhancements.settings.templates.map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:true)}
-        let apps=store.fileEnhancements.settings.apps.map{FinderMenuApplication(id:$0.id.uuidString,name:$0.name)}
+        let folders=store.settings.folders.map{FinderMenuFolder(id:$0.id.uuidString,name:$0.name,path:$0.path,sourceRoles:$0.sourceRoles)}
+        let templates=store.settings.templates.map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:false)} + store.fileEnhancements.settings.templates.filter(\.isEnabled).map{FinderMenuTemplate(id:$0.id.uuidString,name:$0.name,binary:true)}
+        let apps=store.fileEnhancements.settings.apps.filter(\.isEnabled).map{FinderMenuApplication(id:$0.id.uuidString,name:$0.name)}
         FinderMenuSnapshot(preferences:preferences,folders:folders,templates:templates,applications:apps,language:store.settings.language).publish()
     }
 }

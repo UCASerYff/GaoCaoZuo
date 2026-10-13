@@ -176,7 +176,7 @@ final class InputController: ObservableObject {
     @Published private(set) var touchDevices: [String] = []
 
     func configure(bindings: [InputBinding], excludedApps: [String] = [], windows: WindowManager? = nil,
-                   windowDragEnabled: Bool = false, windowSnapEnabled: Bool = false, enhancements: InputEnhancementConfiguration = .init(), handler: @escaping (String) -> Void) {
+                   windowDragEnabled: Bool = false, windowSnapEnabled: Bool = false, enhancements: InputEnhancementConfiguration = .init(), invocationHandler: ((String,InputWindowTargetMode)->Void)? = nil, handler: @escaping (String) -> Void) {
         tearDownTap()
         let conflicting = InputRules.conflictingIDs(in: bindings)
         let invalid = bindings.filter { $0.enabled && InputRules.validationError($0) != nil }
@@ -186,6 +186,7 @@ final class InputController: ObservableObject {
         enhanced.configure(enhancements, excludedApps: Set(excludedApps), handler: handler) { [weak self] message in
             self?.enhancementError = message; self?.updateCombinedError()
         }
+        enhanced.invocationHandler=invocationHandler
         self.excludedApps = Set(excludedApps)
         self.windows = windows
         self.windowDragEnabled = windowDragEnabled

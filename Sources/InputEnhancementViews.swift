@@ -33,10 +33,25 @@ import UniformTypeIdentifiers
                     DisclosureGroup {
                         EnhancedInputRuleEditor(rule:$rule,actions:actions,devices:devices,scripts:configuration.scriptLibrary)
                         HStack {
-                            Button("复制规则") {var copy=rule;copy.id=UUID();copy.name += " 副本";copy.enabled=false;configuration.rules.append(copy)}
+                            Button("复制规则") {var copy=rule;copy.id=UUID();copy.name += " 副本";copy.enabled=false;copy.migrationOrigin=nil;configuration.rules.append(copy)}
                             Button("删除规则",role:.destructive) {configuration.rules.removeAll{$0.id==rule.id}}
                         }
-                    } label: {HStack {Toggle("",isOn:$rule.enabled).labelsHidden();Text(rule.name);Spacer();Text(L10n.text(rule.trigger.title)).foregroundStyle(.secondary)}}
+                    } label: {HStack {Toggle("",isOn:$rule.enabled).labelsHidden().disabled(EnhancedInputValidation.migrationBlockReason(rule) != nil);Text(rule.name);Spacer();Text(L10n.text(rule.trigger.title)).foregroundStyle(.secondary)}}
+                }
+            }
+            if !configuration.migrationSources.isEmpty {
+                Section("原输入规则迁移审计") {
+                    Text("全部来源规则均保留。精确转换只表示语义已核对；未通过设备或动作验收的规则继续暂停。").font(.caption).foregroundStyle(.secondary)
+                    ForEach(configuration.migrationSources) {source in
+                        DisclosureGroup(String(format:L10n.text("来源规则 %d 条"),source.rows.count)) {
+                            ForEach(source.rows) {row in
+                                VStack(alignment:.leading,spacing:4) {
+                                    HStack {Text(row.module+" · "+String(row.groupIndex+1)+"/"+String(row.rowIndex+1)).font(.caption.monospaced());Spacer();Text(L10n.text(migrationTitle(row.disposition))).font(.caption).foregroundStyle(row.disposition == .exact ? Color.secondary : Color.orange)}
+                                    Text(row.reason).font(.caption).textSelection(.enabled)
+                                }.padding(.vertical,3)
+                            }
+                        }
+                    }
                 }
             }
             Section("滚轮") {
@@ -84,19 +99,20 @@ import UniformTypeIdentifiers
     private func importRules() {
         let panel=NSOpenPanel();panel.allowedContentTypes=[.json,.propertyList];panel.allowsMultipleSelection=false
         guard panel.runModal() == .OK,let url=panel.url else{return}
-        do {let result=try EnhancedRuleFiles.read(url);merge(result.configuration);message=result.note} catch {message=error.localizedDescription}
+        do {let result=try EnhancedRuleFiles.read(url);message=try merge(result.configuration) ?? result.note} catch {message=error.localizedDescription}
     }
     private func exportRules() {
         let panel=NSSavePanel();panel.allowedContentTypes=[.json];panel.nameFieldStringValue="搞操作输入规则.json"
         guard panel.runModal() == .OK,let url=panel.url else{return}
         do {try EnhancedRuleFiles.write(configuration,to:url);message="已导出规则与脚本。"} catch {message=error.localizedDescription}
     }
-    private func merge(_ value:InputEnhancementConfiguration) {
-        var ids=Set(configuration.rules.map(\.id))
-        for var rule in value.rules {if ids.contains(rule.id) {rule.id=UUID()};ids.insert(rule.id);rule.enabled=false;configuration.rules.append(rule)}
-        for var profile in value.scrollProfiles {profile.id=UUID();profile.enabled=false;configuration.scrollProfiles.append(profile)}
-        for var profile in value.hidProfiles {profile.id=UUID();profile.enabled=false;configuration.hidProfiles.append(profile)}
-        for var script in value.scriptLibrary {script.id=UUID();configuration.scriptLibrary.append(script)}
+    private func merge(_ value:InputEnhancementConfiguration) throws -> String? {
+        let result=try EnhancedRuleFiles.mergeInputConfiguration(value,into:configuration)
+        configuration=result.configuration
+        return result.note
+    }
+    private func migrationTitle(_ value:InputMigrationDisposition)->String {
+        switch value {case .exact:return "精确转换";case .requiresReview:return "待语义或设备核验";case .unavailable:return "保真保留，尚未转换";case .preservedUserChange:return "保留用户修改"}
     }
     private func syncURL()throws->URL {
         let directory=URL(fileURLWithPath:configuration.syncFolder,isDirectory:true)
@@ -105,7 +121,7 @@ import UniformTypeIdentifiers
         return directory.appendingPathComponent("搞操作输入规则.json")
     }
     private func writeSync() {do {let url=try syncURL();if FileManager.default.fileExists(atPath:url.path) {let old=try Data(contentsOf:url);let backup=url.deletingLastPathComponent().appendingPathComponent("搞操作输入规则-备份-"+UUID().uuidString+".json");try old.write(to:backup,options:.withoutOverwriting)};try EnhancedRuleFiles.write(configuration,to:url);message="同步副本已写入；原有副本已备份。"} catch {message=error.localizedDescription}}
-    private func readSync() {do {let result=try EnhancedRuleFiles.read(syncURL());merge(result.configuration);message=result.note} catch {message=error.localizedDescription}}
+    private func readSync() {do {let result=try EnhancedRuleFiles.read(syncURL());message=try merge(result.configuration) ?? result.note} catch {message=error.localizedDescription}}
 }
 
 @MainActor private struct EnhancedInputRuleEditor:View {
@@ -114,6 +130,10 @@ import UniformTypeIdentifiers
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             TextField("规则名称",text:$rule.name)
+            if let origin=rule.migrationOrigin {
+                Text(origin.reason).font(.caption).foregroundStyle(.secondary)
+                if let reason=EnhancedInputValidation.migrationBlockReason(rule) {Text(reason).font(.caption).foregroundStyle(.orange)}
+            }
             Picker("触发方式",selection:$rule.trigger) {ForEach(EnhancedInputTrigger.allCases) {Text(L10n.text($0.title)).tag($0)}}
             TextField("限定应用 Bundle ID（空白为所有应用）",text:$rule.appBundleID)
             AppExclusionEditor(values:$rule.excludedApps)
@@ -149,15 +169,21 @@ import UniformTypeIdentifiers
             if rule.trigger == .touch && rule.touchGesture == "middleDrag" {Text("这个触控手势直接发送中键按下、拖动和松开；需要辅助功能权限，建议设置Fn条件避免与系统滚动重叠。").font(.caption).foregroundStyle(.secondary)} else {
             Picker("执行",selection:$rule.effect.kind){ForEach(InputEffectKind.allCases){Text(L10n.text($0.title)).tag($0)}}
             switch rule.effect.kind {
-            case .action:Picker("动作",selection:$rule.effect.actionID){ForEach(actions){Text(L10n.text($0.title)).tag($0.id)}}
+            case .action:
+                Picker("动作",selection:$rule.effect.actionID){ForEach(actions){Text($0.title).tag($0.id)}}
+                if rule.effect.actionID.hasPrefix("window.") {
+                    Picker("窗口目标",selection:$rule.effect.windowTargetMode) {Text("跟随窗口设置").tag(InputWindowTargetMode.inheritSettings);Text("前台窗口").tag(InputWindowTargetMode.frontmost);Text("鼠标指向窗口").tag(InputWindowTargetMode.underPointer)}
+                }
             case .shortcut:InputKeyRecorder(code:$rule.effect.keyCode,modifiers:$rule.effect.modifiers);ModifierSelection(value:$rule.effect.modifiers,title:"输出修饰键")
-            case .mouseClick:Stepper("输出鼠标按钮：\(rule.effect.mouseButton)",value:$rule.effect.mouseButton,in:0...31)
+            case .mouseClick:Stepper("输出鼠标按钮：\(rule.effect.mouseButton)",value:$rule.effect.mouseButton,in:0...31);ModifierSelection(value:$rule.effect.mouseModifiers,title:"输出修饰键")
             case .scroll:HStack {TextField("水平像素",value:$rule.effect.scrollX,format:.number);TextField("垂直像素",value:$rule.effect.scrollY,format:.number)}
             case .systemPreset:Picker("系统控制",selection:$rule.effect.systemPreset){ForEach(EnhancedSystemPreset.allCases){Text(L10n.text($0.title)).tag($0.rawValue)}};Text("媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。").font(.caption).foregroundStyle(.secondary)
             case .menuItem:InputMenuSelectionView(bundleID:$rule.effect.menuBundleID,path:$rule.effect.menuPath)
             case .appleScript:
                 Menu("从脚本库复制") {ForEach(scripts) {script in Button(script.name){rule.effect.script=script.source}}}
                 TextEditor(text:$rule.effect.script).font(.system(.body,design:.monospaced)).frame(minHeight:100)
+            case .openTargets:
+                TextField("每行一个绝对路径或 HTTP(S) 网址",text:Binding(get:{rule.effect.openTargets.joined(separator:"\n")},set:{rule.effect.openTargets=$0.components(separatedBy:.newlines).filter{!$0.isEmpty}}),axis:.vertical).lineLimit(3...8)
             }
             }
             if let error=EnhancedInputValidation.error(rule) {Text(L10n.text(error)).font(.caption).foregroundStyle(.orange)}
