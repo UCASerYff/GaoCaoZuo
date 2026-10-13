@@ -9,10 +9,44 @@ enum ArchiveQuickLookDiagnostics {
     static func isExtension(_ bundle:Bundle)->Bool {bundle.bundleIdentifier == "com.gaoseries.GaoCaoZuo.QuickLook" && bundle.bundleURL.pathExtension == "appex"}
 }
 
+/// A preview can outlive its listing task. Keep the original scoped URL alive for
+/// the visible preview and for any asynchronous LaunchServices handoff. Each
+/// successful acquisition is balanced exactly once when the last owner finishes.
+final class ArchiveQuickLookResourceAccess {
+    let url: URL
+    let isSecurityScoped: Bool
+    private let stop: (URL) -> Void
+    init(url: URL, start: (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
+         stop: @escaping (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }) {
+        self.url = url; self.stop = stop; isSecurityScoped = start(url)
+    }
+    deinit { if isSecurityScoped { stop(url) } }
+}
+
+enum ArchiveQuickLookHandoff {
+    /// Reuse the main app's review-only selection entry point. This URL is not an
+    /// authorization token and never requests an archive write or execution.
+    static func selectionRequest(for archive: URL) -> URL? {
+        guard archive.isFileURL, archive.path.hasPrefix("/"),
+              !archive.path.contains("\0"), archive.path.utf8.count <= 16_384,
+              let fileComponents = URLComponents(url: archive, resolvingAgainstBaseURL: false),
+              fileComponents.query == nil, fileComponents.fragment == nil,
+              [nil, "", "localhost"].contains(fileComponents.host?.lowercased()),
+              !fileComponents.percentEncodedPath.lowercased().contains("%00"),
+              let data = try? JSONEncoder().encode([archive.path]) else { return nil }
+        var components = URLComponents()
+        components.scheme = "gaocaozuo"; components.host = "perform"
+        components.queryItems = [URLQueryItem(name: "payload", value: data.base64EncodedString())]
+        return components.url
+    }
+}
+
 /// Finder invokes this provider for Space/Quick Look. It only lists metadata, never extracts files.
 final class ArchiveQuickLook: NSViewController, QLPreviewingController {
     private let textView = NSTextView()
     private var archiveURL: URL?
+    private var previewAccess: ArchiveQuickLookResourceAccess?
+    private var previewID = UUID()
     private let openButton = NSButton(title: L10n.text("用搞操作打开"), target: nil, action: nil)
     override func loadView() {
         ArchiveQuickLookDiagnostics.logger.notice("phase=load-view")
@@ -22,7 +56,7 @@ final class ArchiveQuickLook: NSViewController, QLPreviewingController {
         textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
         scroll.hasVerticalScroller = true; scroll.documentView = textView
         openButton.target = self; openButton.action = #selector(openInMainApp); openButton.bezelStyle = .rounded; openButton.isEnabled = false
-        let explanation = NSTextField(wrappingLabelWithString: L10n.text("此处只读目录。包内内容预览、选取、提取和增删在搞操作主应用完成；打开后采用你的压缩包打开设置。"))
+        let explanation = NSTextField(wrappingLabelWithString: L10n.text("此处只读目录。按钮仅在搞操作面板中选择此压缩包，请再选择要执行的动作；内容预览、提取和增删由主应用完成。"))
         explanation.font = .systemFont(ofSize: 11); explanation.textColor = .secondaryLabelColor
         let footer = NSStackView(views: [explanation, openButton]); footer.orientation = .horizontal; footer.spacing = 12
         let stack = NSStackView(views: [scroll, footer]); stack.orientation = .vertical; stack.spacing = 10; stack.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 12, right: 12)
@@ -30,38 +64,71 @@ final class ArchiveQuickLook: NSViewController, QLPreviewingController {
         NSLayoutConstraint.activate([scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24), footer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24)])
         view = stack; preferredContentSize = NSSize(width: 760, height: 580)
     }
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        if previewAccess == nil, let archiveURL { previewAccess = ArchiveQuickLookResourceAccess(url: archiveURL) }
+    }
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        // Listing and open completions retain their own reference until finished.
+        previewAccess = nil
+    }
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         archiveURL = url; openButton.isEnabled = false
-        let access = url.startAccessingSecurityScopedResource()
+        let access = ArchiveQuickLookResourceAccess(url: url)
+        previewAccess = access
+        let requestID = UUID(); previewID = requestID
         let classBundle=Bundle(for: Self.self)
         let mainIsExtension=ArchiveQuickLookDiagnostics.isExtension(Bundle.main),classIsExtension=ArchiveQuickLookDiagnostics.isExtension(classBundle)
-        ArchiveQuickLookDiagnostics.logger.notice("phase=native-prepare main-extension=\(mainIsExtension,privacy:.public) class-extension=\(classIsExtension,privacy:.public) scoped=\(access,privacy:.public)")
-        DispatchQueue.global(qos:.userInitiated).async {
-            defer {if access {url.stopAccessingSecurityScopedResource()}}
+        ArchiveQuickLookDiagnostics.logger.notice("phase=native-prepare main-extension=\(mainIsExtension,privacy:.public) class-extension=\(classIsExtension,privacy:.public) scoped=\(access.isSecurityScoped,privacy:.public)")
+        DispatchQueue.global(qos:.userInitiated).async { [access] in
             do {
-                let listing=try ArchiveQuickLookNative.list(url:url)
+                let listing=try ArchiveQuickLookNative.list(url:access.url)
                 let text=ArchiveQuickLookDocument.render(filename:url.lastPathComponent,technicalListing:listing)
                 let bytes=listing.utf8.count
                 ArchiveQuickLookDiagnostics.logger.notice("phase=native-result listing-bytes=\(bytes,privacy:.public)")
-                DispatchQueue.main.async {self.textView.string=text;self.openButton.isEnabled=true;handler(nil)}
+                DispatchQueue.main.async {if self.previewID == requestID {self.textView.string=text;self.openButton.isEnabled=true};handler(nil)}
             } catch {
                 ArchiveQuickLookDiagnostics.logger.error("phase=native-failure")
                 let explanation=url.lastPathComponent+"\n\n"+error.localizedDescription
-                DispatchQueue.main.async {self.textView.string=explanation;self.openButton.isEnabled=true;handler(nil)}
+                DispatchQueue.main.async {if self.previewID == requestID {self.textView.string=explanation;self.openButton.isEnabled=true};handler(nil)}
             }
         }
     }
     @objc private func openInMainApp() {
         guard let archiveURL else { return }
+        let access = previewAccess ?? ArchiveQuickLookResourceAccess(url: archiveURL)
+        let requestID = previewID
         let bundle = Bundle(for: Self.self).bundleURL
         let appURL = bundle.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         guard bundle.pathExtension == "appex", appURL.pathExtension == "app",
               Bundle(url: appURL)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else {
             textView.string += "\n\n"+L10n.text("主应用位置无法验证，请在 Finder 中选择搞操作打开。"); return
         }
-        let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = true; configuration.allowsRunningApplicationSubstitution = false
-        NSWorkspace.shared.open([archiveURL], withApplicationAt: appURL, configuration: configuration) { [weak self] _, error in
-            if error != nil { DispatchQueue.main.async { self?.textView.string += "\n\n"+L10n.text("无法打开主应用；目录预览仍可使用。") } }
+        guard let request = ArchiveQuickLookHandoff.selectionRequest(for: access.url),
+              let handler = NSWorkspace.shared.urlForApplication(toOpen: request),
+              handler.standardizedFileURL.resolvingSymlinksInPath() == appURL.standardizedFileURL.resolvingSymlinksInPath(),
+              Bundle(url: handler)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else {
+            ArchiveQuickLookDiagnostics.logger.error("phase=host-open-handler-verified accepted=false")
+            textView.string += "\n\n"+L10n.text("主应用位置无法验证，请在 Finder 中选择搞操作打开。"); return
+        }
+        guard let context = extensionContext else {
+            ArchiveQuickLookDiagnostics.logger.error("phase=host-open-context-available accepted=false")
+            textView.string += "\n\n"+L10n.text("无法打开主应用；目录预览仍可使用。")+"\n"+L10n.text("请关闭预览，在 Finder 中选择“打开方式”→“搞操作”。"); return
+        }
+        openButton.isEnabled = false
+        // A Quick Look extension can run in a system persona/session that cannot
+        // launch an app directly. Ask the host through the public extension API.
+        // Each extension point decides whether this request is supported.
+        context.open(request) { [weak self, access] accepted in
+            withExtendedLifetime(access) {
+                ArchiveQuickLookDiagnostics.logger.notice("phase=host-open-result accepted=\(accepted,privacy:.public)")
+                DispatchQueue.main.async {
+                    guard let self, self.previewID == requestID else { return }
+                    self.openButton.isEnabled = true
+                    if !accepted {self.textView.string += "\n\n"+L10n.text("无法打开主应用；目录预览仍可使用。")+"\n"+L10n.text("请关闭预览，在 Finder 中选择“打开方式”→“搞操作”。")}
+                }
+            }
         }
     }
 }

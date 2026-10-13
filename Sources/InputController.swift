@@ -128,6 +128,22 @@ enum InputTapLifecycle {
     }
 }
 
+/// Native title-bar dragging is enabled by snapping alone; Option movement is an independent feature.
+enum WindowInputPolicy {
+    enum StartMode {case nativeSnap,optionMove}
+    static func startMode(dragEnabled:Bool,snapEnabled:Bool,optionDown:Bool)->StartMode? {
+        if dragEnabled && optionDown {return .optionMove}
+        return snapEnabled ? .nativeSnap : nil
+    }
+    static func needsEvents(windowsConnected:Bool,dragEnabled:Bool,snapEnabled:Bool)->Bool {
+        windowsConnected && (dragEnabled || snapEnabled)
+    }
+    static func canContinue(capturedPID:pid_t?,frontPID:pid_t?,paused:Bool,running:Bool,excluded:Bool)->Bool {
+        guard let capturedPID,capturedPID>0,let frontPID,frontPID==capturedPID else{return false}
+        return !paused && running && !excluded
+    }
+}
+
 @MainActor
 final class InputController: ObservableObject {
     @Published private(set) var permissionGranted = CGPreflightListenEventAccess() || AXIsProcessTrusted()
@@ -217,7 +233,7 @@ final class InputController: ObservableObject {
     private func refreshPermission() {
         let authorization=InputListenerAuthorization(monitoring:CGPreflightListenEventAccess(),accessibility:AXIsProcessTrusted())
         permissionGranted = authorization.available
-        let needsWindows = windows != nil && (windowDragEnabled || windowSnapEnabled)
+        let needsWindows = WindowInputPolicy.needsEvents(windowsConnected:windows != nil,dragEnabled:windowDragEnabled,snapEnabled:windowSnapEnabled)
         let hasWork = !bindings.isEmpty || needsWindows || enhanced.needsEvents
         let wantsActive=enhanced.needsActiveTap && authorization.accessibility
         let state:InputTapState?=tap.map {port in
@@ -256,7 +272,7 @@ final class InputController: ObservableObject {
         if enhanced.needsEvents { types += [.keyUp,.flagsChanged,.leftMouseDown,.leftMouseUp,.leftMouseDragged,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
         let active=enhanced.needsActiveTap && authorization.accessibility
         tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
-        if windows != nil && (windowDragEnabled || windowSnapEnabled) { types += [.leftMouseDown, .leftMouseDragged, .leftMouseUp] }
+        if WindowInputPolicy.needsEvents(windowsConnected:windows != nil,dragEnabled:windowDragEnabled,snapEnabled:windowSnapEnabled) { types += [.leftMouseDown, .leftMouseDragged, .leftMouseUp] }
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
@@ -328,8 +344,9 @@ final class InputController: ObservableObject {
         switch type {
         case .leftMouseDown:
             cancelWindowInput()
-            let moveWithPointer = windowDragEnabled && flags & UInt64(NSEvent.ModifierFlags.option.rawValue) != 0
-            guard windows != nil, moveWithPointer || windowSnapEnabled else { return }
+            guard windows != nil,let mode=WindowInputPolicy.startMode(dragEnabled:windowDragEnabled,snapEnabled:windowSnapEnabled,
+                optionDown:flags & UInt64(NSEvent.ModifierFlags.option.rawValue) != 0) else{return}
+            let moveWithPointer=mode == .optionMove
             let token = UUID()
             windowDragToken = token; movingWindowWithPointer = moveWithPointer; lastWindowUpdate = 0
             windowDragPID = front?.processIdentifier
@@ -410,11 +427,11 @@ final class InputController: ObservableObject {
         }
     }
 
-    private func canContinueWindowInput(_ token: UUID) -> Bool {
-        guard windowDragToken == token, !isPaused, desiredRunning,
-              windowDragPID == NSWorkspace.shared.frontmostApplication?.processIdentifier,
-              !excludedApps.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "") else {
-            if windowDragToken == token { cancelWindowInput() }
+    private func canContinueWindowInput(_ token:UUID)->Bool {
+        let front=NSWorkspace.shared.frontmostApplication
+        guard windowDragToken==token,WindowInputPolicy.canContinue(capturedPID:windowDragPID,frontPID:front?.processIdentifier,
+            paused:isPaused,running:desiredRunning,excluded:excludedApps.contains(front?.bundleIdentifier ?? "")) else {
+            if windowDragToken==token {cancelWindowInput()}
             return false
         }
         return true

@@ -15,6 +15,7 @@ enum ArchiveEnhancementTests {
         let fm = FileManager.default
         guard let index = CommandLine.arguments.firstIndex(of: "--engine"), index + 1 < CommandLine.arguments.count else { throw ArchiveError.invalid("Tests require --engine") }
         let engine = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        try await runArchiveFileIOTests(engine: engine)
         let project = engine.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let root = fm.temporaryDirectory.appendingPathComponent("GaoArchiveEnhancements-" + UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: root, withIntermediateDirectories: false)

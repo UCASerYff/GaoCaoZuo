@@ -15,6 +15,7 @@ import Darwin
         try runInputEnhancementTests()
         try runSystemTests()
         try runWindowDragTests()
+        try await runNativeWindowSnapTests()
         try runWindowFocusTests()
         try await runWindowFocusTransactionTests()
         try await runWindowLayoutTransactionTests()

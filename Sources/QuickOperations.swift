@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Darwin
 
 struct OperationFeedback: Identifiable {
     enum Kind { case idle, running, success, failure }
@@ -76,7 +77,17 @@ struct QueuedQuickOperation {
         if id == "archive.create" || id == "archive.7z" {
             let format:ArchiveFormat = id == "archive.7z" ? .sevenZip : .zip
             enqueueQuick("压缩为 "+format.title) {
-                let result=try await QuickFileActions.createArchive(items:files,format:format,service:self.archive)
+                let destination=try await self.archive.performFileIO { cancellation in
+                    guard let first=files.first else {throw FileToolsError.invalid("请先选择需要压缩的文件。")}
+                    var info=stat()
+                    guard lstat(first.path,&info)==0 else {throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno))}
+                    var stem=files.count == 1 ? (info.st_mode & S_IFMT == S_IFDIR ? first.lastPathComponent : first.deletingPathExtension().lastPathComponent) : "归档"
+                    while stem.utf8.count>250 {stem.removeLast()}
+                    let destination=try QuickFileActions.uniqueURL(in:first.deletingLastPathComponent(),preferredName:(stem.isEmpty ? "归档":stem)+"."+format.rawValue)
+                    try cancellation.check();return destination
+                }
+                if self.quickCancellationRequested || Task.isCancelled {throw ArchiveError.cancelled}
+                let result=try await self.archive.create(items:files,destination:destination,format:format,password:nil,splitMB:nil,solid:false)
                 try self.record(self.archive.lastResultReceipts);return [result]
             };return true
         }

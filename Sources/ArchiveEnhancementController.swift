@@ -89,11 +89,23 @@ private struct ArchivePasswordExport: Codable {
                         let parent = group[0].deletingLastPathComponent()
                         let stem = group.count == 1 ? group[0].deletingPathExtension().lastPathComponent : "归档"
                         let date = options.appendDate ? "-" + Self.dateSuffix() : ""
-                        let result = try QuickFileActions.uniqueURL(in: parent, preferredName: stem + date + "." + format.rawValue)
-                        let originals = try group.map { ($0, try FileTools.archiveFingerprint($0)) }
+                        let preferredName = stem + date + "." + format.rawValue
+                        let shouldTrash = options.trashOriginals
+                        let (result, originals) = try await store.archive.performFileIO { cancellation in
+                            let result = try QuickFileActions.uniqueURL(in: parent, preferredName: preferredName)
+                            try cancellation.check()
+                            let originals: [(URL,String)] = shouldTrash ? try group.map {
+                                try cancellation.check(); return ($0, try FileTools.archiveFingerprint($0))
+                            } : []
+                            try cancellation.check()
+                            return (result, originals)
+                        }
+                        if store.quickCancellationRequested || Task.isCancelled { return outputs }
                         _ = try await store.archive.create(items: group, destination: result, format: format, password: nil, splitMB: nil, solid: false, options: options)
                         try store.record(store.archive.lastResultReceipts); outputs.append(result)
-                        if options.trashOriginals { try Self.trashUnchanged(originals) }
+                        if options.trashOriginals && !store.quickCancellationRequested && !Task.isCancelled {
+                            try await store.archive.performFileIO { cancellation in try Self.trashUnchanged(originals, checkCancellation: { try cancellation.check() }) }
+                        }
                     }
                     if options.revealResults { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
                 } else {
@@ -103,17 +115,25 @@ private struct ArchivePasswordExport: Codable {
                         if store.quickCancellationRequested || Task.isCancelled { return outputs }
                         // Capture refuses unproven split-stream groups before any
                         // decoder work or original-file side effect can begin.
-                        let group = options.trashOriginals ? try ArchiveVolumeGroup.capture(source) : nil
+                        let shouldTrash = options.trashOriginals
+                        let group = shouldTrash ? try await store.archive.performFileIO { _ in try ArchiveVolumeGroup.capture(source) } : nil
                         let originals = group?.fingerprints ?? []
+                        if store.quickCancellationRequested || Task.isCancelled { return outputs }
                         let result = try await withPassword(archive: source, store: store) { password in
                             if id == "archive.extract.here" { return try await store.archive.extractIntoDirectory(archive: source, to: source.deletingLastPathComponent(), password: password, options: options) }
-                            let target = try QuickFileActions.uniqueURL(in: source.deletingLastPathComponent(), preferredName: QuickFileActions.extractionFolderName(for: source), isDirectory: true)
+                            let target = try await store.archive.performFileIO { cancellation in
+                                let target = try QuickFileActions.uniqueURL(in: source.deletingLastPathComponent(), preferredName: QuickFileActions.extractionFolderName(for: source), isDirectory: true)
+                                try cancellation.check(); return target
+                            }
+                            if store.quickCancellationRequested || Task.isCancelled { throw ArchiveError.cancelled }
                             return [try await store.archive.extract(archive: source, to: target, password: password, selected: nil, options: options)]
                         }
                         try store.record(store.archive.lastResultReceipts); outputs += result
-                        if options.trashOriginals {
-                            try group!.verifyUnchanged()
-                            try Self.trashUnchanged(originals)
+                        if options.trashOriginals && !store.quickCancellationRequested && !Task.isCancelled {
+                            try await store.archive.performFileIO { cancellation in
+                                try group!.verifyUnchanged()
+                                try Self.trashUnchanged(originals, checkCancellation: { try cancellation.check() })
+                            }
                         }
                     }
                     if options.revealResults { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
@@ -242,16 +262,19 @@ private struct ArchivePasswordExport: Codable {
         let controller = NSWindowController(window: window); windows.append(controller); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private static func dateSuffix() -> String { let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; return f.string(from: Date()) }
-    static func trashUnchanged(_ originals: [(URL, String)], moveToTrash: ((URL) throws -> URL)? = nil) throws {
+    nonisolated static func trashUnchanged(_ originals: [(URL, String)], checkCancellation: () throws -> Void = {}, moveToTrash: ((URL) throws -> URL)? = nil) throws {
         for (url, hash) in originals {
+            try checkCancellation()
             let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
             guard current == hash else { throw FileToolsError.changed(url) }
         }
         var moved: [(URL,URL,String)] = []
         do {
             for (url, hash) in originals {
+                try checkCancellation()
                 let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
                 guard current == hash else { throw FileToolsError.changed(url) }
+                try checkCancellation()
                 let trashURL: URL
                 if let moveToTrash { trashURL = try moveToTrash(url) }
                 else {
@@ -262,13 +285,15 @@ private struct ArchivePasswordExport: Codable {
                 }
                 moved.append((url, trashURL, hash))
             }
+            // Include cancellation arriving during the last (or only) trash move.
+            try checkCancellation()
         } catch {
             var restored = true
             for (original, trashed, hash) in moved.reversed() {
                 do {
-                    guard (try? FileManager.default.attributesOfItem(atPath: original.path)) == nil,
-                          try FileTools.archiveFingerprint(trashed) == hash else { restored = false; continue }
-                    try FileManager.default.moveItem(at: trashed, to: original)
+                    try ArchiveFileIO.requireAbsent(original)
+                    guard try FileTools.archiveFingerprint(trashed) == hash else { restored = false; continue }
+                    try ArchiveFileIO.moveExclusively(trashed, to: original)
                 } catch { restored = false }
             }
             throw ArchiveError.invalid(restored ? "原件后处理失败，已恢复本批已移动原件；解压结果保留。" : "原件后处理部分失败；已尽量恢复，本批结果与剩余废纸篓原件均保留，请复核。")

@@ -54,20 +54,35 @@ final class ArchiveService: ObservableObject {
     private var jobDeadline = Date.distantFuture
     private var extractionOptions = ArchiveExtractionOptions()
     private let engineOverride: URL?
+    private let creationIOObserver: (@Sendable (ArchiveCreationIO.Phase) -> Void)?
+    private var creationCancellation: ArchiveCreationIO.Cancellation?
     private let fm = FileManager.default
     nonisolated static let maximumExpandedBytes: UInt64 = 20 * 1024 * 1024 * 1024
     nonisolated static let maximumEntries = 100_000
 
-    init(engineURL: URL? = nil) { self.engineOverride = engineURL }
+    init(engineURL: URL? = nil, creationIOObserver: (@Sendable (ArchiveCreationIO.Phase) -> Void)? = nil) {
+        self.engineOverride = engineURL; self.creationIOObserver = creationIOObserver
+    }
 
     func cancel() {
         cancellationRequested = true
+        creationCancellation?.cancel()
         guard let process, process.isRunning else { return }
         process.interrupt()
         Task { @MainActor [weak process] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
+    }
+
+    /// Serialized queue-side file planning/disposal shares the same cancellation
+    /// signal as compression. No later job can run while its worker is pending.
+    func performFileIO<T>(_ body: @escaping @Sendable (ArchiveCreationIO.Cancellation) throws -> T) async throws -> T {
+        guard !isRunning else { throw ArchiveError.invalid("已有压缩任务正在运行，请等待或取消。") }
+        let cancellation = ArchiveCreationIO.Cancellation(deadline: Date().addingTimeInterval(Double(ArchiveExtractionOptions().maximumMinutes * 60)))
+        creationCancellation = cancellation; cancellationRequested = false; isRunning = true
+        defer { creationCancellation = nil; isRunning = false }
+        return try await ArchiveFileIO.perform { try cancellation.check(); return try body(cancellation) }
     }
 
     /// destination is the exact output filename. Split archives return the first (.001) volume.
@@ -79,77 +94,79 @@ final class ArchiveService: ObservableObject {
         try options.validate()
         if let splitMB, !(1...1_048_576).contains(splitMB) { throw ArchiveError.invalid("分卷大小须为 1–1048576 MB。") }
         guard format == .sevenZip || !solid else { throw ArchiveError.invalid("固实压缩仅适用于 7Z。") }
-        try requireDirectory(destination.deletingLastPathComponent())
-        try requireAbsent(destination)
         var sourceNames: Set<String> = []
         for source in items {
             let key = source.lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
             guard sourceNames.insert(key).inserted else { throw FileToolsError.conflict(source) }
         }
-        let stage = try makeStage(in: destination.deletingLastPathComponent())
-        defer { try? fm.removeItem(at: stage) }
+        let cancellation = ArchiveCreationIO.Cancellation(deadline: jobDeadline)
+        creationCancellation = cancellation
+        defer { creationCancellation = nil }
+        let observer = creationIOObserver
+        let stage = destination.deletingLastPathComponent().appendingPathComponent(".gaocaozuo-stage-" + UUID().uuidString, isDirectory: true)
         let input = stage.appendingPathComponent("input", isDirectory: true)
         let packed = stage.appendingPathComponent("packed", isDirectory: true)
-        try fm.createDirectory(at: input, withIntermediateDirectories: false)
-        try fm.createDirectory(at: packed, withIntermediateDirectories: false)
         output = "正在核验并准备文件…\n"
-        // Archive-aware fingerprints validate safe links and complete copies away from the UI actor.
-        try await Task.detached(priority: .userInitiated) {
-            for source in items {
-                let target=input.appendingPathComponent(source.lastPathComponent)
-                if (try? FileManager.default.attributesOfItem(atPath: target.path)) != nil { throw FileToolsError.conflict(target) }
-                let fingerprint=try FileTools.archiveFingerprint(source)
-                do { try FileManager.default.copyItem(at:source,to:target) }
-                catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError { throw FileToolsError.conflict(target) }
-                guard try FileTools.archiveFingerprint(target) == fingerprint, try FileTools.archiveFingerprint(source) == fingerprint else {throw ArchiveError.invalid("待压缩文件在准备期间发生变化。")}
-            }
-        }.value
-        try checkCancellation()
-        let hasMacMetadata = try await Task.detached(priority: .userInitiated) {
-            try ArchiveMacMetadata.prepare(in: input, roots: items.map(\.lastPathComponent), options: options)
-        }.value
-        let packedURL = packed.appendingPathComponent(destination.lastPathComponent)
-        var args = ["a", "-t\(format.rawValue)", "-mx=\(options.level.rawValue)", options.threads == 0 ? "-mmt=on" : "-mmt=\(options.threads)", "-y", "-spd", "-snl"]
-        args += options.ignoredPatterns.map { "-xr!" + $0 }
-        if format == .sevenZip { args.append(solid ? "-ms=on" : "-ms=off") }
-        if let password, !password.isEmpty {
-            args.append("-p")
-            args.append(format == .sevenZip ? (options.encryptFileNames ? "-mhe=on" : "-mhe=off") : "-mem=AES256")
-        }
-        if let splitMB { args.append("-v\(splitMB)m") }
-        args += ["--", packedURL.path] + items.map(\.lastPathComponent) + (hasMacMetadata ? ["__MACOSX"] : [])
-        _ = try await run(args, currentDirectory: input, password: password, writeRoot: packed)
-        let volumes = try fm.contentsOfDirectory(at: packed, includingPropertiesForKeys: nil).sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard !volumes.isEmpty else { throw ArchiveError.invalid("压缩引擎没有生成结果。") }
-        let first = splitMB == nil ? packedURL : packedURL.appendingPathExtension("001")
-        guard fm.fileExists(atPath: first.path) else { throw ArchiveError.invalid("缺少压缩结果或首个分卷。") }
-        output += "\n正在验证压缩包完整性…\n"
-        _ = try await run(["t", "-y"] + passwordArguments(password) + ["--", first.path], password: password, writeRoot: stage)
-        try checkCancellation()
-        let targets = volumes.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
-        for target in targets { try requireAbsent(target) }
-        // Fingerprint isolated results before publishing any path the user can start editing.
-        let receipts = try await Task.detached(priority: .userInitiated) {
-            try zip(volumes, targets).map { source, target in
-                FileOperationReceipt(kind: .create, destination: target, fingerprint: try FileTools.fingerprint(source))
-            }
-        }.value
-        try checkCancellation()
-        var committed: [(URL, URL)] = []
         do {
-            for (source, target) in zip(volumes, targets) {
-                try fm.moveItem(at: source, to: target)
-                committed.append((source, target))
+            let hasMacMetadata = try await ArchiveFileIO.perform {
+                observer?(.preparing)
+                try cancellation.check()
+                return try ArchiveCreationIO.prepare(items: items, destination: destination, stage: stage, options: options, cancellation: cancellation)
             }
+            try checkCancellation()
+            let packedURL = packed.appendingPathComponent(destination.lastPathComponent)
+            var args = ["a", "-t\(format.rawValue)", "-mx=\(options.level.rawValue)", options.threads == 0 ? "-mmt=on" : "-mmt=\(options.threads)", "-y", "-spd", "-snl"]
+            args += options.ignoredPatterns.map { "-xr!" + $0 }
+            if format == .sevenZip { args.append(solid ? "-ms=on" : "-ms=off") }
+            if let password, !password.isEmpty {
+                args.append("-p")
+                args.append(format == .sevenZip ? (options.encryptFileNames ? "-mhe=on" : "-mhe=off") : "-mem=AES256")
+            }
+            if let splitMB { args.append("-v\(splitMB)m") }
+            args += ["--", packedURL.path] + items.map(\.lastPathComponent) + (hasMacMetadata ? ["__MACOSX"] : [])
+            _ = try await run(args, currentDirectory: input, password: password, writeRoot: packed)
+            let first = splitMB == nil ? packedURL : packedURL.appendingPathExtension("001")
+            let volumes = try await ArchiveFileIO.perform {
+                try cancellation.check()
+                let values = try FileManager.default.contentsOfDirectory(at: packed, includingPropertiesForKeys: nil).sorted { $0.lastPathComponent < $1.lastPathComponent }
+                guard !values.isEmpty else { throw ArchiveError.invalid("压缩引擎没有生成结果。") }
+                var info = stat()
+                guard lstat(first.path, &info) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                guard info.st_mode & S_IFMT == S_IFREG else { throw ArchiveError.invalid("缺少压缩结果或首个分卷。") }
+                return values
+            }
+            try checkCancellation()
+            output += "\n正在验证压缩包完整性…\n"
+            _ = try await run(["t", "-y"] + passwordArguments(password) + ["--", first.path], password: password, writeRoot: stage)
+            try checkCancellation()
+            let targets = volumes.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
+            // Fingerprint isolated results before publishing any path the user can start editing.
+            let receipts = try await ArchiveFileIO.perform {
+                try zip(volumes, targets).map { source, target in
+                    try cancellation.check()
+                    try ArchiveFileIO.requireAbsent(target)
+                    return FileOperationReceipt(kind: .create, destination: target, fingerprint: try FileTools.fingerprint(source))
+                }
+            }
+            try checkCancellation()
+            try await ArchiveFileIO.perform {
+                observer?(.publishing)
+                try cancellation.check()
+                try ArchiveCreationIO.publish(volumes: volumes, targets: targets, receipts: receipts, cancellation: cancellation)
+            }
+            // A fully committed result keeps its receipt even if cancellation arrives
+            // after the final move; never claim it disappeared or dispose its originals.
+            let result = destination.deletingLastPathComponent().appendingPathComponent(first.lastPathComponent)
+            lastResultReceipts = receipts
+            lastResultURL = result; progress = 1; output += "\n压缩完成，完整性验证通过。"
+            await ArchiveFileIO.removeStage(stage)
+            return result
         } catch {
-            // Roll back only results this job just moved, without touching any pre-existing path.
-            for (source, target) in committed.reversed() { try? fm.moveItem(at: target, to: source) }
+            // Await cleanup before releasing isRunning or letting the queue start
+            // another job. Cancellation cannot abandon a still-running I/O worker.
+            await ArchiveFileIO.removeStage(stage)
             throw error
         }
-        let result = destination.deletingLastPathComponent().appendingPathComponent(first.lastPathComponent)
-        lastResultReceipts = receipts
-        lastResultURL = result; progress = 1; output += "\n压缩完成，完整性验证通过。"
-        return result
     }
 
     func list(archive: URL, password: String?, options: ArchiveExtractionOptions = .init()) async throws -> [ArchiveEntry] {
@@ -814,6 +831,104 @@ final class ArchiveService: ObservableObject {
             }
         }
         return false
+    }
+}
+
+/// File work can wait on folder consent or remote storage. Await the actual
+/// worker, including cancellation/cleanup; a timeout is not permission to abandon it.
+enum ArchiveFileIO {
+    static func perform<T>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        let worker = Task.detached(priority: .userInitiated) { try body() }
+        return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+    }
+    static func requireDirectory(_ directory: URL) throws {
+        guard directory.isFileURL else { throw FileToolsError.invalid("目标不是可用文件夹。") }
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard info.st_mode & S_IFMT == S_IFDIR else { throw FileToolsError.invalid("目标不是可用文件夹。") }
+    }
+    static func requireAbsent(_ url: URL) throws {
+        var info = stat()
+        if lstat(url.path, &info) == 0 { throw FileToolsError.conflict(url) }
+        let code = errno
+        guard code == ENOENT else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+    }
+    static func moveExclusively(_ source: URL, to target: URL) throws {
+        // Private stage and final output share a parent volume. RENAME_EXCL is
+        // the final no-overwrite decision; preflight alone cannot close a race.
+        guard renamex_np(source.path, target.path, UInt32(RENAME_EXCL)) == 0 else {
+            let code = errno
+            if code == EEXIST { throw FileToolsError.conflict(target) }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+    }
+    static func removeStage(_ stage: URL) async {
+        // Cleanup must complete even when the awaiting task has been cancelled.
+        await Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: stage) }.value
+    }
+}
+
+enum ArchiveCreationIO {
+    enum Phase: Sendable, Equatable { case preparing, publishing }
+    final class Cancellation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private let deadline: Date
+        init(deadline: Date) { self.deadline = deadline }
+        func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        func check() throws {
+            lock.lock(); let value = cancelled; lock.unlock()
+            if value || Task.isCancelled { throw ArchiveError.cancelled }
+            if Date() > deadline { throw ArchiveError.invalid("任务超过当前设定的安全时间预算。") }
+        }
+    }
+    static func prepare(items: [URL], destination: URL, stage: URL, options: ArchiveCreationOptions, cancellation: Cancellation) throws -> Bool {
+        let fm = FileManager.default
+        try ArchiveFileIO.requireDirectory(destination.deletingLastPathComponent())
+        try ArchiveFileIO.requireAbsent(destination)
+        try cancellation.check()
+        try fm.createDirectory(at: stage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let input = stage.appendingPathComponent("input", isDirectory: true), packed = stage.appendingPathComponent("packed", isDirectory: true)
+        try cancellation.check()
+        try fm.createDirectory(at: input, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try fm.createDirectory(at: packed, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        for source in items {
+            try cancellation.check()
+            let target = input.appendingPathComponent(source.lastPathComponent)
+            try ArchiveFileIO.requireAbsent(target)
+            let fingerprint = try FileTools.archiveFingerprint(source)
+            try cancellation.check()
+            do { try fm.copyItem(at: source, to: target) }
+            catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError { throw FileToolsError.conflict(target) }
+            try cancellation.check()
+            guard try FileTools.archiveFingerprint(target) == fingerprint, try FileTools.archiveFingerprint(source) == fingerprint else { throw ArchiveError.invalid("待压缩文件在准备期间发生变化。") }
+        }
+        try cancellation.check()
+        let metadata = try ArchiveMacMetadata.prepare(in: input, roots: items.map(\.lastPathComponent), options: options)
+        try cancellation.check()
+        return metadata
+    }
+    static func publish(volumes: [URL], targets: [URL], receipts: [FileOperationReceipt], cancellation: Cancellation) throws {
+        var committed: [(URL, FileOperationReceipt)] = []
+        do {
+            for (index, source) in volumes.enumerated() {
+                try cancellation.check()
+                try ArchiveFileIO.requireAbsent(targets[index])
+                try cancellation.check()
+                try ArchiveFileIO.moveExclusively(source, to: targets[index])
+                committed.append((source, receipts[index]))
+            }
+        } catch {
+            var residual: [FileOperationReceipt] = []
+            for (source, receipt) in committed.reversed() {
+                do {
+                    guard try FileTools.fingerprint(receipt.destination) == receipt.fingerprint else { throw FileToolsError.changed(receipt.destination) }
+                    try ArchiveFileIO.moveExclusively(receipt.destination, to: source)
+                } catch { residual.append(receipt) }
+            }
+            if !residual.isEmpty { throw FileToolsPartialFailure(underlyingMessage: error.localizedDescription, receipts: residual.reversed()) }
+            throw error
+        }
     }
 }
 

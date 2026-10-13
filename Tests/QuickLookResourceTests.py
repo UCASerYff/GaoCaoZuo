@@ -18,6 +18,41 @@ import Foundation
 
 let url=URL(fileURLWithPath:CommandLine.arguments[1])
 let mode=CommandLine.arguments.count>2 ? CommandLine.arguments[2] : "normal"
+// A Quick Look controller, listing worker and asynchronous opener can overlap.
+// Dropping/replacing the controller's reference must not revoke a worker's grant.
+var starts=0,stops=0
+var visible:ArchiveQuickLookResourceAccess?=ArchiveQuickLookResourceAccess(url:url,start:{ received in
+    precondition(received == url);starts += 1;return true
+},stop:{ received in precondition(received == url);stops += 1 })
+var listing=visible
+var opening=visible
+weak var shared=visible
+visible=nil
+precondition(shared != nil && starts == 1 && stops == 0)
+listing=nil
+precondition(shared != nil && stops == 0)
+opening=nil
+precondition(shared == nil && stops == 1)
+do {
+    let implicit=ArchiveQuickLookResourceAccess(url:url,start:{_ in starts += 1;return false},stop:{_ in stops += 1})
+    precondition(!implicit.isSecurityScoped && implicit.url == url)
+}
+precondition(starts == 2 && stops == 1)
+let special=URL(fileURLWithPath:"/tmp/中文 空格 #?&+%.zip")
+let handoff=ArchiveQuickLookHandoff.selectionRequest(for:special)!
+let components=URLComponents(url:handoff,resolvingAgainstBaseURL:false)!
+precondition(components.scheme == "gaocaozuo" && components.host == "perform")
+precondition(components.queryItems?.count == 1 && components.queryItems?.first?.name == "payload")
+let selected=try! JSONDecoder().decode([String].self,from:Data(base64Encoded:components.queryItems!.first!.value!)!)
+precondition(selected == [special.path])
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"https://example.invalid/one.zip")!) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"file:///tmp/a%00b.zip")!) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"file:///tmp/a%2500b.zip")!) != nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"file://example.invalid/tmp/a.zip")!) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"file:///tmp/a.zip?unexpected=true")!) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(string:"file:///tmp/a.zip#unexpected")!) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(fileURLWithPath:"/tmp/"+String(repeating:"x",count:16_384))) == nil)
+precondition(ArchiveQuickLookHandoff.selectionRequest(for:URL(fileURLWithPath:"/"+String(repeating:"x",count:16_383))) != nil)
 let roots=ArchiveQuickLookDocument.render(filename:"root.zip",technicalListing:"Path = /\nSize = 0\nFolder = +\n\nPath = ///\nSize = 0\nFolder = +\n\n")
 precondition(roots.contains("2 项") && roots.contains("///"))
 var limits=ArchiveQuickLookNative.Limits()
@@ -105,6 +140,6 @@ def main():
         many_text=preview(many)
         assert ("4001 项" in many_text or "4,001 项" in many_text) and "仅显示前 4000 项" in many_text and "entry3999" in many_text and "entry4000" not in many_text,(many_text[:300],many_text[-300:])
         assert archive.exists() and not (root/"目录").exists()
-        print("Quick Look native regression passed: ZIP/AES/7Z/RAR4/TAR/gzip/bzip2/xz/lzip; Unicode, unknown size, encryption, entry/read/deadline/listing/declared budgets; no extraction")
+        print("Quick Look native regression passed: ZIP/AES/7Z/RAR4/TAR/gzip/bzip2/xz/lzip; Unicode, unknown size, encryption, entry/read/deadline/listing/declared budgets; no extraction; shared scope ownership balanced (host launch still requires GUI verification)")
 
 if __name__=="__main__":main()
