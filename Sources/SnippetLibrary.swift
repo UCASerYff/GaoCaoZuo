@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Carbon
 
 // MARK: - Snippet Data Structures
 
@@ -7,12 +8,16 @@ public enum SnippetFormat: String, Codable, CaseIterable {
     case plain = "plain"
     case richText = "richText"
     case markdown = "markdown"
+    case image = "image"
+    case fileReference = "fileReference"
 
     public var title: String {
         switch self {
         case .plain: return L10n.text("纯文本")
         case .richText: return L10n.text("富文本 (RTF)")
         case .markdown: return L10n.text("Markdown")
+        case .image: return L10n.text("图片附件")
+        case .fileReference: return L10n.text("文件附件")
         }
     }
 }
@@ -26,7 +31,7 @@ public enum SnippetExecutionMode: String, Codable, CaseIterable {
         switch self {
         case .copyOnly: return L10n.text("仅复制到剪贴板")
         case .pasteOnly: return L10n.text("自动粘贴到当前窗口")
-        case .pasteAndEnter: return L10n.text("粘贴后发送回车 (Enter)")
+        case .pasteAndEnter: return L10n.text("粘贴并确认后发送回车 (Enter)")
         }
     }
 }
@@ -55,12 +60,16 @@ public struct AdvancedSnippet: Identifiable, Codable, Equatable {
     public var executionMode: SnippetExecutionMode
     public var order: Int
     public var tags: [String]
+    public var attachments: [SnippetAttachment]?
+    public var rtfAttachment: SnippetAttachment?
+    public var fileReferences: [SnippetFileReference]?
 
     public init(id: UUID = UUID(), groupID: UUID? = nil, name: String, text: String,
                 format: SnippetFormat = .plain, richTextRTF: String? = nil,
                 attachmentPaths: [String]? = nil, shortcut: String? = nil,
                 executionMode: SnippetExecutionMode = .copyOnly, order: Int = 0,
-                tags: [String] = []) {
+                tags: [String] = [], attachments: [SnippetAttachment]? = nil,
+                rtfAttachment: SnippetAttachment? = nil, fileReferences: [SnippetFileReference]? = nil) {
         self.id = id
         self.groupID = groupID
         self.name = name
@@ -72,12 +81,19 @@ public struct AdvancedSnippet: Identifiable, Codable, Equatable {
         self.executionMode = executionMode
         self.order = order
         self.tags = tags
+        self.attachments = attachments
+        self.rtfAttachment = rtfAttachment
+        self.fileReferences = fileReferences
     }
 
     /// Resolves variable placeholders like {date}, {time}, {clipboard}, {uuid}
     public func resolvedText() -> String {
+        resolvedText(now: Date(), clipboardText: text.contains("{clipboard}") && !IsSecureEventInputEnabled()
+                     ? NSPasteboard.general.string(forType: .string) : nil, uuid: UUID())
+    }
+
+    public func resolvedText(now: Date, clipboardText: String?, uuid: UUID) -> String {
         var content = text
-        let now = Date()
         let dateFormatter = DateFormatter()
 
         dateFormatter.dateFormat = "yyyy-MM-dd"
@@ -98,10 +114,10 @@ public struct AdvancedSnippet: Identifiable, Codable, Equatable {
         dateFormatter.dateFormat = "dd"
         content = content.replacingOccurrences(of: "{day}", with: dateFormatter.string(from: now))
 
-        content = content.replacingOccurrences(of: "{uuid}", with: UUID().uuidString)
+        content = content.replacingOccurrences(of: "{uuid}", with: uuid.uuidString)
 
         if content.contains("{clipboard}") {
-            let clip = NSPasteboard.general.string(forType: .string) ?? ""
+            let clip = clipboardText ?? ""
             content = content.replacingOccurrences(of: "{clipboard}", with: clip)
         }
 
@@ -116,38 +132,143 @@ public final class PasteStack: ObservableObject {
     public static let shared = PasteStack()
 
     @Published public private(set) var items: [String] = []
+    @Published public private(set) var entries: [AdvancedSnippet] = []
+    @Published public private(set) var failure: String?
+    private var library: SnippetLibraryStore?
+    private var generation: UInt64 = 0
+    private var persistenceBlocked = false
+    public static let maximumItems = 50
 
     public init() {}
 
+    public func configurePersistence(dataDirectory: URL) throws {
+        if let library, library.directory.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL == dataDirectory.standardizedFileURL { return }
+        let loaded = SnippetLibraryStore(dataDirectory: dataDirectory.appendingPathComponent("PasteStack", isDirectory: true))
+        guard loaded.healthy, loaded.snippets.count <= Self.maximumItems else {
+            persistenceBlocked = true
+            failure = loaded.failure ?? "粘贴堆栈超过 50 项安全上限，原资料已保留。"
+            throw DataFailure.message(failure!)
+        }
+        // Reconfiguration must never silently discard an unsaved in-memory stack.
+        guard entries.isEmpty || library?.directory == loaded.directory else { throw DataFailure.message("堆栈已有未保存项目，未切换资料目录。") }
+        let nextGeneration = max(generation, loaded.revision)
+        guard nextGeneration < UInt64.max else { throw DataFailure.message("堆栈世代已达上限，原资料已保留。") }
+        library = loaded; entries = loaded.snippets; generation = nextGeneration + 1; persistenceBlocked = false; publish()
+    }
+
+    public func pushContent(text: String?, rtf: Data? = nil, png: Data? = nil, fileReferences paths: [String] = []) throws {
+        guard let library else { throw DataFailure.message("粘贴堆栈资料目录尚未连接。") }
+        guard text?.isEmpty == false || rtf != nil || png != nil || !paths.isEmpty else { throw DataFailure.message("没有可加入堆栈的内容。") }
+        let rtfAttachment = try rtf.map { try library.importAttachment(data: $0, originalName: "内容.rtf", type: "public.rtf") }
+        let image = try png.map { try library.importAttachment(data: $0, originalName: "图片.png", type: "public.png") }
+        let references = try paths.map { try SnippetFileReference.capture(path: $0) }
+        let format: SnippetFormat = rtf != nil ? .richText : png != nil ? .image : !paths.isEmpty ? .fileReference : .plain
+        let title = text.flatMap { $0.isEmpty ? nil : String($0.prefix(60)) } ?? (png != nil ? "图片" : paths.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "富文本")
+        try pushSnippet(AdvancedSnippet(name: title, text: text ?? "", format: format, attachments: image.map { [$0] }, rtfAttachment: rtfAttachment, fileReferences: references))
+    }
+
+    public func pushSnippet(_ snippet: AdvancedSnippet) throws {
+        guard entries.count < Self.maximumItems, snippet.text.utf8.count <= 1_048_576 else { throw DataFailure.message("粘贴堆栈已满或文本超过预算。") }
+        var entry = snippet; entry.id = UUID(); entry.groupID = nil; entry.shortcut = nil; entry.executionMode = .pasteOnly; entry.order = entries.count
+        try persist(entries + [entry])
+    }
+
+    public func pushSnippet(_ snippet: AdvancedSnippet, from source: SnippetLibraryStore) throws {
+        guard let library else { throw DataFailure.message("粘贴堆栈资料目录尚未连接。") }
+        var copied = snippet
+        copied.attachments = try snippet.attachments?.map { attachment in
+            try library.importAttachment(data: source.verifiedAttachment(attachment), originalName: attachment.originalName, type: attachment.type)
+        }
+        copied.rtfAttachment = try snippet.rtfAttachment.map { attachment in
+            try library.importAttachment(data: source.verifiedAttachment(attachment), originalName: attachment.originalName, type: attachment.type)
+        }
+        try pushSnippet(copied)
+    }
+
+    public func peek() -> PasteStackTicket? {
+        entries.first.map { PasteStackTicket(id: $0.id, generation: generation, snippet: $0) }
+    }
+
+    public func pasteboardItems(for ticket: PasteStackTicket) throws -> [NSPasteboardItem] {
+        try validate(ticket)
+        if let library { return try library.pasteboardItems(for: ticket.snippet) }
+        guard ticket.snippet.format == .plain, ticket.snippet.attachments?.isEmpty != false,
+              ticket.snippet.fileReferences?.isEmpty != false else { throw DataFailure.message("富内容堆栈尚未连接持久化资料。") }
+        let item = NSPasteboardItem(); item.setString(ticket.snippet.text, forType: .string); return [item]
+    }
+
+    public func validateTicket(_ ticket: PasteStackTicket) throws { try validate(ticket) }
+
+    /// Call only after the user confirms insertion for the validated target.
+    public func commit(_ ticket: PasteStackTicket) throws {
+        try validate(ticket); try persist(Array(entries.dropFirst()))
+    }
+
+    public func clearDurably() throws { try persist([]) }
+
     public func push(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        items.append(trimmed)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        do { try pushSnippet(.init(name: String(text.prefix(60)), text: text)) } catch { failure = error.localizedDescription }
     }
 
     public func popAndPaste() -> String? {
-        guard !items.isEmpty else { return nil }
-        let next = items.removeFirst()
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(next, forType: .string)
-        return next
+        guard let ticket = peek() else { return nil }
+        do {
+            let prepared = try pasteboardItems(for: ticket)
+            NSPasteboard.general.clearContents()
+            guard NSPasteboard.general.writeObjects(prepared) else { throw DataFailure.message("堆栈复制失败，项目已保留。") }
+            try commit(ticket); return ticket.snippet.text
+        } catch { failure = error.localizedDescription; return nil }
     }
 
+    public func mergedText(separator:String = "\n") throws -> String {
+        guard !persistenceBlocked,!entries.isEmpty else {throw DataFailure.message(failure ?? "粘贴堆栈为空。")}
+        try library?.validateCurrentRevision()
+        guard entries.allSatisfy({
+            ($0.format == .plain || $0.format == .markdown) && $0.richTextRTF == nil && $0.rtfAttachment == nil &&
+            $0.attachments?.isEmpty != false && $0.fileReferences?.isEmpty != false && $0.attachmentPaths?.isEmpty != false
+        }) else {throw DataFailure.message("富内容请逐项粘贴，未静默丢弃附件合并。")}
+        let size=entries.reduce(0) {$0+$1.text.utf8.count}
+        guard separator.utf8.count <= 4096,size+separator.utf8.count*(entries.count-1) <= 2_000_000 else {throw DataFailure.message("合并文字超过2MB，堆栈已保留。")}
+        return entries.map(\.text).joined(separator:separator)
+    }
     public func mergeAll(separator: String = "\n") -> String {
-        let merged = items.joined(separator: separator)
-        if !merged.isEmpty {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(merged, forType: .string)
-        }
-        return merged
+        do {
+            let merged=try mergedText(separator:separator),board=NSPasteboard.general
+            board.clearContents()
+            guard board.setString(merged,forType:.string) else {throw DataFailure.message("无法写入系统剪贴板，堆栈已保留。")}
+            return merged
+        } catch {failure=error.localizedDescription;return ""}
     }
 
     public func clear() {
-        items.removeAll()
+        do { try clearDurably() } catch { failure = error.localizedDescription }
     }
+
+    private func validate(_ ticket: PasteStackTicket) throws {
+        guard !persistenceBlocked, generation == ticket.generation, entries.first?.id == ticket.id, entries.first == ticket.snippet else {
+            throw DataFailure.message("堆栈在粘贴期间已变化，未移除任何项目。")
+        }
+        try library?.validateCurrentRevision()
+    }
+    private func persist(_ values: [AdvancedSnippet]) throws {
+        guard !persistenceBlocked else { throw DataFailure.message(failure ?? "堆栈资料无法使用，未写入。") }
+        guard generation < UInt64.max else { throw DataFailure.message("堆栈世代已达上限。") }
+        var ordered = values
+        for index in ordered.indices { ordered[index].order = index }
+        if let library { try library.replaceAllSnippets(ordered) }
+        entries = ordered; generation += 1; publish()
+    }
+    private func publish() { items = entries.map(\.text); failure = nil }
 }
 
-// MARK: - SnippetCSVCodec (Safe CSV / Excel tabular batch transfer)
+public struct PasteStackTicket {
+    public let id: UUID
+    public let generation: UInt64
+    public let snippet: AdvancedSnippet
+}
+
+// MARK: - SnippetCSVCodec (RFC 4180 text-table transfer; XLSX is separate)
 
 public enum SnippetConflictPolicy {
     case skip
@@ -161,7 +282,7 @@ public enum SnippetCSVCodec {
 
     /// Exports snippets to RFC 4180 CSV with CSV Formula Injection defenses.
     public static func exportCSV(snippets: [AdvancedSnippet], groups: [SnippetGroup]) -> String {
-        let groupMap = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
+        let groupMap = Dictionary(groups.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         var rows: [String] = []
         rows.append("名称,快捷码,分组,执行方式,内容")
 
@@ -183,7 +304,7 @@ public enum SnippetCSVCodec {
     /// Neutralizes CSV/Formula Injection by prepending ' if text starts with formula triggers (=, +, -, @, tab, cr).
     public static func sanitizeForCSV(_ text: String) -> String {
         guard let first = text.first else { return text }
-        if ["=", "+", "-", "@", "\t", "\r"].contains(first) {
+        if ["=", "+", "-", "@", "'"].contains(first) || first.isWhitespace {
             return "'" + text
         }
         return text
@@ -208,22 +329,25 @@ public enum SnippetCSVCodec {
             throw DataFailure.message("文件超过 10 MB 导入上限。")
         }
 
-        let lines = csvContent.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        guard lines.count > 1 else {
+        let rows = try parseCSV(csvContent)
+        guard rows.count > 1 else {
             throw DataFailure.message("CSV 文件为空或未包含有效数据行。")
         }
-        guard lines.count <= maxImportRows + 1 else {
+        guard rows.count <= maxImportRows + 1 else {
             throw DataFailure.message("CSV 记录超过 \(maxImportRows) 行安全限制。")
         }
 
+        guard rows[0] == ["名称", "快捷码", "分组", "执行方式", "内容"] || rows[0] == ["name", "shortcut", "group", "mode", "text"] else {
+            throw DataFailure.message("CSV 表头必须为：名称、快捷码、分组、执行方式、内容。")
+        }
         var resultSnippets = existingSnippets
         var resultGroups = existingGroups
-        var groupNameToID: [String: UUID] = Dictionary(uniqueKeysWithValues: existingGroups.map { ($0.name, $0.id) })
+        var groupNameToID: [String: UUID] = Dictionary(existingGroups.map { ($0.name, $0.id) }, uniquingKeysWith: { first, _ in first })
 
         // Skip header
-        for line in lines.dropFirst() {
-            let fields = parseCSVLine(line)
-            guard fields.count >= 5 else { continue }
+        for (offset, fields) in rows.dropFirst().enumerated() {
+            if fields.allSatisfy({ $0.isEmpty }) { continue }
+            guard fields.count == 5 else { throw DataFailure.message("CSV 第 \(offset + 2) 条记录的列数不正确，未导入。") }
 
             let name = cleanImportField(fields[0])
             let shortcut = cleanImportField(fields[1])
@@ -231,7 +355,9 @@ public enum SnippetCSVCodec {
             let modeRaw = cleanImportField(fields[3])
             let text = cleanImportField(fields[4])
 
-            guard !name.isEmpty, !text.isEmpty else { continue }
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !text.isEmpty else {
+                throw DataFailure.message("CSV 第 \(offset + 2) 条记录缺少名称或内容，未导入。")
+            }
 
             var groupID: UUID? = nil
             if !groupName.isEmpty {
@@ -245,7 +371,9 @@ public enum SnippetCSVCodec {
                 }
             }
 
-            let mode = SnippetExecutionMode(rawValue: modeRaw) ?? .copyOnly
+            guard let mode = SnippetExecutionMode(rawValue: modeRaw) else {
+                throw DataFailure.message("CSV 包含未知执行方式，未导入。")
+            }
             let newSnippet = AdvancedSnippet(
                 groupID: groupID,
                 name: name,
@@ -261,14 +389,27 @@ public enum SnippetCSVCodec {
                 case .skip:
                     continue
                 case .overwrite:
-                    resultSnippets[existingIndex] = newSnippet
+                    var replacement = newSnippet
+                    replacement.id = resultSnippets[existingIndex].id
+                    resultSnippets[existingIndex] = replacement
                 case .keepBoth:
                     var uniqueSnippet = newSnippet
-                    uniqueSnippet.name = "\(name) (副本)"
+                    var count = 1
+                    repeat {
+                        uniqueSnippet.name = count == 1 ? "\(name) (副本)" : "\(name) (副本 \(count))"
+                        count += 1
+                    } while resultSnippets.contains(where: { $0.name == uniqueSnippet.name })
+                    if resultSnippets.contains(where: { $0.shortcut?.lowercased() == uniqueSnippet.shortcut?.lowercased() && $0.shortcut != nil }) {
+                        uniqueSnippet.shortcut = nil
+                    }
                     resultSnippets.append(uniqueSnippet)
                 }
             } else {
-                resultSnippets.append(newSnippet)
+                var addition = newSnippet
+                if let shortcut = addition.shortcut, resultSnippets.contains(where: { $0.shortcut?.lowercased() == shortcut.lowercased() }) {
+                    addition.shortcut = nil
+                }
+                resultSnippets.append(addition)
             }
         }
 
@@ -276,34 +417,47 @@ public enum SnippetCSVCodec {
     }
 
     private static func cleanImportField(_ field: String) -> String {
-        var clean = field.trimmingCharacters(in: .whitespaces)
+        var clean = field
         // If prepended with ' to neutralize formula injection, strip it safely
         if clean.hasPrefix("'") && clean.count > 1 {
-            let next = clean[clean.index(after: clean.startIndex)]
-            if ["=", "+", "-", "@", "\t", "\r"].contains(next) {
+            let rest = String(clean.dropFirst())
+            if sanitizeForCSV(rest) == clean {
                 clean = String(clean.dropFirst())
             }
         }
         return clean
     }
 
-    private static func parseCSVLine(_ line: String) -> [String] {
-        var fields: [String] = []
-        var current = ""
-        var insideQuotes = false
-        var iterator = line.makeIterator()
-
-        while let char = iterator.next() {
-            if char == "\"" {
-                insideQuotes.toggle()
-            } else if char == "," && !insideQuotes {
-                fields.append(current)
-                current = ""
-            } else {
-                current.append(char)
-            }
+    public static func parseCSV(_ content: String) throws -> [[String]] {
+        enum State { case start, unquoted, quoted, closed }
+        var state = State.start, rows: [[String]] = [], fields: [String] = [], current = ""
+        let characters = Array(content.hasPrefix("\u{feff}") ? String(content.dropFirst()) : content)
+        var index = 0
+        func endField() { fields.append(current); current = ""; state = .start }
+        func endRecord() throws {
+            endField(); rows.append(fields); fields = []
+            guard rows.count <= maxImportRows + 1 else { throw DataFailure.message("CSV 记录超过安全限制。") }
         }
-        fields.append(current)
-        return fields
+        while index < characters.count {
+            let char = characters[index]
+            if state == .quoted {
+                if char == "\"" {
+                    if index + 1 < characters.count, characters[index + 1] == "\"" { current.append("\""); index += 1 }
+                    else { state = .closed }
+                } else { current.append(char) }
+            } else if char == "," { endField() }
+            else if char == "\n" || char == "\r" || char == "\r\n" {
+                try endRecord()
+                if char == "\r", index + 1 < characters.count, characters[index + 1] == "\n" { index += 1 }
+            } else if char == "\"", state == .start { state = .quoted }
+            else {
+                guard state != .closed, char != "\"" else { throw DataFailure.message("CSV 引号格式不正确，未导入。") }
+                current.append(char); state = .unquoted
+            }
+            index += 1
+        }
+        guard state != .quoted else { throw DataFailure.message("CSV 引号未闭合，未导入。") }
+        if !fields.isEmpty || !current.isEmpty || state != .start { try endRecord() }
+        return rows
     }
 }

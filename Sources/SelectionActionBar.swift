@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import SwiftUI
+import Carbon
 
 // MARK: - SelectionActionBar
 
@@ -12,14 +13,26 @@ public final class SelectionActionBar: NSObject {
     private var currentSnapshot: SelectionSnapshot?
     private var speechSynthesizer = NSSpeechSynthesizer()
     private var resultMessage: String?
+    private var session = UUID()
+    private var generation: UInt64 = 0
+    private var writebackTask: Task<Void, Never>?
+    private var dismissMonitors: [Any] = []
+    private var resultWindow: NSWindow?
+    public var onTranslate: ((SelectionSnapshot) -> Void)?
+    public var onSendToFiles: ((SelectionSnapshot) -> Void)?
+    public var onSaveSnippet: ((SelectionSnapshot) -> Void)?
+    public var onSaveClipboard: ((SelectionSnapshot) -> Void)?
+    public var onStatus: ((String, Bool) -> Void)?
 
     public override init() {
         super.init()
     }
 
     public func showBar(snapshot: SelectionSnapshot, at screenPoint: NSPoint? = nil) {
-        currentSnapshot = snapshot
         dismiss()
+        generation &+= 1
+        currentSnapshot = snapshot.withGeneration(generation)
+        let token = session
 
         let p = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 440, height: 160),
@@ -38,7 +51,8 @@ public final class SelectionActionBar: NSObject {
         let rootView = SelectionBarContentView(
             snapshot: snapshot,
             onAction: { [weak self] action in
-                self?.handleAction(action)
+                guard let self, self.session == token else { return }
+                self.perform(action)
             },
             onDismiss: { [weak self] in
                 self?.dismiss()
@@ -55,24 +69,45 @@ public final class SelectionActionBar: NSObject {
         }
 
         p.setFrameOrigin(targetPoint)
+        if let frame = NSScreen.screens.first(where: { $0.frame.contains(targetPoint) })?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            p.setFrameOrigin(NSPoint(x: min(max(p.frame.minX, frame.minX), max(frame.minX, frame.maxX - p.frame.width)),
+                                    y: min(max(p.frame.minY, frame.minY), max(frame.minY, frame.maxY - p.frame.height))))
+        }
         p.orderFront(nil)
         self.panel = p
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown], handler: { [weak self] _ in
+            Task { @MainActor in self?.dismiss() }
+        }) { dismissMonitors.append(monitor) }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            if event.keyCode == 53 { self?.dismiss(); return nil }; return event
+        }) { dismissMonitors.append(monitor) }
     }
 
     public func dismiss() {
         panel?.orderOut(nil)
         panel = nil
         currentSnapshot = nil
+        writebackTask?.cancel(); writebackTask = nil
+        session = UUID()
+        for monitor in dismissMonitors { NSEvent.removeMonitor(monitor) }
+        dismissMonitors.removeAll()
     }
 
-    private func handleAction(_ action: SelectionBarAction) {
+    /// Supplying a snapshot supports the same registered action from a hotkey.
+    /// It never captures another application's selection after the action began.
+    public func perform(_ action: SelectionBarAction, snapshot supplied: SelectionSnapshot? = nil) {
+        if let supplied { dismiss(); generation &+= 1; currentSnapshot = supplied.withGeneration(generation) }
         guard let snapshot = currentSnapshot else { return }
+        guard !IsSecureEventInputEnabled(), Date().timeIntervalSince(snapshot.timestamp) <= 60 else {
+            onStatus?("安全输入或选区已过期，请重新选择文字。", true); dismiss(); return
+        }
         let text = snapshot.selectedText
 
         switch action {
         case .search:
-            let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
-            if let url = URL(string: "https://www.google.com/search?q=\(encoded)") {
+            var components = URLComponents(string: "https://www.google.com/search")
+            components?.queryItems = [URLQueryItem(name: "q", value: text)]
+            if let url = components?.url {
                 NSWorkspace.shared.open(url)
             }
             dismiss()
@@ -106,7 +141,7 @@ public final class SelectionActionBar: NSObject {
         case .base64Decode:
             if let decoded = SelectionTransformations.base64Decode(text) {
                 applyTransformation(decoded)
-            }
+            } else { onStatus?("选中文字不是有效的 UTF-8 Base64 内容。", true) }
 
         case .urlEncode:
             applyTransformation(SelectionTransformations.urlEncode(text))
@@ -125,7 +160,19 @@ public final class SelectionActionBar: NSObject {
             showQRCodeWindow(text: text)
 
         case .saveSnippet:
-            NotificationCenter.default.post(name: NSNotification.Name("GaoCaoZuoSaveSnippet"), object: text)
+            if let onSaveSnippet { onSaveSnippet(snapshot) } else { onStatus?("短语库尚未连接，未保存。", true) }
+            dismiss()
+
+        case .translate:
+            if let onTranslate { onTranslate(snapshot) } else { onStatus?("翻译提供方不可用。", true) }
+            dismiss()
+
+        case .sendToFiles:
+            if let onSendToFiles { onSendToFiles(snapshot) } else { onStatus?("搞文件交接入口不可用。", true) }
+            dismiss()
+
+        case .saveClipboard:
+            if let onSaveClipboard { onSaveClipboard(snapshot) } else { onStatus?("剪贴板历史保存入口不可用。", true) }
             dismiss()
 
         case .dismiss:
@@ -135,25 +182,57 @@ public final class SelectionActionBar: NSObject {
 
     private func applyTransformation(_ newText: String) {
         guard let snapshot = currentSnapshot else { return }
-
-        // Verify if target AX element is still valid and writable
-        if let element = snapshot.element,
-           AXIsProcessTrusted() {
-            var settable: DarwinBoolean = false
-            let status = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable)
-            if status == .success && settable.boolValue {
-                let writeStatus = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, newText as CFTypeRef)
-                if writeStatus == .success {
-                    dismiss()
-                    return
+        let token = session, expectedGeneration = generation
+        writebackTask?.cancel()
+        writebackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Only our own action panel may hand focus back to the original
+            // audit-token-bound process. A different frontmost user app wins.
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+               !snapshot.isFromClipboardFallback, let identity = snapshot.launchIdentity,
+               WindowProcessIdentity.auditTokenString(for: snapshot.pid) == identity,
+               let target = NSRunningApplication(processIdentifier: snapshot.pid), !target.isTerminated {
+                _ = target.activate(options: [])
+                for _ in 0..<10 {
+                    if NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid { break }
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                    guard !Task.isCancelled, self.session == token, self.generation == expectedGeneration else { return }
                 }
             }
+            guard !Task.isCancelled, self.session == token, self.generation == expectedGeneration else { return }
+            self.finishTransformation(newText, snapshot: snapshot, generation: expectedGeneration)
         }
+    }
 
-        // Safe fallback: target cannot be written in place without guessing or blind keystrokes
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(newText, forType: .string)
+    private func finishTransformation(_ newText: String, snapshot: SelectionSnapshot, generation expectedGeneration: UInt64) {
+        let evidence = SelectionTargetValidator.evidence(for: snapshot)
+        if let reason = SelectionTargetValidator.refusal(snapshot: snapshot, evidence: evidence, generation: expectedGeneration) {
+            showCopyableResult(newText, reason: reason); dismiss(); return
+        }
+        guard let element = snapshot.element else { return }
+        // Recheck immediately before the AX mutation. There is no key/paste fallback.
+        let latest = SelectionTargetValidator.evidence(for: snapshot)
+        if let reason = SelectionTargetValidator.refusal(snapshot: snapshot, evidence: latest, generation: expectedGeneration) {
+            showCopyableResult(newText, reason: reason); dismiss(); return
+        }
+        let status = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, newText as CFTypeRef)
+        if status == .success { onStatus?("已替换原选区文字。", false) }
+        else { showCopyableResult(newText, reason: "系统未允许写回原选区。可自行复制处理结果。") }
         dismiss()
+    }
+
+    private func showCopyableResult(_ text: String, reason: String) {
+        resultWindow?.close()
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = L10n.text("选区处理结果")
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.text(reason)).font(.caption).foregroundStyle(.secondary)
+            ScrollView { Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            Button(L10n.text("复制结果")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+        }.padding())
+        window.center(); window.orderFront(nil); resultWindow = window
+        onStatus?(reason, true)
     }
 
     private func showQRCodeWindow(text: String) {
@@ -177,6 +256,9 @@ public final class SelectionActionBar: NSObject {
 
 public enum SelectionBarAction {
     case search
+    case translate
+    case sendToFiles
+    case saveClipboard
     case copy
     case uppercase
     case lowercase
@@ -235,6 +317,9 @@ private struct SelectionBarContentView: View {
                 Button(action: { onAction(.copy) }) {
                     Label(L10n.text("复制"), systemImage: "doc.on.doc")
                 }
+                Button(action: { onAction(.translate) }) {
+                    Label(L10n.text("翻译"), systemImage: "character.bubble")
+                }
                 Button(action: { onAction(.speak) }) {
                     Label(L10n.text("朗读"), systemImage: "speaker.wave.2")
                 }
@@ -263,6 +348,10 @@ private struct SelectionBarContentView: View {
                     Button("Base64 解码") { onAction(.base64Decode) }
                     Button("URL 编码") { onAction(.urlEncode) }
                     Button("URL 解码") { onAction(.urlDecode) }
+                }
+                Menu(L10n.text("发送到…")) {
+                    Button(L10n.text("保存到剪贴板历史")) { onAction(.saveClipboard) }
+                    Button(L10n.text("交给搞文件")) { onAction(.sendToFiles) }
                 }
                 Button(action: { showingStats.toggle() }) {
                     Text(L10n.text("文本统计"))

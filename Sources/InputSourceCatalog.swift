@@ -11,14 +11,30 @@ public struct InputSourceDescriptor: Identifiable, Codable, Equatable {
     public var isEnabled: Bool
     public var category: String
     public var shortLabel: String
+    public var inputSourceType: String
 
-    public init(id: String, name: String, isSelectCapable: Bool, isEnabled: Bool, category: String, shortLabel: String = "") {
+    public init(id: String, name: String, isSelectCapable: Bool, isEnabled: Bool, category: String, shortLabel: String = "", inputSourceType: String = "") {
         self.id = id
         self.name = name
         self.isSelectCapable = isSelectCapable
         self.isEnabled = isEnabled
         self.category = category
+        self.inputSourceType = inputSourceType
         self.shortLabel = shortLabel.isEmpty ? Self.deriveShortLabel(id: id, name: name) : shortLabel
+    }
+
+    public var isInputMethod: Bool {
+        inputSourceType.isEmpty ? id.contains(".inputmethod.") : inputSourceType != (kTISTypeKeyboardLayout as String)
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, isSelectCapable, isEnabled, category, shortLabel, inputSourceType }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); name = try c.decode(String.self, forKey: .name)
+        isSelectCapable = try c.decode(Bool.self, forKey: .isSelectCapable)
+        isEnabled = try c.decode(Bool.self, forKey: .isEnabled); category = try c.decode(String.self, forKey: .category)
+        shortLabel = try c.decodeIfPresent(String.self, forKey: .shortLabel) ?? Self.deriveShortLabel(id: id, name: name)
+        inputSourceType = try c.decodeIfPresent(String.self, forKey: .inputSourceType) ?? ""
     }
 
     public static func deriveShortLabel(id: String, name: String) -> String {
@@ -39,18 +55,35 @@ public struct InputSourceRule: Identifiable, Codable, Equatable {
     public var targetSourceID: String
     public var targetSourceName: String
     public var enabled: Bool
+    public var priority: Int
+    public var focusedRole: String?
 
-    public init(id: UUID = UUID(), appBundleID: String, appName: String = "", targetSourceID: String, targetSourceName: String = "", enabled: Bool = true) {
+    public init(id: UUID = UUID(), appBundleID: String, appName: String = "", targetSourceID: String, targetSourceName: String = "", enabled: Bool = true, priority: Int = 0, focusedRole: String? = nil) {
         self.id = id
         self.appBundleID = appBundleID
         self.appName = appName.isEmpty ? appBundleID : appName
         self.targetSourceID = targetSourceID
         self.targetSourceName = targetSourceName.isEmpty ? targetSourceID : targetSourceName
         self.enabled = enabled
+        self.priority = priority
+        self.focusedRole = focusedRole
     }
 
     public var isGlobalDefault: Bool {
         appBundleID == "*" || appBundleID.isEmpty
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, appBundleID, appName, targetSourceID, targetSourceName, enabled, priority, focusedRole }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        appBundleID = try c.decode(String.self, forKey: .appBundleID)
+        appName = try c.decode(String.self, forKey: .appName)
+        targetSourceID = try c.decode(String.self, forKey: .targetSourceID)
+        targetSourceName = try c.decode(String.self, forKey: .targetSourceName)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        priority = try c.decodeIfPresent(Int.self, forKey: .priority) ?? 0
+        focusedRole = try c.decodeIfPresent(String.self, forKey: .focusedRole)
     }
 }
 
@@ -78,7 +111,7 @@ public final class InputSourceCatalog {
         let isSelectable = getBoolProperty(current, kTISPropertyInputSourceIsSelectCapable)
         let isEnabled = getBoolProperty(current, kTISPropertyInputSourceIsEnabled)
         let category = getProperty(current, kTISPropertyInputSourceCategory) ?? ""
-        return InputSourceDescriptor(id: id, name: name, isSelectCapable: isSelectable, isEnabled: isEnabled, category: category)
+        return InputSourceDescriptor(id: id, name: name, isSelectCapable: isSelectable, isEnabled: isEnabled, category: category, inputSourceType: getProperty(current, kTISPropertyInputSourceType) ?? "")
     }
 
     public func availableKeyboardInputSources() -> [InputSourceDescriptor] {
@@ -91,11 +124,11 @@ public final class InputSourceCatalog {
             let isEnabled = getBoolProperty(source, kTISPropertyInputSourceIsEnabled)
             let category = getProperty(source, kTISPropertyInputSourceCategory) ?? ""
             // Keyboard input sources
-            if isSelectable && isEnabled {
+            if isSelectable && isEnabled && category == (kTISCategoryKeyboardInputSource as String) {
                 let id = getProperty(source, kTISPropertyInputSourceID) ?? ""
                 let name = getProperty(source, kTISPropertyLocalizedName) ?? id
                 guard !id.isEmpty else { continue }
-                descriptors.append(InputSourceDescriptor(id: id, name: name, isSelectCapable: isSelectable, isEnabled: isEnabled, category: category))
+                descriptors.append(InputSourceDescriptor(id: id, name: name, isSelectCapable: isSelectable, isEnabled: isEnabled, category: category, inputSourceType: getProperty(source, kTISPropertyInputSourceType) ?? ""))
             }
         }
         return descriptors
@@ -112,7 +145,9 @@ public final class InputSourceCatalog {
         }
         for source in list {
             let id = getProperty(source, kTISPropertyInputSourceID) ?? ""
-            if id == sourceID {
+            if id == sourceID && getBoolProperty(source, kTISPropertyInputSourceIsEnabled)
+                && getBoolProperty(source, kTISPropertyInputSourceIsSelectCapable)
+                && getProperty(source, kTISPropertyInputSourceCategory) == (kTISCategoryKeyboardInputSource as String) {
                 let status = TISSelectInputSource(source)
                 return status == noErr
             }

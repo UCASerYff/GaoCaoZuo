@@ -171,7 +171,7 @@ struct ActionCard: View {
                     VStack(alignment:.leading,spacing:6) { Text(action.title).font(.headline); Text(action.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(minHeight:28) }
                     Spacer(minLength:0)
                 }.contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).disabled(action.unavailableReason != nil).help(action.unavailableReason ?? action.detail)
             Button { store.toggleFavorite(action.id) } label: { Image(systemName:store.settings.favorites.contains(action.id) ? "star.fill" : "star").foregroundStyle(store.settings.favorites.contains(action.id) ? Color.orange : Color.secondary) }.buttonStyle(.plain).help("收藏动作")
         }.padding(14).background(.quaternary.opacity(0.4),in:RoundedRectangle(cornerRadius:12)).overlay(RoundedRectangle(cornerRadius:12).stroke(.separator.opacity(0.5)))
     }
@@ -190,6 +190,11 @@ struct OperationPanelView: View {
     @State private var selected = 0
     @FocusState private var focused: Bool
     var actions: [OperationAction] {
+        if query.hasPrefix(":") {
+            let code=String(query.dropFirst())
+            guard let snippet=store.snippetLibrary.snippet(shortcut:code) else {return []}
+            return store.actionChoices.filter {$0.id == "snippet.run."+snippet.id.uuidString}
+        }
         let workflows = store.settings.workflows.map { workflow in
             OperationAction(id: "workflow.run." + workflow.id.uuidString, title: workflow.name,
                             detail: "运行组合操作 · \(workflow.steps.count) 个步骤", icon: "square.stack.3d.up",
@@ -205,7 +210,7 @@ struct OperationPanelView: View {
     }
     var body: some View {
         VStack(spacing:0) {
-            HStack { Image(systemName:"magnifyingglass").foregroundStyle(.secondary); TextField("搜索操作…",text:$query).textFieldStyle(.plain).font(.title3).focused($focused).onSubmit(runSelected); Text("esc").font(.caption).foregroundStyle(.secondary) }.padding(18)
+            HStack { Image(systemName:"magnifyingglass").foregroundStyle(.secondary); TextField("搜索操作，或输入 :短语码",text:$query).textFieldStyle(.plain).font(.title3).focused($focused).onSubmit(runSelected); Text("esc").font(.caption).foregroundStyle(.secondary) }.padding(18)
             Divider()
             if !store.selection.isEmpty { HStack { Label("\(store.selection.count) 个已选项目",systemImage:"doc.on.doc"); Text(store.selection.first?.lastPathComponent ?? "").lineLimit(1); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(10) }
             ScrollViewReader { proxy in
@@ -214,7 +219,7 @@ struct OperationPanelView: View {
                         ForEach(Array(actions.enumerated()),id:\.element.id) { index,action in
                             Button { close(); store.prepare(action.id) } label: {
                                 HStack(spacing:12) { Image(systemName:action.icon).frame(width:22).foregroundStyle(.tint); VStack(alignment:.leading,spacing:3) { Text(action.title); Text(action.detail).font(.caption).foregroundStyle(.secondary) }; Spacer(); if store.settings.favorites.contains(action.id) { Image(systemName:"star.fill").font(.caption).foregroundStyle(.orange) } }.padding(10).frame(maxWidth:.infinity,alignment:.leading).background(index == selected ? Color.accentColor.opacity(0.12) : .clear,in:RoundedRectangle(cornerRadius:8))
-                            }.buttonStyle(.plain).id(index)
+                            }.buttonStyle(.plain).disabled(action.unavailableReason != nil).help(action.unavailableReason ?? action.detail).id(index)
                         }
                     }.padding(8)
                 }.onChange(of:selected) { _,index in withAnimation(.easeOut(duration:0.1)){proxy.scrollTo(index,anchor:.center)} }
@@ -229,7 +234,7 @@ struct OperationPanelView: View {
         .onMoveCommand { direction in if direction == .down { selected = min(selected+1,max(0,actions.count-1)) }; if direction == .up { selected = max(0,selected-1) } }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { acceptDrop($0,store:store) }
     }
-    private func runSelected() { if actions.indices.contains(selected) { let id = actions[selected].id; close(); store.prepare(id) } }
+    private func runSelected() { if actions.indices.contains(selected),actions[selected].unavailableReason == nil { let id = actions[selected].id; close(); store.prepare(id) } }
 }
 
 @MainActor func acceptDrop(_ providers: [NSItemProvider], store: OperationStore) -> Bool {
@@ -254,13 +259,21 @@ struct ClipboardWorkspace: View {
     @State private var search = ""
     @State private var snippetName = ""
     @State private var snippetText = ""
-    var filtered: [ClipboardItem] { clipboard.items.filter {search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || ($0.text ?? "").localizedCaseInsensitiveContains(search)} }
+    @State private var groupFilter = ""
+    @State private var metadataItem: ClipboardItem?
+    var filtered: [ClipboardItem] { clipboard.items.filter {(groupFilter.isEmpty || $0.group == groupFilter) && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || ($0.text ?? "").localizedCaseInsensitiveContains(search) || ($0.tags ?? []).contains(where:{$0.localizedCaseInsensitiveContains(search)}) || ($0.group ?? "").localizedCaseInsensitiveContains(search))} }
     var body: some View {
         VStack(alignment:.leading,spacing:14) {
             HStack { Text("剪贴板").font(.title3.weight(.semibold)); Toggle("记录新复制的内容",isOn:Binding(get:{store.settings.clipboardEnabled},set:{v in store.update {$0.clipboardEnabled = v}})); Spacer(); TextField("搜索历史",text:$search).textFieldStyle(.roundedBorder).frame(width:220) }
             Text("历史保存在本机。来源标记为机密或临时的内容会跳过；可在设置中排除应用。").font(.callout).foregroundStyle(.secondary)
             if let error = clipboard.error { Label(error,systemImage:"exclamationmark.triangle").foregroundStyle(.red) }
             HStack { Text("\(clipboard.items.count) 条 · 保留 \(store.settings.clipboardDays) 天").font(.caption).foregroundStyle(.secondary); Spacer(); Button("清除未固定历史…"){confirmClear()} }
+            HStack {
+                Picker("分组",selection:$groupFilter) {Text("全部").tag("");ForEach(Array(Set(clipboard.items.compactMap(\.group))).sorted(),id:\.self) {Text($0).tag($0)}}.frame(width:240)
+                if clipboard.hasActivePasteTransaction {Button("处理待确认粘贴") {store.showPasteReview?()}}
+                Button("加入当前剪贴板到堆栈") {do {try clipboard.pushCurrentToStack()} catch {store.error=error.localizedDescription}}
+                Button("粘贴堆栈顶部") {do {try clipboard.pasteFromStack()} catch {store.error=error.localizedDescription}}
+            }
             List(filtered) { item in
                 HStack(alignment:.top,spacing:12) {
                     if item.kind == .image, let image = clipboard.image(item) { Image(nsImage:image).resizable().scaledToFit().frame(width:66,height:48) }
@@ -271,16 +284,21 @@ struct ClipboardWorkspace: View {
                     Button("复制"){do {try clipboard.copy(item);store.message = "已复制"} catch {store.error = error.localizedDescription}}.buttonStyle(.borderless)
                     if item.kind == .text { Button("纯文本"){do{try clipboard.copy(item,plain:true);store.message = "已复制为纯文本"}catch{store.error = error.localizedDescription}}.buttonStyle(.borderless) }
                     Button("粘贴"){do{try clipboard.paste(item)}catch{store.error = error.localizedDescription}}.buttonStyle(.borderless)
+                    Menu { Button("分组与标签…") {metadataItem=item};Button("加入粘贴堆栈") {do {try clipboard.pushToStack(item)} catch {store.error=error.localizedDescription}} } label: {Image(systemName:"ellipsis.circle")}.menuStyle(.borderlessButton).frame(width:24)
                     Button { clipboard.delete(item.id) } label: { Image(systemName:"trash") }.buttonStyle(.borderless)
                 }.padding(.vertical,6)
             }.overlay { if filtered.isEmpty { ContentUnavailableView(clipboard.enabled ? "等待新的复制内容" : "历史记录尚未启用",systemImage:"doc.on.clipboard",description:Text("启用后开始记录；也可以直接使用下方常用文本。")) } }
             Divider()
-            Text("常用文本").font(.headline)
-            HStack { TextField("名称",text:$snippetName).frame(width:160); TextField("文本内容",text:$snippetText); Button("保存"){let name = snippetName.trimmingCharacters(in:.whitespacesAndNewlines); guard !name.isEmpty,!snippetText.isEmpty else{return};store.update {$0.snippets.append(.init(name:name,text:snippetText))};snippetName="";snippetText=""}.disabled(snippetName.isEmpty || snippetText.isEmpty) }
-            ScrollView(.horizontal) { HStack { ForEach(store.settings.snippets) { snippet in HStack { Button(snippet.name){clipboard.copyText(snippet.text);store.message="已复制常用文本"}.help(snippet.text); Button{store.update {$0.snippets.removeAll {$0.id == snippet.id}}}label:{Image(systemName:"xmark.circle")}.buttonStyle(.borderless) } } } }
+            HStack {Text("常用短语").font(.headline);Spacer();Button("分组、富内容与导入导出…") {store.showExtensionSettings?(11)}}
+            HStack { TextField("名称",text:$snippetName).frame(width:160); TextField("文本内容",text:$snippetText); Button("保存"){let name=snippetName.trimmingCharacters(in:.whitespacesAndNewlines);guard !name.isEmpty,!snippetText.isEmpty else{return};do {try store.snippetLibrary.upsert(AdvancedSnippet(name:name,text:snippetText));snippetName="";snippetText=""} catch {store.error=error.localizedDescription}}.disabled(snippetName.isEmpty || snippetText.isEmpty || !store.dataHealthy) }
+            ScrollView(.horizontal) { HStack { ForEach(store.snippetLibrary.snippets) { snippet in
+                Button(snippet.name){store.executeSnippet(snippet)}.help(snippet.executionMode.title)
+                    .contextMenu {Button("仅复制") {store.executeSnippet(snippet,mode:.copyOnly)};Button("仅粘贴") {store.executeSnippet(snippet,mode:.pasteOnly)};Button("粘贴并回车") {store.executeSnippet(snippet,mode:.pasteAndEnter)}}
+            } } }.disabled(!store.snippetLibrary.healthy)
         }.padding(20)
+        .sheet(item:$metadataItem) {item in ClipboardMetadataEditor(item:item,save:{group,tags in try clipboard.setMetadata(item.id,group:group,tags:tags)})}
     }
-    private func confirmClear() { let alert=NSAlert();alert.messageText="清除未固定的剪贴板历史？";alert.informativeText="固定内容会保留；清除会同时移除本应用保存的对应图片附件。";alert.addButton(withTitle:"清除");alert.addButton(withTitle:"取消");if alert.runModal() == .alertFirstButtonReturn {clipboard.clearUnpinned()} }
+    private func confirmClear() {if store.confirmClipboardClear(stack:false) {clipboard.clearUnpinned()}}
 }
 
 struct RecoveryView: View {

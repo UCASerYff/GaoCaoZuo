@@ -178,7 +178,7 @@ import UniformTypeIdentifiers
             case .mouseClick:Stepper("输出鼠标按钮：\(rule.effect.mouseButton)",value:$rule.effect.mouseButton,in:0...31);ModifierSelection(value:$rule.effect.mouseModifiers,title:"输出修饰键")
             case .scroll:HStack {TextField("水平像素",value:$rule.effect.scrollX,format:.number);TextField("垂直像素",value:$rule.effect.scrollY,format:.number)}
             case .systemPreset:Picker("系统控制",selection:$rule.effect.systemPreset){ForEach(EnhancedSystemPreset.allCases){Text(L10n.text($0.title)).tag($0.rawValue)}};Text("媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。").font(.caption).foregroundStyle(.secondary)
-            case .menuItem:InputMenuSelectionView(bundleID:$rule.effect.menuBundleID,path:$rule.effect.menuPath)
+            case .menuItem:InputMenuSelectionView(bundleID:$rule.effect.menuBundleID,path:$rule.effect.menuPath,evidence:$rule.effect.menuEvidence)
             case .appleScript:
                 Menu("从脚本库复制") {ForEach(scripts) {script in Button(script.name){rule.effect.script=script.source}}}
                 TextEditor(text:$rule.effect.script).font(.system(.body,design:.monospaced)).frame(minHeight:100)

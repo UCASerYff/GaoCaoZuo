@@ -30,7 +30,7 @@
 - `makeExtractionBatch(archives:)` 预检并去重，返回 `QuickExtractionBatch`。调用 `@MainActor continueExtraction(_:service:password:stopAfterFirstSuccess:) async` 返回更新后的批次，遇首个需要密码、错误或取消即暂停。每项有 `archive`、`output`、`receipt` 和 `status`（pending / needsPassword(incorrect:) / completed / failed(message) / cancelled）。批次提供 `outputs`、`currentItem`、`isComplete`。`stopAfterFirstSuccess` 默认 false；正式调用方传 true，每完成一个压缩包就保存该项已有的 receipt，然后继续 pending 项。指纹在结果对用户可见前生成，不应事后对可编辑输出重新计算。调用方必须保存返回的批次并用于继续；已完成条目不再提交给引擎，密码只用于当前条目且不存入批次。每个包解压到同目录独立、唯一命名的新文件夹。
 - `convertImages(items:format:maxDimension:)` 同步返回 `[FileOperationReceipt]`，应在非主线程执行。结果放在各自原目录，自动避让原件、现有结果及批次内重名。整批先在各自父目录私有暂存完成，再提交；正常失败清除暂存并核验回滚，无法安全回滚时返回 `FileToolsPartialFailure.receipts`，调用方必须保留到恢复记录。
 
-## ArchiveService（V1.03）
+## ArchiveService（V1.08）
 
 `@MainActor ObservableObject` 发布任务状态、真实进度或不确定进度、输出与结果。`cancel()` 终止当前任务并保留输入。`lastResultReceipts` 在结果公开前生成，调用方先持久化记录，再执行可选的原件移到废纸篓步骤。
 
@@ -56,7 +56,7 @@ Finder 模块/主类为 `GaoFinderSync.GaoFinderSync`，监视用户主目录和
 
 扩展写入带随机 256 位 nonce 的独立本机票据，通过 `gaocaozuo://finder?ticket=<nonce>` 唤起所属主应用。主程序一次性读取并销毁，校验白名单、绝对路径、数量、大小与60秒时效。旧式 `perform?payload=` 只准备复核，不直接修改文件。票据防止网页仅构造链接执行文件操作，不提供本机恶意进程身份认证。
 
-`GaoArchiveQuickLook` 为独立目录预览扩展，使用只读选择文件权限，通过系统 libarchive 在进程内读取目录，不启动子工具、不提取成员或写入文件。读取量、目录数量、目录文字和部分元数据受预算约束；时间限制是读取回调协作式检查，不能保证打断系统库内部所有运算。加密、超出预算或系统库不支持的变体明确提示使用主程序。ACE、LZOP、Zstandard 等预览边界以实际系统库与测试为准，主程序使用随包引擎，格式支持与预算另行规定。系统可能选择其他已注册扩展，源码编译和扩展注册不等于已完成 Finder 空格预览实机验收。
+`GaoArchiveQuickLook` 在宿主进程内使用系统libarchive，不启动外部解码子进程。原生目录树支持多选、搜索以及有界文本／静态图像／PDF内容预览；提取和未加密ZIP／7Z编辑副本须通过系统选择窗口获得目标目录授权，隔离写入并完整回读后排他发布，保留原包。加密编辑、原地修改及不支持变体不虚构完成；宿主无法授权时提供受限只读目录及明确限制。读取量、条目和目录文字受预算约束，协作检查不能保证打断系统库内部所有运算。加密7Z、ACE等边界依实际系统库与样本判断，不能用主程序后端能力推断扩展也支持。系统可能选择其他已注册扩展；编译和登记不等于Finder真实空格／预览栏验收。
 
 ## 验证
 
@@ -67,3 +67,11 @@ Finder 模块/主类为 `GaoFinderSync.GaoFinderSync`，监视用户主目录和
 2026-10-11：核心 58 项和 `runQuickFileActionsTests()` 快捷 43 项通过，包括创建/模板/图片唯一命名和恢复、悬空链接占位、图片半批失败清理、收藏目录复制移动、真实单选/多选 ZIP 与 7Z、ZIP/7Z 缺密码及错密码、密码只用于当前项、已完成批次不重复解压、正常损坏不误报密码、取消。还验证跨父目录选择、同名来源拒绝且不留结果、逐项记录、半批取消不误报完成、分卷记录和用户编辑后拒绝恢复。两组测试均使用项目内正式 7zz 和随机临时文件。
 
 V1.03 新增专项：配置迁移中断恢复、动态菜单与目录上下文、真实文档模板、文件属性与剪切恢复、输入与窗口规则、中文密码 ZIP、编辑备份、分卷、安全链接、递归容器和 macOS 元数据。完整测试入口 `Scripts/test.sh`；历史测试记录不代表新版本已安装或全部硬件已验收。
+
+## V1.08 有界批流
+
+主程序的ZIP及符合Copy／LZMA2方法限制的未加密7Z，在路径／成员／容量预检后建立仅本次任务可用的源快照。只读解码沙盒通过有界帧流输出，父进程使用绑定目录FD写入并核验路径、大小、重复、末帧和终止状态。最终源身份与完整SHA检查紧邻发布，输出仍保留元数据与恢复指纹。加密7Z、分卷或未知方法使用原受保护路径，不以跳过安全核验换速度。
+
+目录解析、元数据与验证工作移出MainActor；输出提交与清理完成前不释放busy。原目录展开共用同一事务，顶层恢复指纹只计算一次。取消和只读暂存目录清理由限定所有者／前缀的nofollow FD遍历完成，符号链接仅删除链接本身；清理失败保留明确路径与原因，不静默忽略。
+
+新增针对性入口：`--archive-safety-only`验证生产归档链和清理边界，`--extensions-only`验证本轮输入／短语／选区／事务模型；这些命令不会打开App或测试窗口。真实归档CLI在允许嵌套只读sandbox-exec的本地环境执行。`Tests/ArchivePerformanceBenchmark.py --run`为显式性能入口，不属于默认自动冒烟。性能结果按样本、格式、算法、轮次和实际后端分别解释。

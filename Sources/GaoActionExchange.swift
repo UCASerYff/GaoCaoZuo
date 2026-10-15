@@ -193,6 +193,7 @@ final class GaoActionJournal {
     }
     public func isProviderAvailable(bundleID:String,action:String) -> Bool {(try? providerURL(bundleID:bundleID,action:action)) != nil}
     public func exportRequest(action:String,targetBundleID:String,parameters:[String:Any]=[:],inputFiles:[URL]=[],references:[GaoActionReference]=[]) async throws -> URL {
+        let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         let outgoing=outgoingDirectory
         let url=try await Task.detached(priority:.userInitiated) {try GaoActionV1.createRequestPackage(in:outgoing,action:action,targetBundleID:targetBundleID,parameters:parameters,inputFiles:inputFiles,references:references)}.value
         let fd=try GaoActionFiles.openRegular(url.appendingPathComponent("manifest.json"),owned:true);defer{close(fd)}
@@ -202,6 +203,7 @@ final class GaoActionJournal {
         return url
     }
     public func sendRequest(action:String,targetBundleID:String,parameters:[String:Any]=[:],inputFiles:[URL]=[],references:[GaoActionReference]=[]) async throws -> URL {
+        let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         let app=try providerURL(bundleID:targetBundleID,action:action,parameters:parameters,items:!inputFiles.isEmpty,references:!references.isEmpty)
         let package=try await exportRequest(action:action,targetBundleID:targetBundleID,parameters:parameters,inputFiles:inputFiles,references:references)
         try await dispatch(package:package,app:app)
@@ -221,6 +223,7 @@ final class GaoActionJournal {
         // LaunchServices success means only that the document delivery was accepted.
     }
     public func receivePackage(_ url:URL,notify:@escaping (String,Bool)->Void) async {
+        let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         var created:GaoActionReceivedPackage?,retained=false
         defer {if let created,!retained {discardNewStage(created)}}
         do {
@@ -265,6 +268,7 @@ final class GaoActionJournal {
     }
     func history() throws -> [GaoActionJournalRecord] {try journal().history()}
     func acceptDeferred(_ r:GaoActionJournalRecord,notify:@escaping (String,Bool)->Void) async throws {
+        let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         guard r.direction=="in",r.state == .received,let receptionClock=GaoActionV1.parseDate(r.manifest.createdAt) else {throw GaoActionError.invalidPackage("结果不处于待核对状态")}
         let url=URL(fileURLWithPath:r.packageDirectory,isDirectory:true)
         let verified=try await Task.detached {() throws -> GaoActionReceivedPackage in
@@ -277,6 +281,7 @@ final class GaoActionJournal {
         try await confirm(verified,notify:notify)
     }
     func resend(_ r:GaoActionJournalRecord) async throws {
+        let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         guard r.direction=="out",r.businessStatus==nil || r.businessStatus == .pending else {throw GaoActionError.invalidPackage("仅未完成请求可显式重新递交")}
         let m=r.manifest,parameters=m.parameters.mapValues(\.value)
         let app=try providerURL(bundleID:m.targetBundleID,action:m.action,parameters:parameters,items:!m.items.isEmpty,references:!m.references.isEmpty)

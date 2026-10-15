@@ -29,8 +29,12 @@ fi
 if [[ -f "$PROJECT_DIR/Tests/TestMain.swift" ]]; then
   ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
   ditto "$PROJECT_DIR/Shared" "$STAGING/Shared"
+  ditto "$PROJECT_DIR/Tests" "$STAGING/Tests"
+  # Tests that locate immutable fixtures through #filePath keep their project
+  # layout, while every Swift compiler input belongs to this one snapshot.
+  ln -s "$PROJECT_DIR/Resources" "$STAGING/Resources"
   rm "$STAGING/Sources/App.swift"
-  TEST_FILES=("$PROJECT_DIR"/Tests/*.swift)
+  TEST_FILES=("$STAGING"/Tests/*.swift)
   TEST_FILES=("${(@)TEST_FILES:#*/IconTests.swift}")
   swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 \
     -module-cache-path "$STAGING/cache" "$STAGING"/Sources/*.swift "$STAGING"/Shared/*.swift "${TEST_FILES[@]}" \

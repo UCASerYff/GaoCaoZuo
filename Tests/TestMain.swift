@@ -5,6 +5,41 @@ import Darwin
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
+        let releaseTargeted=CommandLine.arguments.contains("--release-targeted")
+        if let i=CommandLine.arguments.firstIndex(of:"--upgrade-copy-check"),CommandLine.arguments.count > i+1 {
+            try runUpgradeCopyCheck(directory:URL(fileURLWithPath:CommandLine.arguments[i+1],isDirectory:true))
+            return
+        }
+        if CommandLine.arguments.contains("--extensions-only") || releaseTargeted {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try runInputAutomationTests()
+            try runInputMenuEvidenceTests()
+            try runWindowTargetModeTests()
+            try runSelectionSnippetTests()
+            try await runSnippetNativeBackupTests()
+            try runSnippetNamedAttachmentExportTests()
+            try runSnippetFileReferenceTests()
+            try runPasteStackMergeTests()
+            try runCleanerSafetyTests()
+            try runExtensionLifecycleTests()
+            try runClipboardSafetyTests()
+            try runClipboardPasteTransactionTests()
+            try runProductionActionCatalogTests()
+            if !releaseTargeted {return}
+        }
+        if CommandLine.arguments.contains("--archive-stream-only") {try runArchiveBatchStreamTests();return}
+        if CommandLine.arguments.contains("--archive-safety-only") || releaseTargeted {
+            try runArchiveBatchStreamTests()
+            guard let i=CommandLine.arguments.firstIndex(of:"--engine"),CommandLine.arguments.count > i+1 else {throw DataFailure.message("缺少指定压缩引擎")}
+            try await runArchiveBatchIntegrationTests(engine:URL(fileURLWithPath:CommandLine.arguments[i+1]))
+            try await runArchiveStageCleanupTests()
+            if !releaseTargeted {return}
+        }
+        if releaseTargeted {
+            guard let i=CommandLine.arguments.firstIndex(of:"--release-data-copy"),CommandLine.arguments.count > i+1 else {throw DataFailure.message("最终定向检查需要独立升级资料副本")}
+            try runUpgradeCopyCheck(directory:URL(fileURLWithPath:CommandLine.arguments[i+1],isDirectory:true))
+            return
+        }
         if let index=CommandLine.arguments.firstIndex(of:"--provider-interop") {
             guard CommandLine.arguments.count>index+1 else {throw DataFailure.message("Provider interop requires a package-pair directory.")}
             try runProviderPackageInteropTests(directory:URL(fileURLWithPath:CommandLine.arguments[index+1],isDirectory:true))

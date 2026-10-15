@@ -16,6 +16,10 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var paths: [String]?
     var pinned = false
     var sourceApp: String
+    var group: String?
+    var tags: [String]?
+    var imageSHA256: String?
+    var richTextSHA256: String?
 }
 struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] = [] }
 
@@ -23,6 +27,8 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
     @Published private(set) var items: [ClipboardItem] = []
     @Published private(set) var enabled = false
     @Published private(set) var error: String?
+    @Published private(set) var pendingPaste: PendingPaste?
+    @Published private(set) var hasActivePasteTransaction = false
     private let storage: LocalData
     private var timer: Timer?
     private var count = 0
@@ -33,12 +39,20 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
     private var previousApplication: NSRunningApplication?
     private var activationObserver: NSObjectProtocol?
     private var pasteTask: Task<Void, Never>?
+    private var pasteTarget: ClipboardPasteTarget?
+    private var pasteTransaction: ClipboardPasteTransaction?
+    private var transactionTarget: ClipboardPasteTarget?
+    private var transactionCompletion: (() throws -> Void)?
+    var onPasteResult: ((String,Bool)->Void)?
+    var onPasteReviewNeeded: (() -> Void)?
+    /// Read-only lifecycle gate, evaluated again immediately before event posts.
+    var pasteBlockingReason: (() -> String?)?
     init(directory: URL, tracksApplications: Bool = true) {
         storage = LocalData(directory: directory.appendingPathComponent("Clipboard", isDirectory: true))
         do {
             if let saved = try storage.load("history.json", as: ClipboardDocument.self) {
                 try Self.validateDocument(saved, storage: storage)
-                items = saved.items
+                items = try saved.items.map {try Self.addAttachmentDigests($0,storage:storage)}
             }
         } catch { stopWriting(error) }
         if tracksApplications {
@@ -56,11 +70,14 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
     }
     private static func validateDocument(_ document: ClipboardDocument, storage: LocalData) throws {
         guard document.schema == 1 else { throw DataFailure.message("剪贴板资料格式不受支持，请保留原资料。") }
+        guard document.items.count <= 2000 else {throw DataFailure.message("剪贴板记录超过安全数量，已停止写入。")}
         if let failure = storage.failure { throw DataFailure.message(failure) }
         var seen: Set<UUID> = []
+        var attachmentBytes=0
         for item in document.items {
             guard seen.insert(item.id).inserted else { throw DataFailure.message("剪贴板历史存在重复 ID，已停止写入。") }
-            try validateItem(item, storage: storage)
+            attachmentBytes += try validateItem(item, storage: storage)
+            guard attachmentBytes <= 256_000_000 else {throw DataFailure.message("剪贴板附件超过256MB安全预算，原资料已保留，已停止新增采集。")}
         }
     }
     private static func attachmentNames(_ item: ClipboardItem) throws -> [String] {
@@ -80,10 +97,28 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         }
         return names
     }
-    private static func validateItem(_ item: ClipboardItem, storage: LocalData) throws {
-        for name in try attachmentNames(item) {
-            _ = try storage.verifiedData(name, maximumSize: name.hasSuffix(".png") ? 20_000_000 : 4_000_000)
+    @discardableResult private static func validateItem(_ item: ClipboardItem, storage: LocalData) throws -> Int {
+        guard (item.group?.utf8.count ?? 0) <= 256, (item.tags?.count ?? 0) <= 32,
+              item.tags?.allSatisfy({!$0.isEmpty && $0.utf8.count <= 128}) ?? true else {
+            throw DataFailure.message("剪贴板分组或标签无效，已保留原资料。")
         }
+        guard (item.text?.utf8.count ?? 0) <= 2_000_000,(item.paths?.count ?? 0) <= 256,
+              item.paths?.allSatisfy({$0.utf8.count <= 16_384}) ?? true else {throw DataFailure.message("剪贴板内容超过安全预算，已停止写入。")}
+        var total=0
+        for name in try attachmentNames(item) {
+            let bytes = try storage.verifiedData(name, maximumSize: name.hasSuffix(".png") ? 20_000_000 : 4_000_000)
+            if let digest=name.hasSuffix(".png") ? item.imageSHA256 : item.richTextSHA256,
+               digest != Self.digest(bytes) {throw DataFailure.message("剪贴板附件摘要不符，已保留原资料并停止使用。")}
+            total += bytes.count
+        }
+        return total
+    }
+    private static func digest(_ bytes:Data)->String {SHA256.hash(data:bytes).map{String(format:"%02x",$0)}.joined()}
+    private static func addAttachmentDigests(_ original:ClipboardItem,storage:LocalData) throws -> ClipboardItem {
+        var value=original
+        if value.imageSHA256 == nil,let name=value.imageFile {value.imageSHA256=digest(try storage.verifiedData(name,maximumSize:20_000_000))}
+        if value.richTextSHA256 == nil,let name=value.richTextFile {value.richTextSHA256=digest(try storage.verifiedData(name,maximumSize:4_000_000))}
+        return value
     }
     func configure(_ settings: OperationSettings) {
         retention = max(1, min(365, settings.clipboardDays)); limit = max(20, min(1000, settings.clipboardLimit)); excluded = Set(settings.clipboardExcludedApps)
@@ -116,15 +151,16 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
             } else if let text = board.string(forType: .string), !text.isEmpty, text.utf8.count <= 2_000_000 {
                 var next = ClipboardItem(kind: .text, title: String(text.replacingOccurrences(of: "\n", with: " ").prefix(100)), text: text, sourceApp: bundle)
                 if let rtf = board.data(forType: .rtf), rtf.count < 4_000_000 {
-                    let name = next.id.uuidString + ".rtf"; attachment = (name, rtf); next.richTextFile = name
+                    let name = next.id.uuidString + ".rtf"; attachment = (name, rtf); next.richTextFile = name;next.richTextSHA256=Self.digest(rtf)
                 }
                 item = next
             } else if let images = board.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage], let image = images.first, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]), png.count <= 20_000_000 {
                 var next = ClipboardItem(kind: .image, title: "图片 · \(rep.pixelsWide) × \(rep.pixelsHigh)", sourceApp: bundle)
-                let name = next.id.uuidString + ".png"; attachment = (name, png); next.imageFile = name; item = next
+                let name = next.id.uuidString + ".png"; attachment = (name, png); next.imageFile = name;next.imageSHA256=Self.digest(png); item = next
             }
             if let item {
-                if let first = items.first, first.kind == item.kind, first.text == item.text, first.paths == item.paths, item.kind != .image { return }
+                if let first=items.first,first.kind == item.kind,first.text == item.text,first.paths == item.paths,
+                   first.imageSHA256 == item.imageSHA256,first.richTextSHA256 == item.richTextSHA256 {return}
                 if let attachment { try storage.createFile(attachment.data, name: attachment.name) }
                 try persist([item] + items)
                 expire()
@@ -175,6 +211,18 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         let removed = items.filter { !$0.pinned }
         do { try persist(items.filter(\.pinned)); for item in removed { try removeAttachments(item) } } catch { stopWriting(error) }
     }
+    func setMetadata(_ id:UUID,group:String,tags:[String]) throws {
+        guard let index=items.firstIndex(where:{$0.id == id}) else {throw DataFailure.message("剪贴板记录不存在。")}
+        var proposed=items
+        proposed[index].group=group.isEmpty ? nil : group
+        proposed[index].tags=tags.isEmpty ? nil : Array(Set(tags)).sorted()
+        try persist(proposed)
+    }
+    func saveSelectedText(_ text:String,sourceApp:String) throws {
+        guard !IsSecureEventInputEnabled(),!text.isEmpty,text.utf8.count <= 2_000_000 else {throw DataFailure.message("选区不可保存。")}
+        let item=ClipboardItem(kind:.text,title:String(text.replacingOccurrences(of:"\n",with:" ").prefix(100)),text:text,sourceApp:sourceApp)
+        try persist([item]+items)
+    }
     func areFilesAccessible(_ item: ClipboardItem) -> Bool {
         guard let paths = item.paths else { return false }
         return paths.allSatisfy { FileManager.default.fileExists(atPath: $0) }
@@ -183,41 +231,55 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         PasteStack.shared.push(text)
     }
     func pasteFromStack() throws {
-        guard PasteStack.shared.popAndPaste() != nil else {
+        try ClipboardPasteTransaction.requireIdle(pasteTransaction)
+        let sourceChangeCount=NSPasteboard.general.changeCount
+        guard let ticket=PasteStack.shared.peek() else {
             throw DataFailure.message("粘贴堆栈为空。")
         }
-        try pastePlainText()
+        let objects=try PasteStack.shared.pasteboardItems(for:ticket)
+        try pastePreparedItems(objects,sourceChangeCount:sourceChangeCount,beforeSubmit:{try PasteStack.shared.validateTicket(ticket)},onSubmitted:{try PasteStack.shared.commit(ticket)})
     }
-    func copy(_ item: ClipboardItem, plain: Bool = false) throws {
-        do {
-        guard let saved = items.first(where: { $0.id == item.id }) else { throw DataFailure.message("这条剪贴板记录已经不存在。") }
-        do { try Self.validateItem(saved, storage: storage) } catch { stopWriting(error); throw error }
-        let board = NSPasteboard.general
-        let object = NSPasteboardItem()
+    func pushCurrentToStack() throws {
+        guard !IsSecureEventInputEnabled() else {throw DataFailure.message("安全输入期间不读取剪贴板。")}
+        let board=NSPasteboard.general
+        let prohibited=["org.nspasteboard.TransientType","org.nspasteboard.ConcealedType","com.agilebits.onepassword"]
+        guard !(board.types ?? []).contains(where:{type in prohibited.contains(where:{type.rawValue.hasPrefix($0)})}) else {throw DataFailure.message("此剪贴板内容标记为敏感或临时，未加入堆栈。")}
+        let paths=(board.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL])?.map(\.path) ?? []
+        try PasteStack.shared.pushContent(text:board.string(forType:.string),rtf:board.data(forType:.rtf),png:board.data(forType:.png),fileReferences:paths)
+    }
+    func pushToStack(_ item:ClipboardItem) throws {
+        guard let saved=items.first(where:{$0.id == item.id}) else {throw DataFailure.message("剪贴板记录不存在。")}
+        try Self.validateItem(saved,storage:storage)
+        let rtf=try saved.richTextFile.map {try storage.verifiedData($0,maximumSize:4_000_000)}
+        let png=try saved.imageFile.map {try storage.verifiedData($0,maximumSize:20_000_000)}
+        try PasteStack.shared.pushContent(text:saved.text,rtf:rtf,png:png,fileReferences:saved.paths ?? [])
+    }
+    private func preparedItems(_ item:ClipboardItem,plain:Bool) throws -> [NSPasteboardItem] {
+        guard let saved=items.first(where:{$0.id == item.id}) else {throw DataFailure.message("这条剪贴板记录已经不存在。")}
+        do {try Self.validateItem(saved,storage:storage)} catch {stopWriting(error);throw error}
+        let object=NSPasteboardItem()
         switch saved.kind {
         case .files:
-            guard let paths = saved.paths else { throw DataFailure.message("文件路径已失效。") }
-            board.clearContents()
-            guard board.writeObjects(paths.map { NSURL(fileURLWithPath: $0) }) else { throw DataFailure.message("无法写入系统剪贴板。") }
+            guard let paths=saved.paths,!paths.isEmpty,paths.allSatisfy({FileManager.default.fileExists(atPath:$0) && FileManager.default.isReadableFile(atPath:$0)}) else {throw DataFailure.message("原文件引用失效或不可访问，请重新选择原文件。")}
+            return paths.map {path in let item=NSPasteboardItem();item.setString(URL(fileURLWithPath:path).absoluteString,forType:.fileURL);return item}
         case .image:
-            guard let name = saved.imageFile else { throw DataFailure.message("图片附件缺失。") }
-            let data = try storage.verifiedData(name, maximumSize: 20_000_000)
-            guard NSImage(data: data) != nil else { throw DataFailure.message("图片附件内容无法解码。") }
-            object.setData(data, forType: .png)
-            board.clearContents()
-            guard board.writeObjects([object]) else { throw DataFailure.message("无法写入系统剪贴板。") }
+            guard let name=saved.imageFile else {throw DataFailure.message("图片附件缺失。")}
+            let bytes=try storage.verifiedData(name,maximumSize:20_000_000)
+            guard NSImage(data:bytes) != nil else {throw DataFailure.message("图片附件内容无法解码。")}
+            object.setData(bytes,forType:.png)
         case .text:
-            guard let text = saved.text else { throw DataFailure.message("文字记录内容缺失。") }
-            object.setString(text, forType: .string)
-            if !plain, let name = saved.richTextFile { object.setData(try storage.verifiedData(name, maximumSize: 4_000_000), forType: .rtf) }
-            board.clearContents()
-            guard board.writeObjects([object]) else { throw DataFailure.message("无法写入系统剪贴板。") }
+            guard let text=saved.text else {throw DataFailure.message("文字记录内容缺失。")}
+            object.setString(text,forType:.string)
+            if !plain,let name=saved.richTextFile {object.setData(try storage.verifiedData(name,maximumSize:4_000_000),forType:.rtf)}
         }
-        count = board.changeCount
-        } catch {
-            if storage.failure != nil { stopWriting(error) }
-            throw error
-        }
+        return [object]
+    }
+    func copy(_ item: ClipboardItem, plain: Bool = false) throws {
+        let objects=try preparedItems(item,plain:plain)
+        let board=NSPasteboard.general
+        board.clearContents()
+        guard board.writeObjects(objects) else {throw DataFailure.message("无法写入系统剪贴板。")}
+        count=board.changeCount
     }
     func image(_ item: ClipboardItem) -> NSImage? {
         do {
@@ -234,57 +296,273 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         previousApplication = application
     }
     func paste(_ item: ClipboardItem, plain: Bool = false) throws {
-        try pastePreparedContent { try copy(item, plain: plain) }
+        try ClipboardPasteTransaction.requireIdle(pasteTransaction)
+        let sourceChangeCount=NSPasteboard.general.changeCount
+        let objects=try preparedItems(item,plain:plain)
+        try pastePreparedItems(objects,sourceChangeCount:sourceChangeCount)
     }
 
     /// Paste the current system text without formatting; does not enable history.
     func pastePlainText() throws {
+        try ClipboardPasteTransaction.requireIdle(pasteTransaction)
         let board = NSPasteboard.general
         let sourceCount = board.changeCount
         guard let text = board.string(forType: .string), !text.isEmpty else {
             throw DataFailure.message("剪贴板没有可粘贴的文字。")
         }
-        try pastePreparedContent {
-            guard board.changeCount == sourceCount else {
-                throw DataFailure.message("剪贴板内容已变化，请重试纯文本粘贴。")
+        let item=NSPasteboardItem();item.setString(text,forType:.string)
+        try pastePreparedItems([item],sourceChangeCount:sourceCount)
+
+    }
+
+    func capturePasteTarget() {
+        guard !hasActivePasteTransaction,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier else {return}
+        rememberApplication(NSWorkspace.shared.frontmostApplication)
+        pasteTarget=ClipboardPasteTarget.capture()
+    }
+
+    /// Installs one temporary pasteboard lease. A submitted event is not proof
+    /// that another process consumed its contents; only explicit user review
+    /// can commit the supplied durable completion callback.
+    func pastePreparedItems(_ objects:[NSPasteboardItem],sendEnter:Bool=false,sourceChangeCount:Int?=nil,beforeSubmit:(() throws -> Void)?=nil,onSubmitted:(() throws -> Void)?=nil) throws {
+        try ClipboardPasteTransaction.requireIdle(pasteTransaction)
+        try ClipboardPasteTransaction.requireUnblocked(pasteBlockingReason?())
+        try ClipboardPasteTransaction.requireIdle(pasteTransaction)
+        guard !objects.isEmpty else {throw DataFailure.message("没有可粘贴的内容。")}
+        guard AXIsProcessTrusted() else {throw DataFailure.message("自动粘贴需要辅助功能权限；也可以先复制后手动按 ⌘V。")}
+        guard !IsSecureEventInputEnabled() else {throw DataFailure.message("系统正处于安全输入状态，暂不发送自动粘贴。")}
+        let board=NSPasteboard.general
+        let expectedSourceCount=sourceChangeCount ?? board.changeCount
+        // Explicit panel/action entry captures its target before taking focus.
+        // A stale captured target must fail, rather than silently rebinding to
+        // whichever app happens to be foreground when preparation finishes.
+        if pasteTarget == nil {capturePasteTarget()}
+        guard let target=pasteTarget,target.isValid(requireFrontmost:false),
+              let application=NSRunningApplication(processIdentifier:target.pid),!application.isTerminated else {
+            throw DataFailure.message("原粘贴目标、焦点或选区已失效。请重新进入目标输入框，再打开剪贴板。")
+        }
+        guard permitsTargetActivation(target) else {throw DataFailure.message("前台目标已改变，已停止粘贴。")}
+        guard let source=CGEventSource(stateID:.combinedSessionState),
+              let down=CGEvent(keyboardEventSource:source,virtualKey:9,keyDown:true),
+              let up=CGEvent(keyboardEventSource:source,virtualKey:9,keyDown:false) else {
+            throw DataFailure.message("无法创建系统粘贴事件。")
+        }
+        let original=try ClipboardPasteboardSnapshot.capture(board)
+        guard original.changeCount == expectedSourceCount,board.changeCount == original.changeCount else {
+            throw DataFailure.message("剪贴板已改变，未执行自动粘贴。")
+        }
+        // Keep this snapshot only in memory. Set the lease before the first
+        // write, so Quit and overlapping commands cannot discard its source.
+        let id=UUID()
+        pasteTransaction=ClipboardPasteTransaction(id:id,original:original,sendEnterRequested:sendEnter)
+        transactionTarget=target
+        transactionCompletion=onSubmitted
+        hasActivePasteTransaction=true
+        do {
+            guard target.isValid(requireFrontmost:false),permitsTargetActivation(target),
+                  board.changeCount == original.changeCount else {throw DataFailure.message("临时替换前目标或剪贴板已变化，未发送粘贴。")}
+            let cleared=board.clearContents()
+            try pasteTransaction?.installedTemporary(changeCount:cleared)
+            count=cleared
+            guard board.changeCount == cleared else {throw DataFailure.message("剪贴板已由其他操作改变，未写入临时内容。")}
+            guard board.writeObjects(objects) else {throw DataFailure.message("无法写入系统剪贴板，未发送自动粘贴。")}
+            let temporaryCount=board.changeCount
+            pasteTransaction?.replaceTemporaryOwnership(changeCount:temporaryCount)
+            count=temporaryCount
+            // Activation is permitted only while this app or the exact
+            // captured process remains foreground. No later retry steals focus.
+            guard target.isValid(requireFrontmost:false),permitsTargetActivation(target) else {
+                throw DataFailure.message("前台目标已改变，未发送粘贴。")
             }
-            board.clearContents()
-            guard board.setString(text, forType: .string) else {
-                throw DataFailure.message("无法写入系统剪贴板。")
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != target.pid,
+               !application.activate(options:[]) {throw DataFailure.message("目标应用无法激活，未发送粘贴。")}
+        } catch {
+            failBeforeSubmission(id:id,message:error.localizedDescription)
+            throw error
+        }
+        pasteTask=Task { @MainActor [weak self] in
+            for _ in 0..<15 {
+                guard let self,self.pasteTransaction?.id == id,!Task.isCancelled else {return}
+                guard self.pasteTransaction?.ownsTemporary(changeCount:board.changeCount) == true,
+                      target.isValid(requireFrontmost:false) else {
+                    self.failBeforeSubmission(id:id,message:"粘贴前权限、输入状态、原目标或剪贴板已改变，未发送。堆栈内容保留。")
+                    return
+                }
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid {
+                    do {
+                        try beforeSubmit?()
+                        try ClipboardPasteTransaction.requireUnblocked(self.pasteBlockingReason?())
+                        // No client callback or suspension is allowed between
+                        // this complete validation and event submission.
+                        guard self.pasteTransaction?.id == id,
+                              target.isValid(requireFrontmost:true),
+                              let current=self.pasteTransaction,
+                              current.permitsDispatch(changeCount:board.changeCount,targetMatches:true) else {
+                            throw DataFailure.message("最终检查发现目标或剪贴板已改变，未发送粘贴。")
+                        }
+                        try self.pasteTransaction?.submitted(changeCount:board.changeCount,targetMatches:true)
+                        down.flags = .maskCommand;up.flags = .maskCommand
+                        for event in [down,up] {
+                            event.setIntegerValueField(.eventSourceUserData,value:EnhancedInputEngine.syntheticTag)
+                            event.postToPid(target.pid)
+                        }
+                        self.pasteTask=nil
+                        self.showPasteReview(message:"粘贴事件已发送，但系统不能证明目标已读取或插入。请核对原窗口；确认前保留原剪贴板在内存，堆栈尚未弹出。已发送的事件无法撤回。")
+                    } catch {
+                        self.failBeforeSubmission(id:id,message:"粘贴请求已失效，未发送："+error.localizedDescription)
+                    }
+                    return
+                }
+                guard self.permitsTargetActivation(target) else {
+                    self.failBeforeSubmission(id:id,message:"前台已切换至其他应用，未发送粘贴，堆栈内容保留。")
+                    return
+                }
+                do {try await Task.sleep(for:.milliseconds(100))} catch {return}
             }
-            count = board.changeCount
+            self?.failBeforeSubmission(id:id,message:"未能确认原目标已位于前台，未发送粘贴，堆栈内容保留。")
         }
     }
 
-    private func pastePreparedContent(_ prepareContent: () throws -> Void) throws {
-        guard AXIsProcessTrusted() else { throw DataFailure.message("自动粘贴需要辅助功能权限；也可以先复制后手动按 ⌘V。") }
-        guard !IsSecureEventInputEnabled() else { throw DataFailure.message("系统正处于安全输入状态，暂不发送自动粘贴。") }
-        rememberApplication(NSWorkspace.shared.frontmostApplication)
-        guard let target = previousApplication, !target.isTerminated,
-              target.processIdentifier != ProcessInfo.processInfo.processIdentifier else { throw DataFailure.message("没有可粘贴的目标应用。请先切换到目标应用，再打开剪贴板。") }
-        guard let source = CGEventSource(stateID: .combinedSessionState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { throw DataFailure.message("无法创建系统粘贴事件。") }
-        pasteTask?.cancel()
-        try prepareContent()
-        let expectedCount = NSPasteboard.general.changeCount
-        guard target.activate(options: []) else { throw DataFailure.message("目标应用无法激活；内容已复制，可手动粘贴。") }
-        pasteTask = Task { @MainActor [weak self] in
-            for _ in 0..<15 {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                guard let self, !Task.isCancelled else { return }
-                guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), NSPasteboard.general.changeCount == expectedCount else {
-                    self.error = "粘贴前权限、输入状态或剪贴板内容发生变化，已取消自动粘贴。"; return
-                }
-                if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier {
-                    down.flags = .maskCommand; up.flags = .maskCommand
-                    down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-                    return
-                }
+    /// The user has inspected the consumer. Keeping/restoring the clipboard is
+    /// a separate explicit choice; neither choice implies OS consumption proof.
+    func confirmPendingPaste(restoreOriginal:Bool,sendEnter:Bool=false) throws {
+        guard var transaction=pasteTransaction else {throw DataFailure.message("没有待确认的粘贴。")}
+        try transaction.requiresUserReview()
+        if transaction.completionWasAttempted && !transaction.completionSucceeded {
+            throw DataFailure.message("上次确认的记录提交失败，不会重复执行。请核对堆栈后取消本次确认；原剪贴板仍在内存。")
+        }
+        var enterEvents:[CGEvent]=[]
+        if sendEnter {
+            try ClipboardPasteTransaction.requireUnblocked(pasteBlockingReason?())
+            guard transaction.sendEnterRequested,!transaction.enterWasSubmitted,
+                  let target=transactionTarget,
+                  target.isValid(requireFrontmost:true,checkRange:false,requireEditableText:true),
+                  transaction.ownsTemporary(changeCount:NSPasteboard.general.changeCount),
+                  let source=CGEventSource(stateID:.combinedSessionState),
+                  let down=CGEvent(keyboardEventSource:source,virtualKey:36,keyDown:true),
+                  let up=CGEvent(keyboardEventSource:source,virtualKey:36,keyDown:false) else {
+                throw DataFailure.message("原窗口、文档、可编辑输入框或剪贴板已改变，未发送回车。请回到原目标后核对，或选择仅确认插入。")
             }
-            self?.error = "未能确认目标应用已位于前台，已取消自动粘贴；内容仍在剪贴板。"
+            enterEvents=[down,up]
+        }
+        if !transaction.completionWasAttempted {
+            try transaction.beginCompletion()
+            pasteTransaction=transaction
+            do {
+                try transactionCompletion?()
+                guard pasteTransaction?.id == transaction.id else {throw DataFailure.message("粘贴确认已被其他显式操作结束，不会继续处理旧请求。")}
+                try pasteTransaction?.completed()
+            } catch {
+                guard pasteTransaction?.id == transaction.id else {throw error}
+                showPasteReview(message:"你已确认内容插入，但记录提交失败，不会自动重试。请核对堆栈；原剪贴板仍在内存："+error.localizedDescription)
+                reportPasteFailure("内容插入已由你确认，但记录提交失败："+error.localizedDescription)
+                throw error
+            }
+        }
+        if sendEnter {
+            // Completion callbacks can mutate local state. Recheck the complete
+            // target after them; never activate an app from this confirmation.
+            do {try ClipboardPasteTransaction.requireUnblocked(pasteBlockingReason?())}
+            catch {
+                showPasteReview(message:"内容插入已由你确认并记录，但当前模式禁止发送回车："+error.localizedDescription)
+                throw error
+            }
+            guard let target=transactionTarget,
+                  target.isValid(requireFrontmost:true,checkRange:false,requireEditableText:true),
+                  pasteTransaction?.id == transaction.id,
+                  pasteTransaction?.ownsTemporary(changeCount:NSPasteboard.general.changeCount) == true else {
+                showPasteReview(message:"内容插入已由你确认并记录，但最终目标检查未通过，未发送回车。可选择仅确认并处理剪贴板。")
+                throw DataFailure.message("最终目标检查未通过，未发送回车。内容插入确认已记录。")
+            }
+            try pasteTransaction?.recordEnterSubmission()
+            for event in enterEvents {
+                event.setIntegerValueField(.eventSourceUserData,value:EnhancedInputEngine.syntheticTag)
+                event.postToPid(target.pid)
+            }
+        }
+        do {
+            let restored=try restoreOriginal ? restoreOriginalIfOwned() : false
+            let changed=restoreOriginal && !restored
+            let entered=pasteTransaction?.enterWasSubmitted == true
+            clearPasteTransaction()
+            let message=entered
+                ? (changed ? "已按你的确认记录插入并发送回车事件；剪贴板已变化，保留新内容。" : "已按你的确认记录插入并发送回车事件。")
+                : (restoreOriginal ? (restored ? "已按你的确认记录插入，原剪贴板已恢复。" : "已按你的确认记录插入；剪贴板已变化，保留新内容。") : "已按你的确认记录插入，并按选择保留当前剪贴板。")
+            onPasteResult?(message,false)
+        } catch {
+            showPasteReview(message:"内容插入已由你确认并记录，但原剪贴板恢复失败。原内容仍在内存，可再次选择恢复或保留当前内容："+error.localizedDescription)
+            reportPasteFailure("插入确认已记录；原剪贴板恢复失败："+error.localizedDescription)
+            throw error
         }
     }
+
+    /// Cancel only the local lease. Already posted events cannot be retracted;
+    /// this never invokes a durable completion callback.
+    func cancelPendingPaste(restoreOriginal:Bool=true) throws {
+        guard let transaction=pasteTransaction else {throw DataFailure.message("没有待处理的粘贴。")}
+        pasteTask?.cancel();pasteTask=nil
+        do {
+            let restored=try restoreOriginal ? restoreOriginalIfOwned() : false
+            let submitted=transaction.eventWasSubmitted
+            let committed=transaction.completionSucceeded
+            clearPasteTransaction()
+            let message:String
+            if transaction.completionWasAttempted && !committed {
+                message="已结束确认，未重试失败的记录提交；请核对实际堆栈和原窗口。"+(restored ? "原剪贴板已恢复。" : "按选择或变化状态保留当前剪贴板。")
+            }
+            else if committed {message=restored ? "已结束确认并恢复原剪贴板；此前你确认的插入记录已保留。" : "已结束确认；剪贴板已变化，保留新内容，此前确认的插入记录已保留。"}
+            else if !restoreOriginal {message=submitted ? "已按选择取消确认并保留当前剪贴板，未调用堆栈提交。已发送事件无法撤回，请核对原窗口。" : "未发送粘贴，已按选择取消并保留当前剪贴板，堆栈内容保留。"}
+            else if submitted {message=restored ? "已取消本次确认并恢复原剪贴板，未提交堆栈。已发送的粘贴事件无法撤回，请核对原窗口。" : "已取消本次确认，未提交堆栈；剪贴板已变化，保留新内容。已发送事件无法撤回。"}
+            else {message=restored ? "未发送粘贴，已取消并恢复原剪贴板，堆栈内容保留。" : "未发送粘贴，已取消；剪贴板新内容和堆栈内容保留。"}
+            onPasteResult?(message,false)
+        } catch {
+            showPasteReview(message:"取消时原剪贴板恢复失败；原内容仍在内存，取消不会重试确认记录。请重试恢复或明确选择取消并保留当前剪贴板："+error.localizedDescription)
+            reportPasteFailure("取消时原剪贴板恢复失败："+error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func permitsTargetActivation(_ target:ClipboardPasteTarget)->Bool {
+        guard let front=NSWorkspace.shared.frontmostApplication else {return false}
+        return front.processIdentifier == ProcessInfo.processInfo.processIdentifier || front.processIdentifier == target.pid
+    }
+    private func showPasteReview(message:String) {
+        guard let transaction=pasteTransaction else {return}
+        pendingPaste=PendingPaste(id:transaction.id,sendEnterRequested:transaction.sendEnterRequested && !transaction.enterWasSubmitted,
+                                  message:message,eventWasSubmitted:transaction.eventWasSubmitted)
+        onPasteReviewNeeded?()
+    }
+    private func restoreOriginalIfOwned() throws -> Bool {
+        guard let transaction=pasteTransaction,let expected=transaction.temporaryChangeCount else {return false}
+        let board=NSPasteboard.general
+        let restored=try transaction.original.restore(board,ifUnchanged:expected,onCleared:{ [weak self] cleared in
+            guard self?.pasteTransaction?.id == transaction.id else {return}
+            self?.pasteTransaction?.replaceTemporaryOwnership(changeCount:cleared)
+            self?.count=cleared
+        })
+        if restored {count=board.changeCount}
+        return restored
+    }
+    private func failBeforeSubmission(id:UUID,message:String) {
+        guard pasteTransaction?.id == id,pasteTransaction?.eventWasSubmitted == false else {return}
+        pasteTask?.cancel();pasteTask=nil
+        pasteTransaction?.failedBeforeSubmission()
+        do {
+            let restored=try restoreOriginalIfOwned()
+            clearPasteTransaction()
+            reportPasteFailure(message+(restored ? " 原剪贴板已恢复。" : " 未覆盖剪贴板的新内容。"))
+        } catch {
+            showPasteReview(message:message+" 原剪贴板恢复失败，原内容仍在内存；请取消并重试恢复。"+error.localizedDescription)
+            reportPasteFailure(message+" 原剪贴板恢复失败："+error.localizedDescription)
+        }
+    }
+    private func clearPasteTransaction() {
+        pasteTask?.cancel();pasteTask=nil
+        pasteTransaction=nil;transactionTarget=nil;transactionCompletion=nil
+        pendingPaste=nil;hasActivePasteTransaction=false
+    }
+    private func reportPasteFailure(_ message:String) {error=message;onPasteResult?(message,true)}
     isolated deinit {
         timer?.invalidate(); pasteTask?.cancel()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }

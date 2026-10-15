@@ -461,7 +461,7 @@ def install(args):
             manifest["state"] = "installed_pending_verification"
             atomic_json(path, manifest)
             print("MANIFEST=" + str(path))
-            print("已安装搞操作 V" + version + "，等待 GUI 验收。旧程序、资料和设置备份均保留。")
+            print("已安装搞操作 V" + version + "，等待验收确认。旧程序、资料和设置备份均保留。")
             print("验收后：Scripts/finalize-install.sh --manifest '" + str(path) + "' --verified")
             print("验收失败：Scripts/finalize-install.sh --manifest '" + str(path) + "' --rollback")
         except Exception as error:
@@ -494,6 +494,24 @@ def finalize(args):
             return
         if manifest["state"] != "installed_pending_verification":
             fail("此安装事务未处于待验收状态，禁止清理或覆盖。")
+        scope = getattr(args, "verification_scope", "manual")
+        evidence = getattr(args, "verification_evidence", None)
+        if scope == "static-and-targeted":
+            if not evidence:
+                fail("静态与定向验证必须提供真实核验记录，不能隐含标记GUI已通过。")
+            evidence_path = Path(evidence).expanduser().resolve()
+            if not evidence_path.is_file() or evidence_path.stat().st_size > 1024 * 1024:
+                fail("核验记录缺失或过大，保留旧程序。")
+            with evidence_path.open("rb") as handle:
+                evidence_record = json.load(handle)
+            if (evidence_record.get("version") != manifest["version"]
+                    or str(evidence_record.get("build")) != str(manifest["build"])
+                    or evidence_record.get("candidateInventorySHA256") != hashlib.sha256(json.dumps(manifest["candidate_inventory"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    or evidence_record.get("verificationScope") != scope
+                    or evidence_record.get("smokeTestRun") is not False
+                    or evidence_record.get("passed") is not True):
+                fail("核验记录版本或实际范围不匹配，保留旧程序。")
+            manifest["verification_evidence_sha256"] = digest_file(evidence_path)
         verify_backup(manifest)
         target = Path(manifest["target_app"])
         stage = Path(manifest["stage_dir"])
@@ -530,10 +548,12 @@ def finalize(args):
             shutil.rmtree(str(stage))
         manifest["state"] = "verified"
         manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()
+        manifest["verification_scope"] = scope
+        manifest["gui_verified"] = scope == "manual"
         atomic_json(path, manifest)
         if not manifest["simulate"]:
             cleanup_old_releases(manifest["version"])
-        print("GUI 验收已确认，旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
+        print("安装核验已确认（" + ("静态与定向验证；未运行冒烟或GUI验收" if scope == "static-and-targeted" else "人工验收") + "），旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
 
 
 def cleanup_old_releases(current_version):
@@ -567,10 +587,12 @@ def main():
     install_parser.add_argument("--data-root", default=str(DEFAULT_DATA))
     install_parser.add_argument("--preferences", default=str(DEFAULT_PREFS))
     install_parser.add_argument("--backup-root", default=str(DEFAULT_BACKUPS))
-    install_parser.add_argument("--defer-cleanup", action="store_true", help="保留旧程序等待 GUI 验收；所有安装均要求显式 finalize")
+    install_parser.add_argument("--defer-cleanup", action="store_true", help="保留旧程序等待验收；所有安装均要求显式 finalize")
     install_parser.add_argument("--simulate", action="store_true", help="仅临时目录模拟，不调用签名或系统登记")
     final_parser = commands.add_parser("finalize")
     final_parser.add_argument("--manifest", required=True)
+    final_parser.add_argument("--verification-scope", choices=("manual", "static-and-targeted"), default="manual")
+    final_parser.add_argument("--verification-evidence")
     actions = final_parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--verified", action="store_true")
     actions.add_argument("--rollback", action="store_true")

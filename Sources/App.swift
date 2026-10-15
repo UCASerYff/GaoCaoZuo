@@ -23,6 +23,7 @@ final class OperationPanel: NSPanel {
     private var settingsWindow: NSWindow?
     private var panel: OperationPanel?
     private var clipboardPanel: OperationPanel?
+    private var pasteReviewPanel:NSPanel?
     private var feedbackPanel: NSPanel?
     private var passwordPanel: OperationPanel?
     private var finishPassword: ((String?) -> Void)?
@@ -46,12 +47,42 @@ final class OperationPanel: NSPanel {
         store.showMain={ [weak self] in self?.showMain() }
         store.showPanel={ [weak self] in self?.showPanel() }
         store.showSettings={ [weak self] in self?.showSettings() }
+        store.showExtensionSettings={ [weak self] tab in self?.showSettings(tab:tab) }
         store.showPermissions={ [weak self] in self?.showSettings(tab:1) }
         store.showClipboard={ [weak self] in self?.showClipboard() }
+        store.showPasteReview={ [weak self] in self?.showPasteReview() }
         store.showFeedback={ [weak self] in self?.showFeedback() }
         store.activateForDialog={ NSApp.activate(ignoringOtherApps:true) }
         store.requestArchivePassword={ [weak self] url,incorrect in await self?.askPassword(url,incorrect:incorrect) }
         store.cancelPasswordRequest={ [weak self] in self?.finishPassword?(nil) }
+        store.clipboard.onPasteResult={ [weak self] message,failed in self?.store.notify(message,failed:failed) }
+        store.clipboard.onPasteReviewNeeded={ [weak self] in self?.showPasteReview() }
+        store.clipboard.pasteBlockingReason={
+            CleanerController.shared.state == .idle ? nil : "请先退出清洁模式或退出键验证，再粘贴。"
+        }
+        CleanerController.shared.canBegin={ [weak self] in
+            self?.store.clipboard.hasActivePasteTransaction == true ? "请先处理当前粘贴，再验证退出键或进入清洁模式。" : nil
+        }
+        SelectionActionBar.shared.onStatus={ [weak self] message,failed in self?.store.notify(message,failed:failed) }
+        SelectionActionBar.shared.onSaveSnippet={ [weak self] snapshot in
+            guard let self,self.store.dataHealthy else {return}
+            do {
+                try self.store.snippetLibrary.upsert(AdvancedSnippet(name:String(snapshot.selectedText.prefix(30)),text:snapshot.selectedText))
+                self.store.notify("选中文字已保存至短语库")
+            } catch {self.store.notify(error.localizedDescription,failed:true)}
+        }
+        SelectionActionBar.shared.onSaveClipboard={ [weak self] snapshot in
+            guard let self else {return}
+            do {try self.store.clipboard.saveSelectedText(snapshot.selectedText,sourceApp:snapshot.bundleID ?? "");self.store.notify("选中文字已存入历史；采集开关保持当前设置")}
+            catch {self.store.notify(error.localizedDescription,failed:true)}
+        }
+        SelectionActionBar.shared.onTranslate={ [weak self] snapshot in self?.sendSelection(snapshot,translate:true) }
+        SelectionActionBar.shared.onSendToFiles={ [weak self] snapshot in self?.sendSelection(snapshot,translate:false) }
+        do {try PasteStack.shared.configurePersistence(dataDirectory:directory)} catch {store.notify(error.localizedDescription,failed:true)}
+        CleanerController.shared.onInputDemandChanged={ [weak self] in
+            DispatchQueue.main.async { self?.store.input.refreshExtensionDemand() }
+        }
+        store.input.onPauseChanged={ [weak self] _ in self?.configureInputExtensions() }
         clipboardErrorObserver=store.clipboard.$error.compactMap{$0}.removeDuplicates().sink { [weak self] message in
             self?.store.notify(message,failed:true)
         }
@@ -79,16 +110,31 @@ final class OperationPanel: NSPanel {
     private func configureInput(){store.windows.configure(enhancements:store.settings.windowEnhancements);store.input.configure(bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps,windows:store.windows,windowDragEnabled:store.settings.windowDragEnabled,windowSnapEnabled:store.settings.windowSnapEnabled,enhancements:store.settings.inputEnhancements,invocationHandler:{[weak self] id,mode in
             guard let self else{return}
             self.store.windows.captureTarget(underPointer:mode == .inheritSettings ? nil : mode == .underPointer)
-            self.store.prepare(id)
-        }){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}}
+            self.store.prepare(id,targetMode:mode)
+        }){[weak self]id in guard let self else{return};self.store.windows.captureTarget();self.store.prepare(id)}
+        configureInputExtensions()
+    }
+    private func configureInputExtensions() {
+        var auto=store.settings.autoInput;var fly=store.settings.flyKey
+        if store.input.isPaused || !store.dataHealthy {auto.enabled=false;fly.enabled=false}
+        InputSourceCoordinator.shared.configure(configuration:auto,onConfigurationChange:{ [weak self] value in
+            guard let self,!self.store.input.isPaused,self.store.dataHealthy else {return}
+            self.store.update {$0.autoInput=value}
+        },excludedApps:store.settings.inputExcludedApps)
+        FlyKeyController.shared.configure(configuration:fly,bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps) { [weak self] binding in
+            self?.store.prepare(binding.actionID)
+        }
+        store.input.configureExtensionDemand(auto.enabled || fly.enabled)
+    }
     private func applyAppearance(){
         NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)
         if let lang=GaoLanguage(rawValue:store.settings.language) {GaoLocale.shared.setLanguage(lang)}
         if mainWindow != nil { installMenu(); settingsWindow?.title=L10n.text("搞操作设置"); clipboardPanel?.title=L10n.text("剪贴板") }
     }
-    func showMain(){store.windows.captureTarget();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+    func showMain(){store.windows.captureTarget();store.captureSelectionForActions();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func showPanel(){
         store.windows.captureTarget()
+        store.captureSelectionForActions()
         if panel?.isVisible == true {panel?.orderOut(nil);return}
         let panel=self.panel ?? OperationPanel(contentRect:NSRect(x:0,y:0,width:600,height:480),styleMask:[.titled,.fullSizeContentView],backing:.buffered,defer:false)
         panel.titleVisibility = .hidden;panel.titlebarAppearsTransparent=true;panel.standardWindowButton(.closeButton)?.isHidden=true;panel.standardWindowButton(.miniaturizeButton)?.isHidden=true;panel.standardWindowButton(.zoomButton)?.isHidden=true
@@ -110,12 +156,22 @@ final class OperationPanel: NSPanel {
     }
     func showClipboard(){
         store.windows.captureTarget()
+        store.clipboard.capturePasteTarget()
         if clipboardPanel?.isVisible == true {clipboardPanel?.orderOut(nil);return}
         let window=clipboardPanel ?? OperationPanel(contentRect:NSRect(x:0,y:0,width:520,height:480),styleMask:[.titled,.closable,.fullSizeContentView],backing:.buffered,defer:false)
         window.title=L10n.text("剪贴板");window.titlebarAppearsTransparent=true;window.isReleasedWhenClosed=false
         window.level = .floating;window.hidesOnDeactivate=true;window.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
         window.contentView=NSHostingView(rootView:GaoLocalizedContent { [store=self.store!,weak window] in QuickClipboardView(store:store,close:{window?.orderOut(nil)},onError:{message in store.notify(message,failed:true)}) })
         clipboardPanel=window;window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
+    }
+    private func showPasteReview() {
+        let window=pasteReviewPanel ?? NSPanel(contentRect:NSRect(x:0,y:0,width:520,height:350),styleMask:[.titled,.closable,.nonactivatingPanel],backing:.buffered,defer:false)
+        window.title=L10n.text("确认粘贴结果");window.isReleasedWhenClosed=false;window.becomesKeyOnlyIfNeeded=true
+        window.level = .floating;window.hidesOnDeactivate=false;window.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
+        let content=NSHostingView(rootView:GaoLocalizedContent { [store=self.store!,weak window] in PendingPasteReviewView(clipboard:store.clipboard,close:{window?.orderOut(nil)}) })
+        window.contentView=content;window.setContentSize(content.fittingSize)
+        if let frame=NSScreen.main?.visibleFrame {window.setFrameOrigin(NSPoint(x:frame.maxX-window.frame.width-20,y:frame.minY+30))}
+        pasteReviewPanel=window;window.orderFrontRegardless()
     }
     private func showFeedback(){
         guard store.feedback.kind != .idle else{return}
@@ -172,6 +228,7 @@ final class OperationPanel: NSPanel {
     @objc private func statusClicked(){
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu=NSMenu();menu.addItem(item("打开操作面板",#selector(panelAction)));menu.addItem(item("显示主窗口",#selector(mainAction)));menu.addItem(item("剪贴板",#selector(clipboardAction)))
+            if store.clipboard.hasActivePasteTransaction {menu.addItem(item("处理待确认粘贴",#selector(pasteReviewAction)))}
             let layouts=NSMenu()
             for action in WindowAction.allCases {let entry=item(action.title,#selector(quickMenuAction(_:)));entry.representedObject="window."+action.rawValue;layouts.addItem(entry)}
             menu.addItem(withTitle:L10n.text("排列当前窗口"),action:nil,keyEquivalent:"").submenu=layouts
@@ -181,6 +238,7 @@ final class OperationPanel: NSPanel {
         }else{switch store.settings.statusBarLeftClick {case "main":showMain();case "clipboard":showClipboard();default:showPanel()}}
     }
     @objc private func clipboardAction(){showClipboard()}
+    @objc private func pasteReviewAction(){showPasteReview()}
     @objc private func permissionsAction(){showSettings(tab:1)}
     @objc private func quickMenuAction(_ sender:NSMenuItem){store.windows.captureTarget();if let id=sender.representedObject as? String{store.prepare(id)}}
     @objc private func exchangeHistoryAction(){gaoActionClient.showHistory()}
@@ -235,9 +293,43 @@ final class OperationPanel: NSPanel {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{showMain();return true}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
-        if store.busy || store.archive.isRunning || store.workflowRunning {
+        if store.clipboard.hasActivePasteTransaction {store.notify("请先处理待确认粘贴，再退出，以保留原剪贴板恢复选择。",failed:true);showPasteReview();return .terminateCancel}
+        if store.busy || store.archive.isRunning || store.workflowRunning || store.crossApplicationBusy || GaoActionActivity.shared.isBusy {
             let alert=NSAlert();alert.messageText="任务仍在运行";alert.informativeText="请等待文件任务完成，或在任务界面取消压缩/组合操作后退出。";alert.addButton(withTitle:"返回任务");alert.runModal();showMain();return .terminateCancel
         }
+        CleanerController.shared.emergencyRelease();InputSourceCoordinator.shared.stop();FlyKeyController.shared.stop();SelectionActionBar.shared.dismiss()
         store.input.stop();SystemActions.releasePreventSleep();return .terminateNow
+    }
+}
+
+@MainActor private extension OperationAppDelegate {
+    func sendSelection(_ snapshot:SelectionSnapshot,translate:Bool) {
+        guard store.dataHealthy else {store.notify("资料处于保护模式，未建立交接包。",failed:true);return}
+        guard Date().timeIntervalSince(snapshot.timestamp) <= 60,!snapshot.selectedText.isEmpty else {store.notify("选区已过期，请重新选择。",failed:true);return}
+        let action=translate ? "text.translate" : "documents.newText"
+        let target=translate ? "com.gaoseries.GaoJieTu" : "com.gaoseries.GaoWenJian"
+        var parameters:[String:Any]=translate ? ["targetLanguage":"zh-Hans","sourceLanguage":"auto"] : ["suggestedTitle":"选中文字.txt"]
+        if translate {
+            let alert=NSAlert();alert.messageText="翻译选中文字";alert.informativeText="选择目标语言；文本将交给搞截图的翻译界面。"
+            let picker=NSPopUpButton(frame:NSRect(x:0,y:0,width:260,height:28))
+            let languages=[("简体中文","zh-Hans"),("English","en"),("日本語","ja"),("Deutsch","de"),("Français","fr"),("Español","es"),("한국어","ko"),("Português","pt")]
+            picker.addItems(withTitles:languages.map(\.0));alert.accessoryView=picker;alert.addButton(withTitle:"继续");alert.addButton(withTitle:"取消")
+            guard alert.runModal() == .alertFirstButtonReturn else {return}
+            parameters["targetLanguage"]=languages[picker.indexOfSelectedItem].1
+        }
+        do { _ = try gaoActionClient.providerURL(bundleID:target,action:action,parameters:parameters,items:true) }
+        catch {store.notify(error.localizedDescription,failed:true);return}
+        let operation=store.beginCrossApplicationOperation()
+        Task { @MainActor in
+            defer {self.store.endCrossApplicationOperation(operation)}
+            let inputs=LocalData(directory:self.store.data.directory.appendingPathComponent("Exchange/SelectionInputs",isDirectory:true))
+            let name=UUID().uuidString+".txt"
+            do {
+                try inputs.createFile(Data(snapshot.selectedText.utf8),name:name)
+                defer {try? inputs.removeKnownFile(name)}
+                _ = try await self.gaoActionClient.sendRequest(action:action,targetBundleID:target,parameters:parameters,inputFiles:[inputs.directory.appendingPathComponent(name)])
+                self.store.notify("已交给提供方，完成状态可在跨应用任务中查看")
+            } catch {self.store.notify(error.localizedDescription,failed:true)}
+        }
     }
 }

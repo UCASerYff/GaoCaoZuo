@@ -3,6 +3,7 @@ import SwiftUI
 import Darwin
 
 struct ToolSheet: View {
+    @ObservedObject private var gaoActivity=GaoActionActivity.shared
     @ObservedObject var store: OperationStore
     @ObservedObject var archive: ArchiveService
     let request: ToolRequest
@@ -53,12 +54,13 @@ struct ToolSheet: View {
         }
     }
     var title: String { request.title ?? OperationAction.all.first(where:{$0.id == request.actionID})?.title ?? (request.actionID == "templates.edit" ? "管理文件模板" : "从模板新建") }
-    var running: Bool { working || store.busy || archive.isRunning }
+    var running: Bool { working || store.busy || archive.isRunning || store.crossApplicationBusy || gaoActivity.isBusy }
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack { Text(L10n.text(title)).font(.title2.weight(.semibold)); Spacer(); if running { ProgressView().controlSize(.small) } }.padding(20)
             Divider()
             if request.actionID == "templates.edit" { TemplateEditorView(store:store) }
+            else if request.actionID.hasPrefix("service.") {GaoActionComposerView(store:store,initialID:request.actionID,files:items)}
             else {
                 ScrollView {
                     VStack(alignment:.leading,spacing:16) {

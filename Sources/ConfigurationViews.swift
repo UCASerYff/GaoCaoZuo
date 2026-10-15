@@ -332,13 +332,17 @@ private struct WorkflowActionChoice: Identifiable {
     @State private var backupMessage: String?
     init(store: OperationStore, initialTab: Int = 0) {
         self.store = store
-        _selectedTab = State(initialValue: (0...9).contains(initialTab) ? initialTab : 0)
+        _selectedTab = State(initialValue: (0...13).contains(initialTab) ? initialTab : 0)
     }
     var body: some View {
         HStack(spacing:0) {
             VStack(alignment:.leading,spacing:4) {
                 settingsItem(0,"外观与剪贴板","slider.horizontal.3")
                 settingsItem(9,"输入","hand.draw")
+                settingsItem(10,"自动输入法","character.cursor.ibeam")
+                settingsItem(11,"常用短语","text.badge.plus")
+                settingsItem(13,"快捷键速查","command")
+                settingsItem(12,"清洁模式","sparkles")
                 settingsItem(7,"压缩","archivebox")
                 settingsItem(5,"右键","cursorarrow.click")
                 settingsItem(6,"文件","folder")
@@ -352,6 +356,10 @@ private struct WorkflowActionChoice: Identifiable {
             Divider()
             Group {
                 switch selectedTab {
+                case 10: AutoInputSettingsView(configuration:setting(\.autoInput))
+                case 11: SnippetsSettingsView(library:store.snippetLibrary)
+                case 12: CleanerSettingsView(durationSeconds:setting(\.cleanerDurationSeconds))
+                case 13: FlyKeySettingsView(configuration:setting(\.flyKey))
                 case 9: InputAdvancedSettingsContainer(store:store)
                 case 7: ArchivePreferencesView(controller:store.archiveEnhancements,store:store)
                 case 5: FinderPreferenceView(controller:store.finderPreferences)

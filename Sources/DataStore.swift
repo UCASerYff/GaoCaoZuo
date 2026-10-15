@@ -47,12 +47,16 @@ struct OperationSettings: Codable {
         TextTemplate(name: "JSON", filename: "未命名.json", content: "{\n}\n")
     ]
     var snippets: [TextSnippet] = []
+    var lastSnippetID: UUID?
     var bindings = InputBinding.defaults
     var inputExcludedApps: [String] = []
     var windowDragEnabled = false
     var windowSnapEnabled = false
     var windowEnhancements = WindowEnhancementConfiguration()
     var inputEnhancements = InputEnhancementConfiguration()
+    var autoInput = AutoInputConfiguration()
+    var flyKey = FlyKeyConfiguration()
+    var cleanerDurationSeconds = 180
     var workflows = [OperationWorkflow(name: "左右阅读", steps: [WorkflowStep(actionID: "window.leftHalf")])]
     var clipboardEnabled = false
     var clipboardDays = 7
@@ -62,10 +66,10 @@ struct OperationSettings: Codable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case schema, appearance, language, favorites, folders, templates, snippets, bindings, inputExcludedApps, workflows
+        case schema, appearance, language, favorites, folders, templates, snippets, lastSnippetID, bindings, inputExcludedApps, workflows
         case clipboardEnabled, clipboardDays, clipboardLimit, clipboardExcludedApps, loginAtStartup
         case windowDragEnabled, windowSnapEnabled
-        case windowEnhancements, inputEnhancements
+        case windowEnhancements, inputEnhancements, autoInput, flyKey, cleanerDurationSeconds
         case showMenuBarIcon,playNewFileSound,statusBarLeftClick
     }
     init(from decoder: Decoder) throws {
@@ -80,6 +84,7 @@ struct OperationSettings: Codable {
         folders = try container.decode([FavoriteFolder].self, forKey: .folders)
         templates = try container.decode([TextTemplate].self, forKey: .templates)
         snippets = try container.decode([TextSnippet].self, forKey: .snippets)
+        lastSnippetID = try container.decodeIfPresent(UUID.self, forKey: .lastSnippetID)
         bindings = try container.decode([InputBinding].self, forKey: .bindings)
         // Added before V1 delivery; older valid settings gain an empty exclusion list only.
         inputExcludedApps = container.contains(.inputExcludedApps) ? try container.decode([String].self, forKey: .inputExcludedApps) : []
@@ -87,6 +92,10 @@ struct OperationSettings: Codable {
         windowSnapEnabled = container.contains(.windowSnapEnabled) ? try container.decode(Bool.self, forKey: .windowSnapEnabled) : false
         windowEnhancements = try container.decodeIfPresent(WindowEnhancementConfiguration.self, forKey: .windowEnhancements) ?? .init()
         inputEnhancements = try container.decodeIfPresent(InputEnhancementConfiguration.self, forKey: .inputEnhancements) ?? .init()
+        autoInput = try container.decodeIfPresent(AutoInputConfiguration.self, forKey: .autoInput) ?? .init()
+        flyKey = try container.decodeIfPresent(FlyKeyConfiguration.self, forKey: .flyKey) ?? .init()
+        cleanerDurationSeconds = try container.decodeIfPresent(Int.self, forKey: .cleanerDurationSeconds) ?? 180
+        guard (30...180).contains(cleanerDurationSeconds) else { throw DataFailure.message("清洁模式时限无效，已保留资料并停止写入。") }
         workflows = try container.decode([OperationWorkflow].self, forKey: .workflows)
         clipboardEnabled = try container.decode(Bool.self, forKey: .clipboardEnabled)
         clipboardDays = try container.decode(Int.self, forKey: .clipboardDays)

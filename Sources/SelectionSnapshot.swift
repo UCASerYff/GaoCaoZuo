@@ -3,6 +3,7 @@ import ApplicationServices
 import CoreImage
 import CryptoKit
 import Foundation
+import Carbon
 
 // MARK: - SelectionSnapshot
 
@@ -11,6 +12,7 @@ public struct SelectionSnapshot: Equatable {
     public let bundleID: String?
     public let launchIdentity: String?
     public let element: AXUIElement?
+    public let window: AXUIElement?
     public let selectedText: String
     public let textSHA256: String
     public let range: CFRange?
@@ -20,11 +22,12 @@ public struct SelectionSnapshot: Equatable {
 
     public init(pid: pid_t, bundleID: String?, launchIdentity: String?, element: AXUIElement?,
                 selectedText: String, range: CFRange?, timestamp: Date = Date(),
-                generation: UInt64 = 0, isFromClipboardFallback: Bool = false) {
+                generation: UInt64 = 0, isFromClipboardFallback: Bool = false, window: AXUIElement? = nil) {
         self.pid = pid
         self.bundleID = bundleID
         self.launchIdentity = launchIdentity
         self.element = element
+        self.window = window
         self.selectedText = selectedText
         self.textSHA256 = SHA256.hash(data: Data(selectedText.utf8)).compactMap { String(format: "%02x", $0) }.joined()
         self.range = range
@@ -34,20 +37,22 @@ public struct SelectionSnapshot: Equatable {
     }
 
     public static func capture(generation: UInt64 = 0) -> SelectionSnapshot? {
-        guard AXIsProcessTrusted() else { return nil }
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else { return nil }
         let systemWide = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(systemWide, 0.2)
 
         var focusedElementValue: AnyObject?
         guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElementValue) == .success,
-              let element = focusedElementValue as! AXUIElement? else {
+              let value = focusedElementValue, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             return nil
         }
+        let element = value as! AXUIElement
         AXUIElementSetMessagingTimeout(element, 0.2)
 
         var pid: pid_t = 0
-        AXUIElementGetPid(element, &pid)
-        guard pid > 0 else { return nil }
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              !SelectionTargetValidator.isSecure(element) else { return nil }
 
         let runningApp = NSRunningApplication(processIdentifier: pid)
         let bundleID = runningApp?.bundleIdentifier
@@ -57,7 +62,7 @@ public struct SelectionSnapshot: Equatable {
         var selectedTextValue: AnyObject?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedTextValue) == .success,
               let text = selectedTextValue as? String,
-              !text.isEmpty else {
+              !text.isEmpty, text.utf8.count <= 1_048_576 else {
             return nil
         }
 
@@ -65,7 +70,7 @@ public struct SelectionSnapshot: Equatable {
         var selectedRangeValue: AnyObject?
         var range: CFRange? = nil
         if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &selectedRangeValue) == .success,
-           let rangeVal = selectedRangeValue {
+           let rangeVal = selectedRangeValue, CFGetTypeID(rangeVal) == AXValueGetTypeID() {
             var r = CFRange()
             if AXValueGetValue(rangeVal as! AXValue, .cfRange, &r) {
                 range = r
@@ -81,15 +86,20 @@ public struct SelectionSnapshot: Equatable {
             range: range,
             timestamp: Date(),
             generation: generation,
-            isFromClipboardFallback: false
+            isFromClipboardFallback: false,
+            window: SelectionTargetValidator.window(for: element, pid: pid)
         )
     }
 
     public func matchesTarget(currentPID: pid_t?, currentBundleID: String?, generation expectedGeneration: UInt64) -> Bool {
         guard generation == expectedGeneration else { return false }
-        if let currentPID = currentPID, currentPID != pid { return false }
-        if let currentBundleID = currentBundleID, let bundleID = bundleID, currentBundleID != bundleID { return false }
-        return true
+        return currentPID == pid && currentPID != nil && currentBundleID == bundleID
+    }
+
+    func withGeneration(_ value: UInt64) -> SelectionSnapshot {
+        SelectionSnapshot(pid: pid, bundleID: bundleID, launchIdentity: launchIdentity, element: element,
+            selectedText: selectedText, range: range, timestamp: timestamp, generation: value,
+            isFromClipboardFallback: isFromClipboardFallback, window: window)
     }
 
     public static func == (lhs: SelectionSnapshot, rhs: SelectionSnapshot) -> Bool {
@@ -98,8 +108,104 @@ public struct SelectionSnapshot: Equatable {
                lhs.launchIdentity == rhs.launchIdentity &&
                lhs.selectedText == rhs.selectedText &&
                lhs.textSHA256 == rhs.textSHA256 &&
+               lhs.range?.location == rhs.range?.location && lhs.range?.length == rhs.range?.length &&
+               SelectionTargetValidator.sameElement(lhs.element, rhs.element) &&
+               SelectionTargetValidator.sameElement(lhs.window, rhs.window) &&
                lhs.generation == rhs.generation &&
                lhs.isFromClipboardFallback == rhs.isFromClipboardFallback
+    }
+}
+
+/// Evidence is separate from AX access so expiry, identity, generation and range
+/// failures can be exercised without opening an application or sending input.
+public struct SelectionTargetEvidence {
+    public var pid: pid_t
+    public var bundleID: String?
+    public var launchIdentity: String?
+    public var foregroundPID: pid_t?
+    public var sameElement: Bool
+    public var sameWindow: Bool
+    public var selectedRange: CFRange?
+    public var textSHA256: String
+    public var secureInput: Bool
+    public var writable: Bool
+}
+
+public enum SelectionTargetValidator {
+    public static func refusal(snapshot: SelectionSnapshot, evidence: SelectionTargetEvidence,
+                               generation: UInt64, now: Date = Date()) -> String? {
+        guard !snapshot.isFromClipboardFallback else { return "剪贴板文本没有可验证的选区，只能复制处理结果。" }
+        guard snapshot.generation == generation else { return "选区操作已过期，请重新选择文字。" }
+        guard now.timeIntervalSince(snapshot.timestamp) >= 0, now.timeIntervalSince(snapshot.timestamp) <= 60 else {
+            return "选区已超过一分钟，请重新选择文字。"
+        }
+        guard !evidence.secureInput else { return "安全输入状态下不读取或替换选区。" }
+        guard snapshot.pid > 0, evidence.pid == snapshot.pid, evidence.foregroundPID == snapshot.pid,
+              evidence.bundleID == snapshot.bundleID,
+              let launch = snapshot.launchIdentity, !launch.isEmpty, evidence.launchIdentity == launch else {
+            return "原应用已退出或前台目标已改变，未写入文字。"
+        }
+        guard evidence.sameElement, evidence.sameWindow else { return "原窗口或输入区域已改变，未写入文字。" }
+        guard let expected = snapshot.range, expected.location >= 0, expected.length > 0,
+              let actual = evidence.selectedRange, actual.location == expected.location, actual.length == expected.length,
+              evidence.textSHA256 == snapshot.textSHA256 else { return "原选区或文字已改变，未写入文字。" }
+        guard evidence.writable else { return "此输入区域不允许替换选中文字。" }
+        return nil
+    }
+
+    static func sameElement(_ lhs: AXUIElement?, _ rhs: AXUIElement?) -> Bool {
+        switch (lhs, rhs) { case (nil, nil): return true; case let (a?, b?): return CFEqual(a, b); default: return false }
+    }
+
+    static func elementAttribute(_ element: AXUIElement, _ key: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    static func isSecure(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &value) == .success
+            && (value as? String) == kAXSecureTextFieldSubrole
+    }
+
+    static func window(for element: AXUIElement, pid: pid_t) -> AXUIElement? {
+        elementAttribute(element, kAXWindowAttribute) ?? elementAttribute(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute)
+    }
+
+    @MainActor static func evidence(for snapshot: SelectionSnapshot) -> SelectionTargetEvidence {
+        let secure = IsSecureEventInputEnabled() || snapshot.element.map(isSecure) == true
+        var result = SelectionTargetEvidence(pid: 0, bundleID: nil, launchIdentity: nil,
+            foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            sameElement: false, sameWindow: false, selectedRange: nil, textSHA256: "",
+            secureInput: secure, writable: false)
+        guard !secure, AXIsProcessTrusted(), let element = snapshot.element else { return result }
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return result }
+        result.pid = pid
+        result.bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        result.launchIdentity = WindowProcessIdentity.auditTokenString(for: pid)
+        let system = AXUIElementCreateSystemWide()
+        result.sameElement = elementAttribute(system, kAXFocusedUIElementAttribute).map { CFEqual($0, element) } ?? false
+        result.sameWindow = snapshot.window != nil && sameElement(snapshot.window, window(for: element, pid: pid))
+        guard result.pid == snapshot.pid, result.bundleID == snapshot.bundleID,
+              result.foregroundPID == snapshot.pid, snapshot.launchIdentity != nil,
+              result.launchIdentity == snapshot.launchIdentity, result.sameElement, result.sameWindow else { return result }
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success,
+           let value, CFGetTypeID(value) == AXValueGetTypeID() {
+            var range = CFRange(); if AXValueGetValue(value as! AXValue, .cfRange, &range) { result.selectedRange = range }
+        }
+        value = nil
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value) == .success,
+           let text = value as? String, text.utf8.count <= 1_048_576 {
+            result.textSHA256 = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        var settable: DarwinBoolean = false
+        result.writable = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success && settable.boolValue
+        return result
     }
 }
 

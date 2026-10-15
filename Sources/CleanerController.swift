@@ -1,216 +1,177 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import Combine
 import SwiftUI
 
-// MARK: - CleanSessionState
+public enum CleanSessionState: String, Codable { case idle, verifyingRescue, active, exiting }
 
-public enum CleanSessionState: String, Codable {
-    case idle
-    case verifyingRescue
-    case active
-    case exiting
-}
-
-// MARK: - CleanerController
-
-@MainActor
-public final class CleanerController: ObservableObject {
+@MainActor public final class CleanerController: ObservableObject {
     public static let shared = CleanerController()
-
     @Published public private(set) var state: CleanSessionState = .idle
-    @Published public private(set) var remainingSeconds: Int = 180
-    @Published public private(set) var escHoldProgress: CGFloat = 0.0
+    @Published public private(set) var remainingSeconds = 180
+    @Published public private(set) var escHoldProgress: CGFloat = 0
     @Published public private(set) var errorMessage: String?
-
-    private var overlayWindows: [NSWindow] = []
-    private var countdownTimer: Timer?
-    private var escHoldTimer: Timer?
-    private var escHoldStartTime: Date?
-    private var eventMonitor: Any?
-    private var sleepObserver: NSObjectProtocol?
-    private var terminateObserver: NSObjectProtocol?
-    private let rescueHoldDuration: TimeInterval = 3.0
-    private let defaultSessionDuration: Int = 180
-    private let maximumSessionDuration: Int = 600
-
-    public init() {
-        setupSafetyObservers()
-    }
-
-    private func setupSafetyObservers() {
-        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.emergencyRelease()
-            }
-        }
-
-        terminateObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.emergencyRelease()
-            }
-        }
-    }
+    @Published public private(set) var rescueVerified = false
+    let inputSafety = CleanerInputSafety()
+    var onInputDemandChanged: (() -> Void)?
+    var canBegin: (() -> String?)?
+    var needsInputEvents: Bool { state == .verifyingRescue || state == .active }
+    private var overlays: [NSWindow] = []
+    private var timer: Timer?
+    private var watchdog: DispatchSourceTimer?
+    private var observers: [NSObjectProtocol] = []
+    private var verifiedUntil: TimeInterval = 0
+    private var verificationDeadline: TimeInterval = 0
+    private var deadline: TimeInterval = 0
+    private var escapeStart: TimeInterval?
+    private var desiredDuration = 180
+    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    public init() {}
 
     public func startCleaning(durationSeconds: Int = 180) {
-        guard state == .idle else { return }
-
-        // 1. Authorization & environment preflight
-        guard CGPreflightListenEventAccess() || AXIsProcessTrusted() else {
-            errorMessage = "进入清洁模式需要输入监控或辅助功能权限以拦截按键。"
+        if let reason=canBegin?() {errorMessage=reason;return}
+        desiredDuration = min(180, max(30, durationSeconds))
+        guard state != .active else { return }
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else {
+            errorMessage = "清洁输入拦截需要辅助功能权限，且不能在安全输入期间开启。"; return
+        }
+        if state == .idle { beginRescueVerification(); return }
+        guard rescueVerified, now < verifiedUntil, inputSafety.healthy else {
+            rescueVerified = false
+            errorMessage = "请在本页按 ⌘⌥Q 验证退出键；只有活动事件通道实际收到该组合后才能开始。"; return
+        }
+        guard inputSafety.begin(now: now, duration: TimeInterval(desiredDuration)) else {
+            emergencyRelease(); errorMessage = "全局事件通道不可用，未进入清洁模式。"; return
+        }
+        deadline = now + TimeInterval(desiredDuration); remainingSeconds = desiredDuration
+        state = .active; rescueVerified = false; errorMessage = nil
+        createOverlays(); startWatchdog()
+    }
+    public func beginRescueVerification() {
+        if let reason=canBegin?() {errorMessage=reason;return}
+        guard state == .idle, AXIsProcessTrusted(), !IsSecureEventInputEnabled() else {
+            errorMessage = "请先获得辅助功能权限，并离开安全输入。"; return
+        }
+        installLifecycleObservers()
+        state = .verifyingRescue; rescueVerified = false; verificationDeadline = now + 30
+        errorMessage = "先按 ⌘⌥Q 验证退出通道，再点击开始。验证期间不遮屏、不拦截其他输入。"
+        onInputDemandChanged?()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+    }
+    private func tick() {
+        if state == .verifyingRescue {
+            if now >= verificationDeadline { emergencyRelease(); errorMessage = "退出键验证已超时，未进入清洁模式。" }
+            else if rescueVerified, now >= verifiedUntil { rescueVerified = false }
             return
         }
-
-        // 2. State transition: verifying rescue mechanisms
-        state = .verifyingRescue
-        escHoldProgress = 0.0
-        remainingSeconds = min(maximumSessionDuration, max(30, durationSeconds))
-
-        // 3. Construct overlay windows across all connected screens
-        createOverlayWindows()
-
-        // 4. Activate input interception and start countdown timer
-        installInterception()
-        startCountdown()
-
-        state = .active
-        errorMessage = nil
+        guard state == .active else { return }
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), inputSafety.permitsInterception(now: now) else {
+            emergencyRelease(); errorMessage = "权限或事件通道失效，已释放清洁拦截。"; return
+        }
+        inputSafety.pulse(now: now); remainingSeconds = max(0, Int(ceil(deadline - now)))
+        if let start = escapeStart {
+            escHoldProgress = min(1, CGFloat((now - start) / 3))
+            if escHoldProgress >= 1 { stopCleaning() }
+        }
+        if now >= deadline { stopCleaning() }
     }
-
+    /// Called only by the existing input tap, before application rules. Never
+    /// installs a second monitor and never treats a simulated test as key proof.
+    func handleInputEvent(type: CGEventType, event: CGEvent) -> Bool {
+        guard needsInputEvents else { return false }
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            emergencyRelease(); errorMessage = "事件通道已停用，清洁模式已释放。"; return false
+        }
+        guard !IsSecureEventInputEnabled(), AXIsProcessTrusted(), inputSafety.healthy else {
+            emergencyRelease(); return false
+        }
+        let flags = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn])
+        let rescue = type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 12 && flags == [.maskCommand, .maskAlternate]
+        if state == .verifyingRescue {
+            if rescue {
+                guard CleanerRescuePolicy.canVerify(sourcePID:event.getIntegerValueField(.eventSourceUnixProcessID),repeated:event.getIntegerValueField(.keyboardEventAutorepeat) != 0) else {
+                    errorMessage = "此按键来源不能用于退出通道验证，请使用内置实体键盘重新按一次。";return false
+                }
+                rescueVerified = true; verifiedUntil = now + 20; verificationDeadline = verifiedUntil
+                errorMessage = "退出通道已收到按键。20 秒内可开始，最长 180 秒。"; return true
+            }
+            return false
+        }
+        guard inputSafety.permitsInterception(now: now) else { emergencyRelease(); return false }
+        if rescue { stopCleaning(); return true }
+        if type == .keyDown || type == .keyUp {
+            if event.getIntegerValueField(.keyboardEventKeycode) == 53 {
+                if type == .keyDown, escapeStart == nil { escapeStart = now }
+                if type == .keyUp { escapeStart = nil; escHoldProgress = 0 }
+            }
+        }
+        // The overlay's exit button must remain clickable. Only our visible
+        // full-screen overlay receives these clicks; other applications do not.
+        if [.leftMouseDown, .leftMouseUp, .mouseMoved].contains(type),
+           NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+           overlays.contains(where: { $0.isVisible && $0.frame.contains(NSEvent.mouseLocation) }) { return false }
+        return true
+    }
     public func stopCleaning() {
         guard state != .idle else { return }
-        state = .exiting
-
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        escHoldTimer?.invalidate()
-        escHoldTimer = nil
-        escHoldStartTime = nil
-
-        removeInterception()
-        destroyOverlayWindows()
-
-        state = .idle
-        escHoldProgress = 0.0
+        state = .exiting; inputSafety.finish(); timer?.invalidate(); timer = nil
+        watchdog?.cancel(); watchdog = nil
+        for window in overlays { window.orderOut(nil) }; overlays = []
+        for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); NotificationCenter.default.removeObserver(token) }; observers = []
+        escapeStart = nil; escHoldProgress = 0; rescueVerified = false; state = .idle
+        onInputDemandChanged?()
     }
-
-    /// Immediate fail-safe release for sleep, app termination, or tap failure
-    public func emergencyRelease() {
-        stopCleaning()
+    public func emergencyRelease() { stopCleaning() }
+    func inputChannelInvalidated() {
+        rescueVerified = false
+        verifiedUntil = 0
+        if state == .active {
+            inputSafety.finish()
+            // InputController may be in the middle of rebuilding its sole tap.
+            // Release overlays after that stack unwinds, without recursive rebuilds.
+            DispatchQueue.main.async { [weak self] in
+                guard self?.state == .active else { return }
+                self?.emergencyRelease()
+                self?.errorMessage = "输入通道已重建，请重新验证退出键。"
+            }
+        }
     }
-
-    private func createOverlayWindows() {
-        destroyOverlayWindows()
-
+    private func installLifecycleObservers() {
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.emergencyRelease() }
+            })
+        }
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.emergencyRelease() }
+        })
+    }
+    private func startWatchdog() {
+        watchdog?.cancel()
+        let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
+        let safety = inputSafety
+        source.schedule(deadline: .now() + 0.2, repeating: 0.2)
+        source.setEventHandler { [weak self] in
+            if !safety.permitsInterception(now: ProcessInfo.processInfo.systemUptime) {
+                DispatchQueue.main.async { self?.emergencyRelease() }
+            }
+        }
+        watchdog = source; source.resume()
+    }
+    private func createOverlays() {
         for screen in NSScreen.screens {
-            let win = NSWindow(
-                contentRect: screen.frame,
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: false,
-                screen: screen
-            )
-            win.level = .screenSaver
-            win.isOpaque = false
-            win.backgroundColor = NSColor.black.withAlphaComponent(0.96)
-            win.ignoresMouseEvents = false
-            win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-            let contentView = CleanerOverlayView(controller: self)
-            win.contentView = NSHostingView(rootView: contentView)
-
-            win.makeKeyAndOrderFront(nil)
-            overlayWindows.append(win)
+            let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false, screen: screen)
+            window.level = .screenSaver; window.isOpaque = true; window.backgroundColor = .black
+            window.ignoresMouseEvents = false; window.acceptsMouseMovedEvents = true
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.contentView = NSHostingView(rootView: CleanerOverlayView(controller: self))
+            window.orderFrontRegardless(); overlays.append(window)
         }
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func destroyOverlayWindows() {
-        for win in overlayWindows {
-            win.orderOut(nil)
-        }
-        overlayWindows.removeAll()
-    }
-
-    private func startCountdown() {
-        countdownTimer?.invalidate()
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                if self.remainingSeconds > 1 {
-                    self.remainingSeconds -= 1
-                } else {
-                    self.stopCleaning()
-                }
-            }
-        }
-    }
-
-    private func installInterception() {
-        removeInterception()
-
-        // Local event monitor for key and mouse events directed at the overlay windows
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
-            guard let self = self, self.state == .active else { return event }
-
-            // Check for immediate rescue combination: Command + Option + Q
-            if event.type == .keyDown && event.keyCode == 12 && event.modifierFlags.contains([.command, .option]) {
-                self.stopCleaning()
-                return nil
-            }
-
-            // Check for Esc hold (keyCode 53)
-            if event.keyCode == 53 {
-                if event.type == .keyDown && !event.isARepeat {
-                    self.startEscHold()
-                } else if event.type == .keyUp {
-                    self.cancelEscHold()
-                }
-                return nil
-            }
-
-            // Intercept all other keyboard and mouse input
-            return nil
-        }
-    }
-
-    private func removeInterception() {
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            eventMonitor = nil
-        }
-    }
-
-    private func startEscHold() {
-        escHoldStartTime = Date()
-        escHoldTimer?.invalidate()
-        escHoldTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self = self, let start = self.escHoldStartTime else { return }
-                let elapsed = Date().timeIntervalSince(start)
-                let progress = min(1.0, CGFloat(elapsed / self.rescueHoldDuration))
-                self.escHoldProgress = progress
-
-                if progress >= 1.0 {
-                    self.stopCleaning()
-                }
-            }
-        }
-    }
-
-    private func cancelEscHold() {
-        escHoldTimer?.invalidate()
-        escHoldTimer = nil
-        escHoldStartTime = nil
-        escHoldProgress = 0.0
     }
 }
 
@@ -288,7 +249,7 @@ private struct CleanerOverlayView: View {
             Spacer()
 
             // System Reserved Safety Notice
-            Text(L10n.text("系统底层保留提示：Touch ID、Mac 电源键、强制退出（⌘⌥⎋）等内核级按键由 macOS 固件与系统内核直接管理，任何普通应用均不会且无法进行拦截。"))
+            Text(L10n.text("清洁模式不是系统锁屏，不承诺拦截系统保留快捷键。通道或主线程失效时停止普通输入拦截；系统安全功能保持可用。"))
                 .font(.system(size: 12, weight: .regular))
                 .foregroundStyle(.white.opacity(0.45))
                 .multilineTextAlignment(.center)

@@ -11,7 +11,9 @@ struct HIDDeviceProfile:Codable,Equatable,Identifiable {
     var buttons:[HIDButtonMapping]=[]
     var trackingSpeed:Double=1;var trackingAcceleration:Double=0
     // These requested values are retained for migration; no undocumented/global setting is written.
-    // A per-device tracking backend is not available through the public user-space APIs used here.
+    // This app has not implemented/verified a per-event-service tracking backend.
+    // Public HID service properties exist; device/service identities and successful
+    // per-service readback must be proved before applying these migration values.
     var requestsTrackingAdjustment=false
 }
 struct HIDDeviceDescriptor:Identifiable,Equatable {

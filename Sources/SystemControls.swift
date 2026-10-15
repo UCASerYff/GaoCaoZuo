@@ -285,6 +285,22 @@ enum WindowFocusRestoration {
     }
 }
 
+/// Carries an action's explicit target choice through the final capture. Inheriting
+/// resolves the current global setting; an explicit choice never uses that setting.
+enum WindowExecutionTargetPolicy {
+    static func capture<T>(mode: InputWindowTargetMode = .inheritSettings,
+                           configuredUnderPointer: Bool,
+                           using capture: (Bool) -> T) -> T {
+        let underPointer: Bool
+        switch mode {
+        case .inheritSettings: underPointer = configuredUnderPointer
+        case .frontmost: underPointer = false
+        case .underPointer: underPointer = true
+        }
+        return capture(underPointer)
+    }
+}
+
 @MainActor
 final class WindowManager: ObservableObject {
     @Published private(set) var isTrusted = AXIsProcessTrusted()
@@ -383,7 +399,7 @@ final class WindowManager: ObservableObject {
         lastError = isTrusted ? nil : "请在系统设置的“隐私与安全性 → 辅助功能”中允许搞操作。"
     }
 
-    func perform(_ action: WindowAction) async throws -> WindowOperationOutcome {
+    func perform(_ action: WindowAction, targetMode: InputWindowTargetMode = .inheritSettings) async throws -> WindowOperationOutcome {
         guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
         windowOperationBusy = true
         defer { windowOperationBusy = false }
@@ -393,8 +409,10 @@ final class WindowManager: ObservableObject {
             cancelWindowDrag()
             isTrusted = AXIsProcessTrusted()
             guard isTrusted else { throw SystemControlError.message("窗口操作需要辅助功能权限，请先在设置中授权。") }
-            // Direct shortcuts act on the current foreground app; the panel keeps its captured target.
-            captureTarget()
+            // Direct shortcuts still recapture; an explicit rule choice reaches
+            // this final capture instead of being replaced by the global setting.
+            // captureTarget itself preserves the saved target while our panel is frontmost.
+            captureExecutionTarget(mode: targetMode)
             guard let window = target, let pid = targetPID, let application = targetApplication else {
                 throw SystemControlError.message("没有可操作的目标窗口。请先切换到需要调整的窗口，再打开操作面板。")
             }
@@ -622,7 +640,7 @@ final class WindowManager: ObservableObject {
         snapPreview.show(frame:frame,title:snap.action.title,animated:configuration.animatePreview,haptic:configuration.hapticFeedback,showLabel:configuration.showSnapLabel)
     }
 
-    func performCustomLayout(_ id: UUID) async throws -> WindowOperationOutcome {
+    func performCustomLayout(_ id: UUID, targetMode: InputWindowTargetMode = .inheritSettings) async throws -> WindowOperationOutcome {
         guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
         windowOperationBusy = true
         defer { windowOperationBusy = false }
@@ -632,7 +650,7 @@ final class WindowManager: ObservableObject {
             cancelWindowDrag()
             guard let layout = configuration.customLayouts.first(where: { $0.id == id }) else { throw SystemControlError.message("自定义窗口布局不存在。") }
             guard AXIsProcessTrusted() else { throw SystemControlError.message("自定义布局需要辅助功能权限。") }
-            captureTarget()
+            captureExecutionTarget(mode: targetMode)
             guard let window = target,let pid = targetPID,let app = targetApplication else { throw SystemControlError.message("没有可操作的目标窗口。") }
             AXUIElementSetMessagingTimeout(window,0.15)
             let identity = targetIdentity, capturedPID = capturedForegroundPID
@@ -651,6 +669,12 @@ final class WindowManager: ObservableObject {
             lastError = outcome.isExact ? nil : message
             return WindowOperationOutcome(message:message,isExact:outcome.isExact)
         } catch { lastError = error.localizedDescription; throw error }
+    }
+
+    private func captureExecutionTarget(mode: InputWindowTargetMode) {
+        WindowExecutionTargetPolicy.capture(mode: mode, configuredUnderPointer: configuration.targetUnderPointer) {
+            captureTarget(underPointer: $0)
+        }
     }
 
     private func outcomeMessage(_ outcome: WindowLayoutOutcome, title: String, application: NSRunningApplication) -> String {

@@ -99,6 +99,8 @@ public struct RuleContext: Equatable {
     public let processLaunchIdentity: String?
     public let capturedPID: pid_t?
     public let capturedWindowID: CGWindowID?
+    public let capturedWindowElement: AXUIElement?
+    public let capturedElement: AXUIElement?
     public let permissionState: (accessibility: Bool, inputMonitoring: Bool)
     public let deviceCategory: String
     public let generation: UInt64
@@ -108,6 +110,8 @@ public struct RuleContext: Equatable {
                 processLaunchIdentity: String? = nil,
                 capturedPID: pid_t? = nil,
                 capturedWindowID: CGWindowID? = nil,
+                capturedWindowElement: AXUIElement? = nil,
+                capturedElement: AXUIElement? = nil,
                 permissionState: (accessibility: Bool, inputMonitoring: Bool) = (AXIsProcessTrusted(), CGPreflightListenEventAccess()),
                 deviceCategory: String = "keyboard",
                 generation: UInt64 = 0,
@@ -116,21 +120,26 @@ public struct RuleContext: Equatable {
         self.processLaunchIdentity = processLaunchIdentity
         self.capturedPID = capturedPID
         self.capturedWindowID = capturedWindowID
+        self.capturedWindowElement = capturedWindowElement
+        self.capturedElement = capturedElement
         self.permissionState = permissionState
         self.deviceCategory = deviceCategory
         self.generation = generation
         self.timestamp = timestamp
     }
 
-    public static func captureCurrent(generation: UInt64 = 0) -> RuleContext {
+    @MainActor public static func captureCurrent(generation: UInt64 = 0) -> RuleContext {
         let frontApp = NSWorkspace.shared.frontmostApplication
         let pid = frontApp?.processIdentifier
         let launchIdentity = pid.flatMap { WindowProcessIdentity.auditTokenString(for: $0) }
+        let focused=ClipboardPasteTarget.capture()
         return RuleContext(
             frontmostBundleID: frontApp?.bundleIdentifier,
             processLaunchIdentity: launchIdentity,
             capturedPID: pid,
             capturedWindowID: nil,
+            capturedWindowElement: focused?.window,
+            capturedElement: focused?.element,
             permissionState: (AXIsProcessTrusted(), CGPreflightListenEventAccess()),
             deviceCategory: "keyboard",
             generation: generation,
@@ -151,10 +160,16 @@ public struct RuleContext: Equatable {
                lhs.processLaunchIdentity == rhs.processLaunchIdentity &&
                lhs.capturedPID == rhs.capturedPID &&
                lhs.capturedWindowID == rhs.capturedWindowID &&
+               Self.sameElement(lhs.capturedWindowElement,rhs.capturedWindowElement) &&
+               Self.sameElement(lhs.capturedElement,rhs.capturedElement) &&
                lhs.permissionState.accessibility == rhs.permissionState.accessibility &&
                lhs.permissionState.inputMonitoring == rhs.permissionState.inputMonitoring &&
                lhs.deviceCategory == rhs.deviceCategory &&
                lhs.generation == rhs.generation
+    }
+    private static func sameElement(_ lhs:AXUIElement?,_ rhs:AXUIElement?) -> Bool {
+        if let lhs,let rhs {return CFEqual(lhs,rhs)}
+        return lhs == nil && rhs == nil
     }
 }
 
@@ -191,6 +206,7 @@ public final class ActionRegistry {
     }
 
     private func registerBuiltInActions() {
+        for action in OperationAction.all { registerOperationIfMissing(action) }
         // Window Actions
         register(ActionDescriptor(id: "window.leftHalf", name: L10n.text("左半屏"), category: .window, requiredPermission: .accessibility, supportedContexts: [.global, .window]))
         register(ActionDescriptor(id: "window.rightHalf", name: L10n.text("右半屏"), category: .window, requiredPermission: .accessibility, supportedContexts: [.global, .window]))
@@ -204,12 +220,12 @@ public final class ActionRegistry {
         register(ActionDescriptor(id: "panel.show", name: L10n.text("打开操作面板"), category: .system, executionMode: .interactiveHUD))
         register(ActionDescriptor(id: "finder.popup", name: L10n.text("访达扩展菜单"), category: .system, supportedContexts: [.file, .global]))
         register(ActionDescriptor(id: "flykey.show", name: L10n.text("FlyKey 快捷键速查"), category: .system, requiredPermission: .accessibility, executionMode: .interactiveHUD))
-        register(ActionDescriptor(id: "cleaner.start", name: L10n.text("进入键盘与屏幕清洁模式"), category: .system, requiredPermission: .inputMonitoring, executionMode: .interactiveHUD))
+        register(ActionDescriptor(id: "cleaner.start", name: L10n.text("键盘与屏幕清洁设置"), category: .system, executionMode: .interactiveHUD))
 
         // Input Source Actions
-        register(ActionDescriptor(id: "inputsource.switch.abc", name: L10n.text("切换为英文键盘 (ABC)"), category: .input, executionMode: .immediate))
-        register(ActionDescriptor(id: "inputsource.switch.pinyin", name: L10n.text("切换为拼音输入法"), category: .input, executionMode: .immediate))
-        register(ActionDescriptor(id: "inputsource.toggle", name: L10n.text("在中英文输入法之间快速切换"), category: .input, executionMode: .immediate))
+        register(ActionDescriptor(id: "inputsource.switch.abc", name: L10n.text("切换至首选输入法"), category: .input, executionMode: .immediate))
+        register(ActionDescriptor(id: "inputsource.switch.pinyin", name: L10n.text("切换至第二输入法"), category: .input, executionMode: .immediate))
+        register(ActionDescriptor(id: "inputsource.toggle", name: L10n.text("切换指定的两个输入法"), category: .input, executionMode: .immediate))
 
         // Clipboard Actions
         register(ActionDescriptor(id: "clipboard.show", name: L10n.text("查看剪贴板历史"), category: .clipboard, executionMode: .interactiveHUD))
@@ -238,5 +254,21 @@ public final class ActionRegistry {
         // Snippet Actions
         register(ActionDescriptor(id: "snippet.manager.show", name: L10n.text("常用短语管理"), category: .snippet, executionMode: .interactiveHUD))
         register(ActionDescriptor(id: "snippet.paste.last", name: L10n.text("粘贴上一条短语"), category: .snippet, requiredPermission: .accessibility))
+    }
+
+    func registerOperationIfMissing(_ action: OperationAction) {
+        guard descriptors[action.id] == nil else { return }
+        let category: ActionCategory
+        switch action.section {
+        case .windows: category = .window
+        case .clipboard: category = action.id.hasPrefix("snippet.") ? .snippet : .clipboard
+        case .files, .archives: category = .file
+        case .input: category = .input
+        default: category = action.id.hasPrefix("selection.") ? .selection : .system
+        }
+        let permission: ActionPermission = action.id.hasPrefix("window.") ? .accessibility : .none
+        register(ActionDescriptor(id:action.id,name:action.title,summary:action.detail,category:category,
+                                  requiredPermission:permission,supportedContexts:action.files ? [.global,.file] : [.global],
+                                  executionMode:.asyncTask))
     }
 }

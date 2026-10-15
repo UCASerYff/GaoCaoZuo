@@ -19,7 +19,7 @@ def catalog():
             if not line or line.startswith('#'): continue
             key,value=line.split('\t',1)
             result['zh-Hans'][key]=key;result['en'][key]=value
-    for filename in ['LocalizationCommon.tsv', 'LocalizationWindow.tsv', 'LocalizationArchiveNative.tsv']:
+    for filename in ['LocalizationCommon.tsv', 'LocalizationWindow.tsv', 'LocalizationArchiveNative.tsv', 'LocalizationExtensions.tsv']:
         for line in (ROOT/'Resources'/filename).read_text().splitlines():
             if not line or line.startswith('#'):continue
             values=line.split('|')

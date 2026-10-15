@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor struct QuickClipboardView: View {
     @ObservedObject private var store: OperationStore
     @ObservedObject private var clipboard: ClipboardService
+    @ObservedObject private var library: SnippetLibraryStore
     private let close: () -> Void
     private let onError: (String) -> Void
     @State private var query = ""
@@ -15,6 +16,7 @@ import SwiftUI
     init(store: OperationStore, close: @escaping () -> Void, onError: ((String) -> Void)? = nil) {
         self.store = store
         self.clipboard = store.clipboard
+        self.library = store.snippetLibrary
         self.close = close
         self.onError = onError ?? { [weak store] message in store?.error = message }
     }
@@ -25,11 +27,14 @@ import SwiftUI
             search.isEmpty || item.title.localizedCaseInsensitiveContains(search)
                 || (item.text?.localizedCaseInsensitiveContains(search) ?? false)
                 || (item.paths?.contains(where: { $0.localizedCaseInsensitiveContains(search) }) ?? false)
+                || (item.group?.localizedCaseInsensitiveContains(search) ?? false)
+                || (item.tags?.contains(where:{$0.localizedCaseInsensitiveContains(search)}) ?? false)
         }
     }
-    private var snippets: [TextSnippet] {
-        store.settings.snippets.filter {
+    private var snippets: [AdvancedSnippet] {
+        library.snippets.filter {
             query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.text.localizedCaseInsensitiveContains(query)
+                || ($0.shortcut?.localizedCaseInsensitiveContains(query) ?? false) || $0.tags.contains(where:{$0.localizedCaseInsensitiveContains(query)})
         }
     }
 
@@ -61,7 +66,7 @@ import SwiftUI
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(Array(matches.enumerated()), id: \.element.id) { index, item in
-                            row(item, selected: selected == index).id(item.id)
+                            row(item, selected: selected == index,shortcutIndex:index).id(item.id)
                         }
                     }.padding(8)
                     if matches.isEmpty {
@@ -80,15 +85,14 @@ import SwiftUI
             if !snippets.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("常用文本 · 点击复制").font(.caption).foregroundStyle(.secondary)
+                    Text("常用短语 · 按已设置方式执行").font(.caption).foregroundStyle(.secondary)
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
                             ForEach(snippets) { snippet in
                                 Button(snippet.name) {
-                                    clipboard.copyText(snippet.text)
-                                    store.message = "已复制常用文本"
+                                    store.executeSnippet(snippet)
                                     close()
-                                }.controlSize(.small).help(snippet.text)
+                                }.controlSize(.small).help(snippet.executionMode.title).disabled(!library.healthy)
                             }
                         }
                     }.scrollIndicators(.hidden)
@@ -96,12 +100,13 @@ import SwiftUI
             }
             Divider()
             HStack {
-                Text("↑↓ 选择 · 回车粘贴").font(.caption).foregroundStyle(.secondary)
+                Text("↑↓ 选择 · 回车粘贴 · ⌘1–9 编号").font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Button("粘贴当前纯文本") {
+                if clipboard.hasActivePasteTransaction {Button("处理待确认粘贴") {close();store.showPasteReview?()}.controlSize(.small)}
+                else {Button("粘贴当前纯文本") {
                     do { try clipboard.pastePlainText(); close() }
                     catch { report(error.localizedDescription) }
-                }.controlSize(.small)
+                }.controlSize(.small)}
                 Button("管理") { close(); store.section = .clipboard; store.showMain?() }.controlSize(.small)
             }.padding(.horizontal, 14).padding(.vertical, 10)
         }
@@ -117,9 +122,10 @@ import SwiftUI
         }
     }
 
-    private func row(_ item: ClipboardItem, selected: Bool) -> some View {
+    private func row(_ item: ClipboardItem, selected: Bool,shortcutIndex:Int) -> some View {
         Button { paste(item) } label: {
             HStack(alignment: .top, spacing: 12) {
+                if shortcutIndex < 9 {Text("\(shortcutIndex+1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width:12)}
                 Image(systemName: item.kind == .image ? "photo" : item.kind == .files ? "doc.on.doc" : "text.alignleft")
                     .font(.title3).foregroundStyle(.tint).frame(width: 25).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
@@ -134,10 +140,12 @@ import SwiftUI
             }.padding(10).contentShape(Rectangle())
                 .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain)
+        .keyboardShortcut(shortcutIndex < 9 ? KeyboardShortcut(KeyEquivalent(Character(String(shortcutIndex+1))),modifiers:.command) : nil)
         .help("点击直接粘贴；右键查看更多操作")
         .contextMenu {
             Button("粘贴") { paste(item) }
             Button("复制") { copy(item) }
+            Button("加入粘贴堆栈") { do {try clipboard.pushToStack(item)} catch {report(error.localizedDescription)} }
             if item.kind == .text {
                 Button("粘贴为纯文本") { paste(item, plain: true) }
                 Button("复制为纯文本") { copy(item, plain: true) }

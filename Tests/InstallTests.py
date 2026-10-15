@@ -66,6 +66,35 @@ def registration_regressions(installer, root):
         return [[installer.LSREGISTER, "-u" if remove else "-f", str(app)],
                 [installer.PLUGIN_KIT, "-r" if remove else "-a", str(app / "Contents/PlugIns/GaoFinderSync.appex")]]
 
+    # Static verification cannot silently masquerade as real GUI acceptance;
+    # mismatched or missing evidence must keep rollback material untouched.
+    target, stage, previous, path = pending("static-evidence")
+    evidence = path.parent / "evidence.json"
+    base_record = {"version": "1.01", "build": "2", "verificationScope": "static-and-targeted",
+                   "smokeTestRun": False, "passed": True,
+                   "candidateInventorySHA256": installer.hashlib.sha256(json.dumps(json.loads(path.read_text())["candidate_inventory"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+    with unittest.mock.patch.object(installer, "verify_signature"), \
+         unittest.mock.patch.object(installer, "ensure_not_running"), \
+         unittest.mock.patch.object(installer, "run") as external, \
+         unittest.mock.patch.object(installer, "cleanup_old_releases"):
+        for broken in [None, {**base_record, "version": "9.99"}, {**base_record, "smokeTestRun": True}, {**base_record, "candidateInventorySHA256": "0" * 64}]:
+            if broken is not None:
+                evidence.write_text(json.dumps(broken))
+            try:
+                installer.finalize(SimpleNamespace(manifest=str(path), rollback=False,
+                                   verification_scope="static-and-targeted", verification_evidence=str(evidence) if broken is not None else None))
+                raise AssertionError("Invalid static verification evidence was accepted")
+            except RuntimeError:
+                pass
+            external.assert_not_called()
+            assert previous.exists() and json.loads(path.read_text())["state"] == "installed_pending_verification"
+        evidence.write_text(json.dumps(base_record))
+        installer.finalize(SimpleNamespace(manifest=str(path), rollback=False,
+                           verification_scope="static-and-targeted", verification_evidence=str(evidence)))
+    verified = json.loads(path.read_text())
+    assert verified["state"] == "verified" and verified["gui_verified"] is False
+    assert verified["verification_scope"] == "static-and-targeted" and not stage.exists()
+
     # The complete old pair is unregistered before the installed pair is added;
     # the old app is checked for running processes and deleted only after success.
     target, stage, previous, path = pending("registration-order")

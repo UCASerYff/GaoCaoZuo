@@ -3,254 +3,206 @@ import ApplicationServices
 import Carbon
 import SwiftUI
 
-// MARK: - FlyKeyItem
-
 public struct FlyKeyItem: Identifiable, Equatable {
-    public var id: String { path.joined(separator: " > ") + ":" + shortcut }
+    public var id: String { bindingID.map { "binding:" + $0.uuidString } ?? path.joined(separator: " > ") + ":" + shortcut }
     public let title: String
     public let path: [String]
     public let shortcut: String
     public let isEnabled: Bool
     public let sourceAppName: String
     public let element: AXUIElement?
-
-    public init(title: String, path: [String], shortcut: String, isEnabled: Bool, sourceAppName: String, element: AXUIElement? = nil) {
-        self.title = title
-        self.path = path
-        self.shortcut = shortcut
-        self.isEnabled = isEnabled
-        self.sourceAppName = sourceAppName
-        self.element = element
+    public let bindingID: UUID?
+    var menuEvidence: InputMenuEvidence?
+    public init(title: String, path: [String], shortcut: String, isEnabled: Bool,
+                sourceAppName: String, element: AXUIElement? = nil, bindingID: UUID? = nil) {
+        self.title = title; self.path = path; self.shortcut = shortcut; self.isEnabled = isEnabled
+        self.sourceAppName = sourceAppName; self.element = element; self.bindingID = bindingID
+        self.menuEvidence = nil
     }
-
     public static func == (lhs: FlyKeyItem, rhs: FlyKeyItem) -> Bool {
         lhs.id == rhs.id && lhs.isEnabled == rhs.isEnabled && lhs.sourceAppName == rhs.sourceAppName
     }
 }
 
-// MARK: - FlyKeyController
-
 @MainActor
 public final class FlyKeyController: ObservableObject {
     public static let shared = FlyKeyController()
-
     @Published public private(set) var isShowing = false
     @Published public private(set) var items: [FlyKeyItem] = []
+    @Published public private(set) var configuration = FlyKeyConfiguration()
+    @Published public private(set) var lastStatus: String?
     @Published public var searchText = ""
-
     private var panel: NSPanel?
-    private var lastModifierReleaseTime: Date = Date.distantPast
-    private var modifierPressCount = 0
-    private var lastModifierKeyCode: UInt16 = 0
-    private let doubleTapWindow: TimeInterval = 0.35
-
+    private var detector = FlyKeyTapDetector()
+    private var triggerPID: pid_t?
+    private var bindings: [InputBinding] = []
+    private var excludedApps: Set<String> = []
+    private var executeBinding: ((InputBinding) -> Void)?
+    private var generation: UInt64 = 0
+    private struct HUDTarget {
+        var bundleID: String
+        var identity: WindowProcessIdentity.Snapshot
+        var generation: UInt64
+    }
+    private var target: HUDTarget?
+    private var healthTimer: Timer?
+    private var isRunning = false
     public init() {}
 
-    /// Called by the event tap callback on flagsChanged events
-    public func handleFlagsChanged(event: CGEvent) {
-        guard !IsSecureEventInputEnabled() else {
+    func configure(configuration: FlyKeyConfiguration, bindings: [InputBinding], excludedApps: [String] = [],
+                   executeBinding: ((InputBinding) -> Void)? = nil) {
+        stop()
+        do { try configuration.validate() }
+        catch { lastStatus = error.localizedDescription; return }
+        self.configuration = configuration; self.bindings = bindings; self.excludedApps = Set(excludedApps)
+        self.executeBinding = executeBinding
+        isRunning = true
+    }
+
+    public func stop() {
+        isRunning = false; generation &+= 1; resetTapDetector(); dismiss()
+    }
+
+    /// Observes the shared tap, never consumes or synthesizes the original modifier event.
+    public func handleInputEvent(type: CGEventType, event: CGEvent) {
+        guard isRunning, configuration.enabled, !IsSecureEventInputEnabled(),
+              let front = NSWorkspace.shared.frontmostApplication,
+              !excludedApps.contains(front.bundleIdentifier ?? "") else {
             resetTapDetector()
+            if IsSecureEventInputEnabled() { dismiss() }
             return
         }
-
-        let flags = event.flags
-        let isCommandPressed = flags.contains(.maskCommand)
-
-        if isCommandPressed {
-            // Key pressed down
-            let now = Date()
-            if now.timeIntervalSince(lastModifierReleaseTime) <= doubleTapWindow {
-                modifierPressCount += 1
-            } else {
-                modifierPressCount = 1
-            }
-        } else {
-            // Key released
-            if modifierPressCount >= 2 {
-                // Double tap recognized!
-                modifierPressCount = 0
-                lastModifierReleaseTime = Date.distantPast
-                showHUD()
-            } else {
-                lastModifierReleaseTime = Date()
+        guard type == .flagsChanged else {
+            // A mouse action or ordinary key proves this was not two standalone modifier taps.
+            if type == .keyDown || type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown { resetTapDetector() }
+            return
+        }
+        if let triggerPID, triggerPID != front.processIdentifier { resetTapDetector() }
+        triggerPID = front.processIdentifier
+        let now = ProcessInfo.processInfo.systemUptime
+        let key = UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode))
+        if detector.flagsChanged(key: key, flags: event.flags.rawValue, now: now,
+                                 modifier: configuration.triggerModifier, interval: configuration.doubleTapInterval) {
+            let capturedGeneration = generation, pid = front.processIdentifier
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == capturedGeneration, self.configuration.enabled,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                      !IsSecureEventInputEnabled() else { return }
+                self.showHUD()
             }
         }
     }
+    public func handleFlagsChanged(event: CGEvent) { handleInputEvent(type: .flagsChanged, event: event) }
+    public func resetTapDetector() { detector.reset(); triggerPID = nil }
 
-    public func resetTapDetector() {
-        modifierPressCount = 0
-        lastModifierReleaseTime = Date.distantPast
-    }
-
+    /// Explicit invocation remains available when the optional double-tap listener is off.
     public func showHUD() {
-        guard !isShowing else {
-            dismiss()
-            return
+        guard !IsSecureEventInputEnabled() else { dismiss(); lastStatus = "安全输入状态下不显示或执行快捷键。"; return }
+        if isShowing { dismiss(); return }
+        guard let app = NSWorkspace.shared.frontmostApplication, !app.isTerminated,
+              let bundleID = app.bundleIdentifier, !excludedApps.contains(bundleID),
+              let identity = WindowProcessIdentity.capture(pid: app.processIdentifier, launchDate: app.launchDate) else {
+            lastStatus = "无法确认当前应用身份。"; return
         }
-
-        let frontApp = NSWorkspace.shared.frontmostApplication
-        let appName = frontApp?.localizedName ?? "系统"
-        let pid = frontApp?.processIdentifier ?? 0
-
+        guard !hasSecureFocusedField(pid: app.processIdentifier) else { lastStatus = "密码输入区域中不读取或执行菜单快捷键。"; return }
+        let appName = app.localizedName ?? bundleID
         var extracted: [FlyKeyItem] = []
-        if pid > 0 && AXIsProcessTrusted() {
-            extracted = extractMenuShortcuts(pid: pid, appName: appName)
+        if AXIsProcessTrusted() { extracted = extractMenuShortcuts(pid: app.processIdentifier, appName: appName) }
+        let actualBindings = bindings.filter { $0.enabled && ($0.appBundleID.isEmpty || $0.appBundleID == bundleID) }
+        let conflicts = InputRules.conflictingIDs(in: actualBindings)
+        for binding in actualBindings {
+            extracted.append(FlyKeyItem(title: binding.title, path: [L10n.text("搞操作"), binding.title],
+                shortcut: binding.triggerDescription,
+                isEnabled: !conflicts.contains(binding.id) && InputRules.validationError(binding) == nil && executeBinding != nil,
+                sourceAppName: L10n.text("搞操作"), bindingID: binding.id))
         }
-
-        // Add GaoCaoZuo's own registered bindings
-        for binding in InputBinding.defaults where binding.enabled {
-            extracted.append(
-                FlyKeyItem(
-                    title: binding.title,
-                    path: [L10n.text("搞操作"), binding.title],
-                    shortcut: binding.triggerDescription,
-                    isEnabled: true,
-                    sourceAppName: "搞操作"
-                )
-            )
-        }
-
-        self.items = extracted
-        self.searchText = ""
-        self.isShowing = true
-
-        let p = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.titleVisibility = .hidden
-        p.titlebarAppearsTransparent = true
-        p.backgroundColor = .clear
-        p.hasShadow = true
-        p.center()
-
-        let rootView = FlyKeyHUDView(
-            controller: self,
-            onSelect: { [weak self] item in
-                self?.triggerItem(item)
-            },
-            onDismiss: { [weak self] in
-                self?.dismiss()
+        guard let current = NSWorkspace.shared.frontmostApplication,
+              identity.matches(WindowProcessIdentity.capture(pid: current.processIdentifier, launchDate: current.launchDate)),
+              !IsSecureEventInputEnabled() else { lastStatus = "读取期间前台应用或安全输入状态已变化。"; return }
+        target = HUDTarget(bundleID: bundleID, identity: identity, generation: generation)
+        items = extracted; searchText = ""; isShowing = true
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+                        styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView], backing: .buffered, defer: false)
+        p.isFloatingPanel = true; p.level = .floating; p.titleVisibility = .hidden
+        p.titlebarAppearsTransparent = true; p.backgroundColor = .clear; p.hasShadow = true; p.center()
+        p.contentView = NSHostingView(rootView: FlyKeyHUDView(controller: self,
+            onSelect: { [weak self] in self?.triggerItem($0) }, onDismiss: { [weak self] in self?.dismiss() }))
+        p.makeKeyAndOrderFront(nil); panel = p
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let target = self.target, let front = NSWorkspace.shared.frontmostApplication,
+                      !IsSecureEventInputEnabled(), AXIsProcessTrusted(),
+                      !self.hasSecureFocusedField(pid: front.processIdentifier),
+                      target.identity.matches(WindowProcessIdentity.capture(pid: front.processIdentifier, launchDate: front.launchDate)) else {
+                    self?.dismiss(); return
+                }
             }
-        )
-        p.contentView = NSHostingView(rootView: rootView)
-        p.makeKeyAndOrderFront(nil)
-        self.panel = p
+        }
+    }
+
+    private func hasSecureFocusedField(pid: pid_t) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let application = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(application, 0.1)
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &raw) == .success,
+              let raw, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+        let field = unsafeBitCast(raw, to: AXUIElement.self); AXUIElementSetMessagingTimeout(field, 0.1)
+        var subrole: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole) == .success else { return false }
+        return subrole as? String == (kAXSecureTextFieldSubrole as String)
     }
 
     public func dismiss() {
-        panel?.orderOut(nil)
-        panel = nil
-        isShowing = false
-        items = []
-        searchText = ""
+        healthTimer?.invalidate(); healthTimer = nil
+        panel?.orderOut(nil); panel = nil; target = nil
+        isShowing = false; items = []; searchText = ""
     }
 
     private func triggerItem(_ item: FlyKeyItem) {
+        guard item.isEnabled, let target, target.generation == generation,
+              !IsSecureEventInputEnabled(), let front = NSWorkspace.shared.frontmostApplication,
+              !hasSecureFocusedField(pid: front.processIdentifier),
+              front.bundleIdentifier == target.bundleID,
+              target.identity.matches(WindowProcessIdentity.capture(pid: front.processIdentifier, launchDate: front.launchDate)) else {
+            dismiss(); lastStatus = "目标、权限或快捷键配置已变化，未执行。"; return
+        }
+        let matchingBinding = item.bindingID.flatMap { id in bindings.first { $0.id == id } }
         dismiss()
-        if let element = item.element {
-            AXUIElementPerformAction(element, kAXPressAction as CFString)
+        if let binding = matchingBinding {
+            guard binding.enabled, (binding.appBundleID.isEmpty || binding.appBundleID == target.bundleID),
+                  InputRules.validationError(binding) == nil else { return }
+            executeBinding?(binding)
+            lastStatus = "已交给动作执行器；请查看该动作的实际结果。"
+        } else if item.bindingID == nil {
+            do {
+                // Resolve the exact menu path again; never press a stale AX element from the HUD snapshot.
+                guard let evidence = item.menuEvidence else {
+                    throw InputMenuEvidenceError.invalid("菜单快照证据缺失，请重新打开快捷键面板。")
+                }
+                try InputMenuAction.perform(evidence: evidence, pid: front.processIdentifier)
+                lastStatus = "系统已接受菜单点按；不代表目标业务已经完成。"
+            } catch { lastStatus = error.localizedDescription }
         }
     }
 
     private func extractMenuShortcuts(pid: pid_t, appName: String) -> [FlyKeyItem] {
-        let appElement = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(appElement, 0.2)
-
-        var menuBarValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBarValue) == .success,
-              let menuBar = menuBarValue as! AXUIElement? else {
-            return []
-        }
-        AXUIElementSetMessagingTimeout(menuBar, 0.2)
-
-        var menuBarChildrenValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(menuBar, kAXChildrenAttribute as CFString, &menuBarChildrenValue) == .success,
-              let topMenus = menuBarChildrenValue as? [AXUIElement] else {
-            return []
-        }
-
-        var results: [FlyKeyItem] = []
-
-        for topItem in topMenus {
-            var titleVal: AnyObject?
-            _ = AXUIElementCopyAttributeValue(topItem, kAXTitleAttribute as CFString, &titleVal)
-            let topTitle = (titleVal as? String) ?? ""
-
-            var subMenuVal: AnyObject?
-            if AXUIElementCopyAttributeValue(topItem, kAXChildrenAttribute as CFString, &subMenuVal) == .success,
-               let subMenus = subMenuVal as? [AXUIElement] {
-                for subMenu in subMenus {
-                    traverseMenu(subMenu, path: [topTitle], appName: appName, results: &results)
+        do {
+            let snapshot = try InputMenuAction.capture(pid: pid)
+            func flatten(_ nodes: [InputMenuAction.TreeNode]) -> [FlyKeyItem] {
+                nodes.flatMap { node in
+                    var own: [FlyKeyItem] = []
+                    if let evidence = node.evidence, !node.shortcutLabel.isEmpty {
+                        var item = FlyKeyItem(title: node.title, path: evidence.path, shortcut: node.shortcutLabel,
+                                              isEnabled: node.enabled, sourceAppName: appName)
+                        item.menuEvidence = evidence; own.append(item)
+                    }
+                    return own + flatten(node.children ?? [])
                 }
             }
-        }
-
-        return results
+            return flatten(snapshot.roots)
+        } catch { lastStatus = error.localizedDescription; return [] }
     }
 
-    private func traverseMenu(_ menu: AXUIElement, path: [String], appName: String, results: inout [FlyKeyItem]) {
-        guard results.count < 300 else { return } // Safe upper limit
-
-        var childrenVal: AnyObject?
-        guard AXUIElementCopyAttributeValue(menu, kAXChildrenAttribute as CFString, &childrenVal) == .success,
-              let items = childrenVal as? [AXUIElement] else {
-            return
-        }
-
-        for item in items {
-            var titleVal: AnyObject?
-            _ = AXUIElementCopyAttributeValue(item, kAXTitleAttribute as CFString, &titleVal)
-            let title = (titleVal as? String) ?? ""
-
-            // Check if item has submenu
-            var subMenuVal: AnyObject?
-            if AXUIElementCopyAttributeValue(item, kAXChildrenAttribute as CFString, &subMenuVal) == .success,
-               let subChildren = subMenuVal as? [AXUIElement], !subChildren.isEmpty {
-                for sub in subChildren {
-                    traverseMenu(sub, path: path + [title], appName: appName, results: &results)
-                }
-                continue
-            }
-
-            // Read shortcut
-            var charVal: AnyObject?
-            _ = AXUIElementCopyAttributeValue(item, kAXMenuItemCmdCharAttribute as CFString, &charVal)
-            var modVal: AnyObject?
-            _ = AXUIElementCopyAttributeValue(item, kAXMenuItemCmdModifiersAttribute as CFString, &modVal)
-
-            let cmdChar = charVal as? String
-            let cmdMod = (modVal as? NSNumber)?.intValue ?? 0
-
-            if let c = cmdChar, !c.isEmpty {
-                var prefix = ""
-                if (cmdMod & 8) != 0 { prefix += "⌃" }
-                if (cmdMod & 4) != 0 { prefix += "⌥" }
-                if (cmdMod & 2) != 0 { prefix += "⇧" }
-                if (cmdMod & 1) == 0 { prefix += "⌘" } // Default on Mac includes command unless inverted
-                let shortcut = prefix + c.uppercased()
-
-                var enabledVal: AnyObject?
-                _ = AXUIElementCopyAttributeValue(item, kAXEnabledAttribute as CFString, &enabledVal)
-                let isEnabled = (enabledVal as? NSNumber)?.boolValue ?? true
-
-                results.append(
-                    FlyKeyItem(
-                        title: title,
-                        path: path + [title],
-                        shortcut: shortcut,
-                        isEnabled: isEnabled,
-                        sourceAppName: appName,
-                        element: item
-                    )
-                )
-            }
-        }
-    }
 }
 
 // MARK: - FlyKey HUD View
@@ -340,17 +292,18 @@ private struct FlyKeyHUDView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(!item.isEnabled)
                     }
                 }
             }
             .frame(maxHeight: 300)
 
             HStack {
-                Text(L10n.text("双击 ⌘ 随时唤出 FlyKey；点击菜单项可直接执行"))
+                Text(L10n.text("点击可用菜单项执行；Esc 退出"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(filteredItems.count) 项快捷键")
+                Text(L10n.format("%ld 项快捷键", filteredItems.count))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -363,5 +316,6 @@ private struct FlyKeyHUDView: View {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
         )
+        .onExitCommand(perform: onDismiss)
     }
 }

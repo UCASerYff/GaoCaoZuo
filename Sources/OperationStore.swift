@@ -15,7 +15,8 @@ struct OperationAction: Identifiable {
     private let sourceDetail: String
     private let localizeTitle: Bool
     var title: String { localizeTitle ? L10n.text(sourceTitle) : sourceTitle }
-    var detail: String { L10n.text(sourceDetail) }
+    var detail: String { unavailableReason.map {L10n.text($0)} ?? L10n.text(sourceDetail) }
+    var unavailableReason: String?
     let icon: String
     let section: OperationSection
     var keywords: String = ""
@@ -72,6 +73,8 @@ struct OperationAction: Identifiable {
         actions += FileEnhancements.actions
         actions += [OperationAction(id:"finder.popup",title:"弹出访达操作菜单",detail:"在当前访达目录选择动作",icon:"cursorarrow.click",section:.files),OperationAction(id:"folder.favorite.add",title:"添加到常用目录",detail:"收藏当前目录",icon:"heart",section:.files)]
         actions += WindowAction.allCases.map { .init(id:"window."+$0.rawValue,title:$0.title,detail:$0 == .restore ? "恢复本次运行保存的位置" : "调整前台目标窗口",icon:$0.icon,section:.windows,keywords:"分屏 布局 窗口") }
+        actions += ExtensionActionCatalog.actions
+        actions += CrossApplicationActions.actions
         return actions
     }
 }
@@ -87,6 +90,12 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     @Published var error: String?
     @Published var busy = false
     @Published var workflowRunning = false
+    @Published private(set) var crossApplicationOperations:Set<UUID> = []
+    var crossApplicationBusy:Bool {!crossApplicationOperations.isEmpty}
+    @discardableResult func beginCrossApplicationOperation() -> UUID {
+        let token=UUID();crossApplicationOperations.insert(token);return token
+    }
+    func endCrossApplicationOperation(_ token:UUID) {crossApplicationOperations.remove(token)}
     @Published var receipts: [FileOperationReceipt] = []
     @Published var awake = false
     @Published var queuedCount = 0
@@ -100,8 +109,10 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     var quickJobs: [QueuedQuickOperation] = []
     var quickJobActive = false
     private var archiveObserver: AnyCancellable?
+    private var snippetObserver: AnyCancellable?
     let data: LocalData
     let clipboard: ClipboardService
+    let snippetLibrary: SnippetLibraryStore
     let windows = WindowManager()
     let input = InputController()
     let archive = ArchiveService()
@@ -111,23 +122,29 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     var showPanel: (() -> Void)?
     var showMain: (() -> Void)?
     var showSettings: (() -> Void)?
+    var showExtensionSettings: ((Int) -> Void)?
     var showPermissions: (() -> Void)?
     var showClipboard: (() -> Void)?
+    var showPasteReview: (() -> Void)?
     var activateForDialog: (() -> Void)?
     var showFeedback: (() -> Void)?
     var requestArchivePassword: ((URL, Bool) async -> String?)?
     var onSettingsChanged: (() -> Void)?
     private var ready = false
+    private(set) var capturedSelection: SelectionSnapshot?
+    private(set) var capturedRuleContext: RuleContext?
+    private var selectionGeneration: UInt64 = 0
     private var workflowTask: Task<Void,Never>?
     private var workflowProcess: Process?
     var version: String { Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "1.00" }
-    var dataHealthy: Bool { data.failure == nil && archiveEnhancements.failure == nil && fileEnhancements.healthy && finderPreferences.data.failure == nil }
+    var dataHealthy: Bool { data.failure == nil && archiveEnhancements.failure == nil && fileEnhancements.healthy && finderPreferences.data.failure == nil && snippetLibrary.healthy }
     init(directory: URL) {
         data = LocalData(directory: directory)
         archiveEnhancements = ArchiveEnhancementController(directory:directory.appendingPathComponent("ArchiveEnhancements",isDirectory:true))
         fileEnhancements = FileEnhancementController(directory:directory)
         finderPreferences = FinderPreferenceController(directory:directory)
         clipboard = ClipboardService(directory: directory)
+        snippetLibrary = SnippetLibraryStore(dataDirectory: directory)
         do {
             if let saved = try data.load("settings.json", as: OperationSettings.self) {
                 guard saved.schema == 1 else { throw DataFailure.message("设置来自更新版本，已保留原资料并停止写入。") }
@@ -142,14 +159,25 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             try data.save(ReceiptDocument(records:receipts), name:"receipts.json")
         } catch { data.block(error.localizedDescription); self.error = error.localizedDescription; ready = true }
         do{try recoverInterruptedMigration()}catch{data.block(error.localizedDescription);self.error=error.localizedDescription}
+        if data.failure == nil {
+            do { try snippetLibrary.migrateLegacy(settings.snippets) }
+            catch { self.error = error.localizedDescription }
+        }
+        snippetObserver = snippetLibrary.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         clipboard.configure(settings)
         archiveObserver = archive.$isRunning.dropFirst().sink { [weak self] running in
             if !running { Task { @MainActor in self?.drainQuickJobs() } }
         }
     }
     private func saveSettings() {
-        do { try data.save(settings, name:"settings.json"); clipboard.configure(settings); onSettingsChanged?() }
-        catch { self.error = error.localizedDescription }
+        // Reconfigure even if persistence fails, so a requested disable takes
+        // effect immediately and unhealthy data stops the runtime listeners.
+        defer {onSettingsChanged?()}
+        do { try data.save(settings, name:"settings.json"); clipboard.configure(settings) }
+        catch {
+            self.error = error.localizedDescription
+            var stopped=settings;stopped.clipboardEnabled=false;clipboard.configure(stopped)
+        }
     }
     func update(_ body: (inout OperationSettings) -> Void) { var value = settings; body(&value); settings = value }
     func toggleFavorite(_ id: String) { update { if $0.favorites.contains(id) { $0.favorites.removeAll {$0 == id} } else { $0.favorites.append(id) } } }
@@ -158,6 +186,8 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         result += settings.windowEnhancements.customLayouts.map{OperationAction(id:"window.custom."+$0.id.uuidString,title:$0.name,detail:"自定义窗口布局",icon:"rectangle.split.2x2",section:.windows,localizeTitle:false)}
         result += fileEnhancements.settings.apps.filter(\.isEnabled).map{OperationAction(id:"file.open."+$0.id.uuidString,title:$0.name,detail:"打开所选文件或目录",icon:"app",section:.files,files:true,localizeTitle:false)}
         result += fileEnhancements.settings.templates.filter(\.isEnabled).map{OperationAction(id:"binaryTemplate."+$0.id.uuidString,title:$0.name,detail:"文件模板",icon:"doc",section:.files,localizeTitle:false)}
+        result += snippetLibrary.snippets.map { OperationAction(id:"snippet.run."+$0.id.uuidString,title:$0.name,detail:$0.shortcut.map { "短语快捷码："+$0 } ?? "常用短语",icon:"text.insert",section:.clipboard,localizeTitle:false) }
+        for index in result.indices {result[index].unavailableReason=CrossApplicationAvailability.shared.unavailableReason(for:result[index].id);ActionRegistry.shared.registerOperationIfMissing(result[index])}
         return result
     }
     var visibleActions: [OperationAction] {
@@ -181,16 +211,34 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     }
     func addFolder() { if let url = chooseDirectory(prompt:"收藏一个常用目录") { update {$0.folders.append(.init(name:url.lastPathComponent,path:url.path))} } }
     func openFolder(_ folder: FavoriteFolder) { if !NSWorkspace.shared.open(URL(fileURLWithPath:folder.path)) { error = "无法打开目录：\(folder.path)" } }
-    func prepare(_ id: String) { prepare(id, files: selection) }
-    func prepare(_ id: String, files: [URL]) {
+    func prepare(_ id: String, targetMode:InputWindowTargetMode = .inheritSettings) { prepare(id, files: selection,targetMode:targetMode) }
+    func captureSelectionForActions() {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        selectionGeneration &+= 1
+        capturedSelection = SelectionSnapshot.capture(generation:selectionGeneration)
+        capturedRuleContext = RuleContext.captureCurrent(generation:selectionGeneration)
+        clipboard.capturePasteTarget()
+    }
+    func prepare(_ id: String, files: [URL],targetMode:InputWindowTargetMode = .inheritSettings) {
+        captureSelectionForActions()
+        let choices = actionChoices
+        if let reason=choices.first(where:{$0.id == id})?.unavailableReason {notify(reason,failed:true);return}
+        if let descriptor = ActionRegistry.shared.descriptor(for:id), !descriptor.requiredPermission.isSatisfied {
+            notify("此动作需要" + descriptor.requiredPermission.title + "权限，请在权限页开启。", failed:true)
+            showPermissions?(); return
+        }
         if id == "finder.popup" { showFinderPopup(); return }
         if id == "panel.show" { showPanel?(); return }
         if id == "clipboard.show" { showClipboard?(); return }
         if id == "workflow.show" { section = .workflows; showMain?(); return }
+        if id.hasPrefix("service."), id == "service.compose" || CrossApplicationActions.entries.contains(where:{$0.id == id}) {
+            guard sheet == nil else {notify("请先完成当前交接或工具窗口",failed:true);showMain?();return}
+            sheet=ToolRequest(actionID:id,title:"跨应用交接",files:files);showMain?();return
+        }
         if id.hasPrefix("workflow.run."), let uuid=UUID(uuidString:String(id.dropFirst(13))),let workflow=settings.workflows.first(where:{$0.id == uuid}) { runWorkflow(workflow); return }
         if id.hasPrefix("window."), let action = WindowAction(rawValue:String(id.dropFirst(7))) {
             Task {
-                do { let outcome = try await windows.perform(action); notify(outcome.message) }
+                do { let outcome = try await windows.perform(action,targetMode:targetMode); notify(outcome.message) }
                 catch { notify(error.localizedDescription, failed:true) }
             }
             return
@@ -198,34 +246,43 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         if id.hasPrefix("system.") {
             do { try SystemActions.perform(id:id); awake = SystemActions.isPreventingSleep; notify(id == "system.preventSleep.toggle" ? (awake ? "保持唤醒已开启" : "保持唤醒已关闭") : "已发送系统请求") } catch { notify(error.localizedDescription,failed:true) }; return
         }
-        if id == "cleaner.start" { CleanerController.shared.startCleaning(); return }
-        if id == "flykey.show" { FlyKeyController.shared.showHUD(); return }
-        if id == "selection.bar.show" {
-            if let snapshot = SelectionSnapshot.capture() {
-                SelectionActionBar.shared.showBar(snapshot: snapshot)
-            } else if let clip = NSPasteboard.general.string(forType: .string), !clip.isEmpty {
-                let fallback = SelectionSnapshot(pid: 0, bundleID: nil, launchIdentity: nil, element: nil, selectedText: clip, range: nil, isFromClipboardFallback: true)
-                SelectionActionBar.shared.showBar(snapshot: fallback)
-            } else {
-                notify("未检测到活动选中文本，请选中文字后重试，或先复制文本", failed: true)
-            }
-            return
+        if id == "cleaner.start" { showExtensionSettings?(12); return }
+        if id == "inputsource.settings" { showExtensionSettings?(10); return }
+        if id == "flykey.settings" { showExtensionSettings?(13); return }
+        if id == "snippet.manager.show" { showExtensionSettings?(11); return }
+        if id.hasPrefix("snippet.run."), let uuid = UUID(uuidString:String(id.dropFirst(12))), let snippet = snippetLibrary.snippets.first(where:{$0.id == uuid}) { executeSnippet(snippet); return }
+        if id == "snippet.paste.last" {
+            guard let uuid=settings.lastSnippetID,let snippet=snippetLibrary.snippets.first(where:{$0.id == uuid}) else { notify("尚未使用过短语，或上一条短语已删除。",failed:true);return }
+            executeSnippet(snippet,mode:.pasteOnly);return
         }
+        if id == "flykey.show" { FlyKeyController.shared.showHUD(); return }
+        if handleSelectionAction(id) { return }
         if id.hasPrefix("inputsource.") {
             handleInputSourceAction(id)
             return
         }
         if id == "clipboard.stack.paste" {
-            do { try clipboard.pasteFromStack(); notify("已粘贴堆栈顶部文本") } catch { notify(error.localizedDescription, failed: true) }
+            do { try clipboard.pasteFromStack(); notify("正在恢复目标并发送堆栈粘贴") } catch { notify(error.localizedDescription, failed: true) }
+            return
+        }
+        if id == "clipboard.stack.push" { do { try clipboard.pushCurrentToStack(); notify("已加入粘贴堆栈") } catch { notify(error.localizedDescription,failed:true) }; return }
+        if id == "clipboard.stack.merge" {
+            do {
+                let text=try PasteStack.shared.mergedText(),board=NSPasteboard.general
+                board.clearContents()
+                guard board.setString(text,forType:.string) else {throw DataFailure.message("无法写入系统剪贴板，堆栈已保留。")}
+                notify("已合并复制文字，堆栈项目保留")
+            } catch {notify(error.localizedDescription,failed:true)}
             return
         }
         if id == "clipboard.stack.clear" {
-            PasteStack.shared.clear()
-            notify("已清空粘贴堆栈")
+            guard confirmClipboardClear(stack:true) else {return}
+            do { try PasteStack.shared.clearDurably(); notify("已清空粘贴堆栈") } catch { notify(error.localizedDescription, failed:true) }
             return
         }
+        if id == "clipboard.clear" {if confirmClipboardClear(stack:false) {clipboard.clearUnpinned()};return}
         if id == "clipboard.pasteplain" {
-            do { try clipboard.pastePlainText(); notify("已发送纯文本粘贴") } catch { notify(error.localizedDescription,failed:true) };return
+            do { try clipboard.pastePlainText(); notify("正在恢复目标并发送纯文本粘贴") } catch { notify(error.localizedDescription,failed:true) };return
         }
         if id == "clipboard.copyplain" {
             guard let text=NSPasteboard.general.string(forType:.string) else {notify("剪贴板没有文字",failed:true);return}
@@ -233,7 +290,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         }
         if (id.hasPrefix("window.layout.") || id.hasPrefix("window.custom.")),let uuid=UUID(uuidString:String(id.dropFirst(14))) {
             Task {
-                do { let outcome = try await windows.performCustomLayout(uuid); notify(outcome.message) }
+                do { let outcome = try await windows.performCustomLayout(uuid,targetMode:targetMode); notify(outcome.message) }
                 catch { notify(error.localizedDescription,failed:true) }
             }
             return
@@ -376,27 +433,5 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         }
         try Task.checkCancellation()
     }
-    private func handleInputSourceAction(_ id: String) {
-        if id == "inputsource.switch.abc" {
-            let success = InputSourceCatalog.shared.selectInputSource(sourceID: "com.apple.keylayout.ABC")
-            notify(success ? "已切换至英文键盘 (ABC)" : "英文输入法不可用", failed: !success)
-        } else if id == "inputsource.switch.pinyin" {
-            let pinyin = InputSourceCatalog.shared.availableKeyboardInputSources().first { $0.id.contains("SCIM") || $0.name.contains("拼音") }
-            if let pinyin {
-                let success = InputSourceCatalog.shared.selectInputSource(sourceID: pinyin.id)
-                notify(success ? "已切换至 \(pinyin.name)" : "切换拼音输入法失败", failed: !success)
-            } else {
-                notify("未找到拼音输入法", failed: true)
-            }
-        } else if id == "inputsource.toggle" {
-            let sources = InputSourceCatalog.shared.availableKeyboardInputSources()
-            guard sources.count >= 2, let current = InputSourceCatalog.shared.currentInputSource() else {
-                notify("当前只有一个可用输入法", failed: true)
-                return
-            }
-            let next = sources.first { $0.id != current.id } ?? sources[0]
-            let success = InputSourceCatalog.shared.selectInputSource(sourceID: next.id)
-            notify(success ? "已切换至 \(next.name)" : "切换输入法失败", failed: !success)
-        }
-    }
+    private func handleInputSourceAction(_ id: String) { performConfiguredInputSource(id) }
 }

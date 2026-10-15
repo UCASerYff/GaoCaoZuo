@@ -169,6 +169,8 @@ final class InputController: ObservableObject {
     private var lastWindowUpdate: TimeInterval = 0
     private var gestureStart: (point: CGPoint, flags: UInt64, app: String)?
     private var desiredRunning = false
+    private var extensionEventDemand = false
+    var onPauseChanged: ((Bool) -> Void)?
     private let enhanced = EnhancedInputEngine()
     private var enhancementError: String?
     private var tapModeError:String?
@@ -205,7 +207,13 @@ final class InputController: ObservableObject {
         isPaused = paused
         gestureStart = nil
         if paused { tearDownTap() } else { start() }
+        onPauseChanged?(paused)
     }
+    func configureExtensionDemand(_ enabled: Bool) {
+        extensionEventDemand = enabled
+        refreshPermission()
+    }
+    func refreshExtensionDemand() { refreshPermission() }
 
     func requestPermission() {
         _ = CGRequestListenEventAccess()
@@ -235,8 +243,9 @@ final class InputController: ObservableObject {
         let authorization=InputListenerAuthorization(monitoring:CGPreflightListenEventAccess(),accessibility:AXIsProcessTrusted())
         permissionGranted = authorization.available
         let needsWindows = WindowInputPolicy.needsEvents(windowsConnected:windows != nil,dragEnabled:windowDragEnabled,snapEnabled:windowSnapEnabled)
-        let hasWork = !bindings.isEmpty || needsWindows || enhanced.needsEvents
-        let wantsActive=enhanced.needsActiveTap && authorization.accessibility
+        let cleaner = CleanerController.shared
+        let hasWork = !bindings.isEmpty || needsWindows || enhanced.needsEvents || extensionEventDemand || cleaner.needsInputEvents
+        let wantsActive=(enhanced.needsActiveTap || cleaner.needsInputEvents) && authorization.accessibility
         let state:InputTapState?=tap.map {port in
             let valid=CFMachPortIsValid(port)
             return InputTapState(authorization:installedAuthorization,active:installedActiveTap,portValid:valid,
@@ -269,9 +278,10 @@ final class InputController: ObservableObject {
     }
 
     private func installTap(authorization:InputListenerAuthorization) {
-        var types: [CGEventType] = [.keyDown, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp, .flagsChanged]
+        var types: [CGEventType] = [.keyDown, .keyUp, .otherMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp, .flagsChanged]
+        if CleanerController.shared.needsInputEvents { types += [.leftMouseDown,.leftMouseUp,.leftMouseDragged,.rightMouseUp,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
         if enhanced.needsEvents { types += [.keyUp,.flagsChanged,.leftMouseDown,.leftMouseUp,.leftMouseDragged,.otherMouseUp,.otherMouseDragged,.scrollWheel,.mouseMoved] }
-        let active=enhanced.needsActiveTap && authorization.accessibility
+        let active=(enhanced.needsActiveTap || CleanerController.shared.needsInputEvents) && authorization.accessibility
         tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
         if WindowInputPolicy.needsEvents(windowsConnected:windows != nil,dragEnabled:windowDragEnabled,snapEnabled:windowSnapEnabled) { types += [.leftMouseDown, .leftMouseDragged, .leftMouseUp] }
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
@@ -280,6 +290,11 @@ final class InputController: ObservableObject {
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
             let consume = MainActor.assumeIsolated { () -> Bool in
                 if event.getIntegerValueField(.eventSourceUserData) == EnhancedInputEngine.syntheticTag { return false }
+                if CleanerController.shared.handleInputEvent(type:type,event:event) { return true }
+                if !controller.isPaused {
+                    InputSourceCoordinator.shared.handleInputActivity(type:type,event:event)
+                    FlyKeyController.shared.handleInputEvent(type:type,event:event)
+                }
                 let consumed = !controller.isPaused && controller.enhanced.receive(type:type,event:event)
                 if !consumed { controller.receive(type:type,event:event) }
                 return consumed
@@ -298,6 +313,7 @@ final class InputController: ObservableObject {
             return
         }
         tap = created; source = createdSource
+        CleanerController.shared.inputSafety.bind(created, active:active)
         installedAuthorization=authorization;installedActiveTap=active
         CFRunLoopAddSource(CFRunLoopGetMain(), createdSource, .commonModes)
         CGEvent.tapEnable(tap: created, enable: true)
@@ -305,6 +321,8 @@ final class InputController: ObservableObject {
     }
 
     private func tearDownTap() {
+        CleanerController.shared.inputChannelInvalidated()
+        CleanerController.shared.inputSafety.bind(nil, active:false)
         tapGeneration &+= 1
         enhanced.stop()
         gestureStart = nil
@@ -396,9 +414,8 @@ final class InputController: ObservableObject {
                 }
             }
         case .flagsChanged:
-            FlyKeyController.shared.handleFlagsChanged(event: event)
+            break
         case .keyDown:
-            FlyKeyController.shared.resetTapDetector()
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
             matched = InputRules.match(in: bindings, trigger: .hotkey, modifiers: flags,
                                        keyCode: UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode)), appBundleID: app)

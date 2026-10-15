@@ -87,7 +87,9 @@ extension FileEnhancementController {
         }
     }
     private func sendGaoAction(id:String,files:[URL],directory:URL,store:OperationStore) {
+        let operation=store.beginCrossApplicationOperation()
         Task { @MainActor in
+            defer {store.endCrossApplicationOperation(operation)}
             do {
                 let action:String,target:String
                 var inputs:[URL]=[],references:[GaoActionReference]=[],parameters:[String:Any]=[:]

@@ -3,7 +3,7 @@
 The caller enforces an OS write-denial sandbox for list/test/stream operations.
 """
 import ctypes as C
-import datetime, io, os, pathlib, stat, sys
+import datetime, io, json, os, pathlib, stat, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import acefile
 
@@ -162,6 +162,76 @@ def zip_adapter(command,path,member,password,encoding,limit):
     finally:
         if isinstance(source,SplitZIP):source.close()
 
+def batch_request(limit):
+    # The request is private stdin, following the password line. Never argv, logs,
+    # a public pasteboard, or an archive-controlled output directory.
+    data=sys.stdin.buffer.read(16*1024**2+1)
+    if len(data)>16*1024**2:raise ValueError('batch request exceeds byte budget')
+    rows=json.loads(data)
+    if not isinstance(rows,list) or len(rows)>100000:raise ValueError('batch request exceeds entry budget')
+    result={};total=0
+    for index,row in enumerate(rows):
+        if not isinstance(row,dict) or set(row)!={'path','size'}:raise ValueError('invalid batch request')
+        name=row['path'];length=row['size']
+        if not isinstance(name,str) or not isinstance(length,int) or isinstance(length,bool) or length<0 or name in result:raise ValueError('invalid batch member')
+        safe(name);total+=length
+        if total>limit:raise ValueError('archive byte budget exceeded')
+        result[name]=(index,length)
+    return result
+
+def batch(path,password,encoding,limit):
+    wanted=batch_request(limit);seen=set();output=sys.stdout.buffer
+    def emit(name,length,blocks):
+        if name not in wanted:return
+        index,expected=wanted[name]
+        if name in seen or length!=expected:raise ValueError('batch member identity or size changed')
+        seen.add(name);output.write(struct.pack('>IQ',index,expected));total=0
+        for b in blocks:
+            total+=len(b)
+            if total>expected:raise ValueError('batch member exceeds declared size')
+            output.write(b)
+        if total!=expected:raise ValueError('batch member is incomplete')
+    if path.lower().endswith(('.zip','.zip.001')):
+        import pyzipper
+        source=SplitZIP(path) if path.endswith('.001') else path
+        try:
+            with pyzipper.AESZipFile(source,'r') as archive:
+                if password:archive.setpassword(password.encode('utf-8'))
+                for info in archive.infolist():
+                    name=info.filename
+                    if not info.flag_bits & 0x800 and encoding!='auto':name=name.encode('cp437').decode(encoding,'strict')
+                    if name not in wanted:continue
+                    if info.is_dir() or stat.S_ISLNK((info.external_attr>>16)&0xffff):raise ValueError('batch member type changed')
+                    with archive.open(info) as stream:
+                        emit(name,info.file_size,iter(lambda:stream.read(65536),b''))
+        finally:
+            if isinstance(source,SplitZIP):source.close()
+    elif path.lower().endswith('.7z'):
+        # The host only selects this route for checked, unencrypted Copy/LZMA2
+        # archives. A single reader preserves the solid decoder's state.
+        if password:raise ValueError('encrypted 7z batch is unsupported')
+        a=new();filters(a);support(a)
+        try:
+            check(readopen(a,os.fsencode(path),65536),a)
+            entry=P();buffer=C.create_string_buffer(65536)
+            def blocks():
+                while True:
+                    length=check(read(a,buffer,len(buffer)),a)
+                    if not length:return
+                    yield buffer.raw[:length]
+            while True:
+                code=nextheader(a,C.byref(entry))
+                if code==1:break
+                check(code,a);rawname=pathname(entry) or pathnamefallback(entry)
+                name=rawname.decode('utf-8','strict') if rawname else ''
+                if name not in wanted:continue
+                if not stat.S_ISREG(mode(entry)) or symlink(entry) or hardlink(entry) or encrypted(entry)>0:raise ValueError('batch member type changed')
+                emit(name,size(entry),blocks())
+        finally:readfree(a)
+    else:raise ValueError('unsupported batch container')
+    if len(seen)!=len(wanted):raise ValueError('batch member not found')
+    output.write(struct.pack('>IQ',0xffffffff,0));output.flush()
+
 def create(path,names,password,level,excludes):
     import pyzipper, fnmatch
     compression=pyzipper.ZIP_STORED if level==0 else pyzipper.ZIP_DEFLATED
@@ -216,6 +286,8 @@ def main():
     password=sys.stdin.buffer.readline(4097).rstrip(b'\r\n').decode('utf-8')
     encoding=next((a[15:] for a in flags if a.startswith('--gao-encoding=')),'auto')
     limit=int(next((a[12:] for a in flags if a.startswith('--gao-limit=')),20*1024**3))
+    if command=='b':
+        batch(paths[0],password,encoding,limit);return
     if command=='a':
         level=int(next((a[4:] for a in flags if a.startswith('-mx=')),'5'))
         create(paths[0],paths[1:],password,level,[a[4:] for a in flags if a.startswith('-xr!')])

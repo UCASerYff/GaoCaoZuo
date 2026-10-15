@@ -53,11 +53,12 @@ struct InputEffect:Codable,Equatable {
     var systemPreset = "missionControl"
     var menuBundleID = ""
     var menuPath:[String] = []
+    var menuEvidence:InputMenuEvidence?
     var mouseModifiers:UInt64 = 0
     var openTargets:[String] = []
     var windowTargetMode:InputWindowTargetMode = .inheritSettings
     init() {}
-    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset,menuBundleID,menuPath,mouseModifiers,openTargets,windowTargetMode}
+    enum CodingKeys:String,CodingKey {case kind,actionID,keyCode,modifiers,script,mouseButton,scrollX,scrollY,systemPreset,menuBundleID,menuPath,menuEvidence,mouseModifiers,openTargets,windowTargetMode}
     init(from decoder:Decoder)throws {
         self.init();let c=try decoder.container(keyedBy:CodingKeys.self)
         kind=try c.decodeIfPresent(InputEffectKind.self,forKey:.kind) ?? .action
@@ -71,6 +72,7 @@ struct InputEffect:Codable,Equatable {
         systemPreset=try c.decodeIfPresent(String.self,forKey:.systemPreset) ?? "missionControl"
         menuBundleID=try c.decodeIfPresent(String.self,forKey:.menuBundleID) ?? ""
         menuPath=try c.decodeIfPresent([String].self,forKey:.menuPath) ?? []
+        menuEvidence=try c.decodeIfPresent(InputMenuEvidence.self,forKey:.menuEvidence)
         mouseModifiers=try c.decodeIfPresent(UInt64.self,forKey:.mouseModifiers) ?? 0
         openTargets=try c.decodeIfPresent([String].self,forKey:.openTargets) ?? []
         windowTargetMode=try c.decodeIfPresent(InputWindowTargetMode.self,forKey:.windowTargetMode) ?? .inheritSettings
@@ -187,6 +189,9 @@ enum EnhancedInputValidation {
         if rule.effect.kind == .systemPreset && !EnhancedSystemPreset.allCases.map(\.rawValue).contains(rule.effect.systemPreset) {return L10n.text("系统动作无效")}
         if rule.effect.kind == .appleScript && (rule.effect.script.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || rule.effect.script.utf8.count>65536) {return L10n.text("脚本为空或超过 64 KiB")}
         if rule.effect.kind == .menuItem && (rule.effect.menuBundleID.isEmpty || rule.effect.menuBundleID.utf8.count>256 || !(2...10).contains(rule.effect.menuPath.count) || !rule.effect.menuPath.allSatisfy({!$0.isEmpty && $0.utf8.count<=1024})) {return L10n.text("请选择目标应用和完整菜单路径")}
+        if rule.effect.kind == .menuItem,let evidence=rule.effect.menuEvidence {
+            do {try evidence.validate(path:rule.effect.menuPath,bundleID:rule.effect.menuBundleID)} catch {return error.localizedDescription}
+        }
         if rule.effect.kind == .action && rule.effect.actionID.isEmpty {return L10n.text("请选择动作")}
         if rule.effect.kind == .openTargets {do {_=try InputOpenTargets.urls(rule.effect.openTargets)} catch {return error.localizedDescription}}
         return nil

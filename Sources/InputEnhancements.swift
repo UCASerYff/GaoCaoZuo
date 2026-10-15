@@ -299,7 +299,11 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             case .systemPreset:
                 guard let preset=EnhancedSystemPreset(rawValue:effect.systemPreset) else {throw SystemControlError.message("未知系统动作。")};try EnhancedSystemControls.perform(preset)
             case .appleScript:try executeScript(effect.script)
-            case .menuItem:try InputMenuAction.perform(path:effect.menuPath,bundleID:effect.menuBundleID,pid:pid)
+            case .menuItem:
+                guard let evidence=effect.menuEvidence else {throw SystemControlError.message("旧菜单规则缺少应用、角色和快捷键证据；原路径保留，请在规则编辑中重新选择菜单。")}
+                try evidence.validate(path:effect.menuPath,bundleID:effect.menuBundleID)
+                try InputMenuAction.perform(evidence:evidence,pid:pid)
+                report?("系统已接受菜单点按；目标应用的业务结果尚未验证。")
             case .openTargets:try InputOpenTargets.perform(effect.openTargets);report?("打开请求已递交；目标应用的后续操作尚未验证。")
             }
         } catch {report?(error.localizedDescription)}
