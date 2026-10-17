@@ -65,6 +65,14 @@ enum InputRules {
         }
         return "\(binding.trigger.rawValue):\(binding.modifiers & modifierMask):\(detail):\(binding.appBundleID)"
     }
+    /// The HUD and the runtime use the same specificity rule. Keep same-scope
+    /// duplicates for conflict reporting; hide a global trigger shadowed by this App.
+    static func effectiveBindings(in bindings:[InputBinding],appBundleID:String)->[InputBinding] {
+        let active=bindings.filter{$0.enabled && ($0.appBundleID.isEmpty || $0.appBundleID==appBundleID)}
+        func triggerKey(_ value:InputBinding)->String {var key=value;key.appBundleID="";return signature(key)}
+        let specific=Set(active.filter{!$0.appBundleID.isEmpty}.map(triggerKey))
+        return active.filter{!$0.appBundleID.isEmpty || !specific.contains(triggerKey($0))}
+    }
     static func conflictingIDs(in bindings: [InputBinding]) -> Set<UUID> {
         let groups = Dictionary(grouping: bindings.filter(\.enabled), by: signature)
         return Set(groups.values.filter { $0.count > 1 }.flatMap { $0.map(\.id) })
@@ -92,8 +100,10 @@ enum InputRules {
     }
     static func match(in bindings: [InputBinding], trigger: InputTrigger, modifiers: UInt64,
                       keyCode: UInt16 = 0, mouseButton: Int = 0, direction: String = "", appBundleID: String) -> InputBinding? {
-        let matching = bindings.filter {
-            guard $0.enabled, $0.trigger == trigger, $0.modifiers & modifierMask == modifiers & modifierMask,
+        let effective=effectiveBindings(in:bindings,appBundleID:appBundleID)
+        let conflicts=conflictingIDs(in:effective)
+        let matching = effective.filter {
+            guard !conflicts.contains($0.id),validationError($0)==nil,$0.enabled, $0.trigger == trigger, $0.modifiers & modifierMask == modifiers & modifierMask,
                   $0.appBundleID.isEmpty || $0.appBundleID == appBundleID else { return false }
             switch trigger { case .hotkey: return $0.keyCode == keyCode; case .mouseButton: return $0.mouseButton == mouseButton; case .gesture: return $0.direction == direction }
         }
@@ -170,6 +180,8 @@ final class InputController: ObservableObject {
     private var gestureStart: (point: CGPoint, flags: UInt64, app: String)?
     private var desiredRunning = false
     private var extensionEventDemand = false
+    private var lifecycleObservers:[NSObjectProtocol]=[]
+    private var sleepingOrInactive=false
     var onPauseChanged: ((Bool) -> Void)?
     private let enhanced = EnhancedInputEngine()
     private var enhancementError: String?
@@ -182,7 +194,7 @@ final class InputController: ObservableObject {
         tearDownTap()
         let conflicting = InputRules.conflictingIDs(in: bindings)
         let invalid = bindings.filter { $0.enabled && InputRules.validationError($0) != nil }
-        self.bindings = bindings.filter { $0.enabled && !conflicting.contains($0.id) && InputRules.validationError($0) == nil }
+        self.bindings = bindings.filter { $0.enabled && InputRules.validationError($0) == nil }
         self.handler = handler
         enhancementError = nil
         enhanced.configure(enhancements, excludedApps: Set(excludedApps), handler: handler) { [weak self] message in
@@ -225,6 +237,19 @@ final class InputController: ObservableObject {
 
     func start() {
         desiredRunning = true
+        if lifecycleObservers.isEmpty {
+            let center=NSWorkspace.shared.notificationCenter
+            for name in [NSWorkspace.willSleepNotification,NSWorkspace.sessionDidResignActiveNotification] {
+                lifecycleObservers.append(center.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
+                    MainActor.assumeIsolated {self?.sleepingOrInactive=true;self?.tearDownTap();FlyKeyController.shared.resetTapDetector()}
+                })
+            }
+            for name in [NSWorkspace.didWakeNotification,NSWorkspace.sessionDidBecomeActiveNotification] {
+                lifecycleObservers.append(center.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
+                    MainActor.assumeIsolated {self?.sleepingOrInactive=false;self?.refreshPermission()}
+                })
+            }
+        }
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshPermission() }
@@ -235,6 +260,8 @@ final class InputController: ObservableObject {
 
     func stop() {
         desiredRunning = false
+        for token in lifecycleObservers {NSWorkspace.shared.notificationCenter.removeObserver(token)}
+        lifecycleObservers=[];sleepingOrInactive=false
         timer?.invalidate(); timer = nil
         tearDownTap()
     }
@@ -252,7 +279,7 @@ final class InputController: ObservableObject {
                                  sourceValid:source.map{CFRunLoopSourceIsValid($0)} ?? false,
                                  enabled:valid && CGEvent.tapIsEnabled(tap:port))
         }
-        switch InputTapLifecycle.decision(running:desiredRunning,paused:isPaused,hasWork:hasWork,
+        switch InputTapLifecycle.decision(running:desiredRunning && !sleepingOrInactive,paused:isPaused,hasWork:hasWork,
                                           authorization:authorization,wantsActive:wantsActive,tap:state) {
         case .stop:
             tearDownTap()
@@ -439,10 +466,15 @@ final class InputController: ObservableObject {
         }
         if let matched {
             // Defer work outside the event-tap callback, which the system expects to return promptly.
-            let action = matched.actionID
+            let action = matched.actionID,capturedGeneration=tapGeneration
+            guard let front,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isPaused,
-                      !self.excludedApps.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "") else { return }
+                guard let self,!self.isPaused,self.desiredRunning,!self.sleepingOrInactive,
+                      self.tapGeneration==capturedGeneration,!IsSecureEventInputEnabled(),
+                      let current=NSWorkspace.shared.frontmostApplication,!current.isTerminated,
+                      current.bundleIdentifier==app,!self.excludedApps.contains(app),
+                      identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)),
+                      self.bindings.contains(where:{$0==matched}) else { return }
                 self.handler?(action)
             }
         }
@@ -476,6 +508,7 @@ final class InputController: ObservableObject {
 
     isolated deinit {
         timer?.invalidate()
+        for token in lifecycleObservers {NSWorkspace.shared.notificationCenter.removeObserver(token)}
         if let source { CFRunLoopSourceInvalidate(source) }
         if let tap { CFMachPortInvalidate(tap) }
     }

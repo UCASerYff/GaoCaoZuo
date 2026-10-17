@@ -62,6 +62,13 @@ struct FinderMenuPreferences: Codable {
         for (key,value) in unknownFields {try c.encode(value,forKey:.init(key))}
         try c.encode(schema,forKey:.init("schema"));try c.encode(items,forKey:.init("items"));try c.encode(showIcons,forKey:.init("showIcons"));try c.encode(mergeInSubmenu,forKey:.init("mergeInSubmenu"));try c.encode(includeExternalVolumes,forKey:.init("includeExternalVolumes"));try c.encode(showToolbar,forKey:.init("showToolbar"));try c.encode(excludedPaths,forKey:.init("excludedPaths"));try c.encode(excludedApps,forKey:.init("excludedApps"))
     }
+    static func displayTitle(_ item:FinderMenuItemDefinition)->String {
+        defaults.first(where:{$0.id == item.id})?.title == item.title ? L10n.text(item.title) : item.title
+    }
+    static func storedTitle(_ displayed:String,for id:String)->String {
+        if let title=defaults.first(where:{$0.id == id})?.title,displayed == L10n.text(title) {return title}
+        return displayed
+    }
     static var defaults: [FinderMenuItemDefinition] {
         let groups: [(String,[(String,String,String)])] = [
             ("压缩",[("archive.create","压缩为 ZIP","archivebox"),("archive.7z","压缩为 7Z","archivebox.fill"),("archive.extract","直接解压","shippingbox"),("archive.list","预览压缩包…","list.bullet.rectangle"),("archive.custom","自定义压缩…","slider.horizontal.3"),("archive.extract.custom","解压到其他目录…","folder")]),

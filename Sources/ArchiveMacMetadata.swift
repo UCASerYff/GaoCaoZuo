@@ -65,10 +65,13 @@ enum ArchiveMacMetadata {
     static func restore(in root: URL) throws {
         let metadata = root.appendingPathComponent("__MACOSX", isDirectory: true)
         guard (try? fm.attributesOfItem(atPath: metadata.path)[.type] as? FileAttributeType) == .typeDirectory else { return }
-        var restored: [URL] = []
+        var restored: [URL] = [], directories: [URL] = []
+        // Keep the original no-follow walk for both restoration and cleanup.
+        // A second Foundation recursive enumeration used to rescan the entire
+        // metadata tree and could hide AppleDouble names from cleanup planning.
         for url in try allURLs(in: metadata) {
             let attributes = try fm.attributesOfItem(atPath: url.path)
-            if attributes[.type] as? FileAttributeType == .typeDirectory { continue }
+            if attributes[.type] as? FileAttributeType == .typeDirectory { directories.append(url); continue }
             guard attributes[.type] as? FileAttributeType == .typeRegular, url.lastPathComponent.hasPrefix("._") else { continue }
             let relative = String(url.path.dropFirst(metadata.path.count + 1))
             var components = relative.split(separator: "/").map(String.init)
@@ -91,9 +94,7 @@ enum ArchiveMacMetadata {
         }
         for url in restored { try fm.removeItem(at: url) }
         // Preserve unrelated user files in a __MACOSX directory; only remove empty sidecar directories.
-        let paths = try fm.subpathsOfDirectory(atPath: metadata.path).sorted { $0.count > $1.count }
-        for path in paths {
-            let url = metadata.appendingPathComponent(path)
+        for url in directories.sorted(by: { $0.path.count > $1.path.count }) {
             if (try? fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeDirectory, try fm.contentsOfDirectory(atPath: url.path).isEmpty { try fm.removeItem(at: url) }
         }
         if try fm.contentsOfDirectory(atPath: metadata.path).isEmpty { try fm.removeItem(at: metadata) }

@@ -71,3 +71,7 @@ references是待核实原件描述，不是访问授权、可信身份或删除�
 `Tests/GaoActionTests.swift`包含同名V1固定fixture和安全/状态回归：newText、实际目录identity、ocrPartial、duplicate、expired、pathTraversal、unknownAction、v2Unsupported，以及参数/目标/TTL/nonce、父级链接/硬链接、限额、复制中变更、确认期间变更、持久重放、pending后续结果、崩溃恢复和能力表缺失/不兼容。测试使用隔离临时资料；模拟应用不启动、不开权限、不处理真实用户文件。
 
 这些测试只证明本项目消费端的对应行为。必须使用实际安装双方、实际用户确认与真实产物完成至少一份双方生成包的互换，才能证明端到端接入。缺提供方、能力表、设备或授权时应继续标未验收/阻塞，并保留原替代软件。
+
+## V1.09 提供方约束复核
+
+客户端读取可选 referencesSchema，核验实际引用的数量、kind及声明的受支持约束；未知约束明确拒绝。新发、历史重递交、异步打包完成后的最终发送使用同一门控，提供方更新后不沿用旧假定。重复文件选项只有实际提供方声明该mode才启用。能力声明与客户端fixture不能替代双方业务产物和receipt验收。

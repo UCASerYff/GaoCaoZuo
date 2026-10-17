@@ -120,5 +120,28 @@ func runArchiveBatchStreamTests() throws {
         do { _ = try ArchiveBatchSnapshot.capture(source, in: root.appendingPathComponent("cancelled"), maximumBytes: 5, cancellation: cancellation); throw NSError(domain: "ArchiveBatchTests", code: 9) }
         catch ArchiveError.cancelled { checks += 1 }
     }
+    do {
+        let parent = try directory(), first = parent.appendingPathComponent("原创.zip.001"), second = parent.appendingPathComponent("原创.zip.002")
+        let original = Data("first volume".utf8), tail = Data("second volume".utf8)
+        try original.write(to: first); try tail.write(to: second)
+        try Data("unrelated prefix".utf8).write(to: parent.appendingPathComponent("原创-other.zip.003"))
+        try expect(try ArchiveReadSnapshot.numericMembers(first) == [first, second], "numeric stream membership is exact, ordered, and excludes nearby prefixes")
+        let snapshot = try ArchiveReadSnapshot.capture(first, in: parent.appendingPathComponent("snapshot"), maximumBytes: 1_024, cancellation: .init(deadline: .distantFuture))
+        try expect(try Data(contentsOf: snapshot.url) == original && Data(contentsOf: snapshot.url.deletingLastPathComponent().appendingPathComponent(second.lastPathComponent)) == tail, "every numeric volume is copied into one decoder-only directory")
+        try snapshot.verify()
+        try Data("changed bytes".utf8).write(to: second)
+        do { try snapshot.verify(); throw NSError(domain: "ArchiveBatchTests", code: 10) } catch FileToolsError.changed { checks += 1 }
+        try expect(try Data(contentsOf: snapshot.url.deletingLastPathComponent().appendingPathComponent(second.lastPathComponent)) == tail, "later-volume mutation never changes decoder bytes")
+        try tail.write(to: second)
+        let third = parent.appendingPathComponent("原创.zip.003")
+        try tail.write(to: third); try fm.removeItem(at: second)
+        do { _ = try ArchiveReadSnapshot.numericMembers(first); throw NSError(domain: "ArchiveBatchTests", code: 11) } catch ArchiveError.invalid { checks += 1 }
+        try tail.write(to: second)
+        do { _ = try ArchiveReadSnapshot.capture(first, in: parent.appendingPathComponent("too-small"), maximumBytes: UInt64(original.count), cancellation: .init(deadline: .distantFuture)); throw NSError(domain: "ArchiveBatchTests", code: 12) } catch ArchiveError.invalid { checks += 1 }
+        do { _ = try ArchiveReadSnapshot.numericMembers(second); throw NSError(domain: "ArchiveBatchTests", code: 13) } catch ArchiveError.invalid { checks += 1 }
+        let held = parent.appendingPathComponent("held-second"); try fm.moveItem(at: second, to: held)
+        try fm.createSymbolicLink(at: second, withDestinationURL: held)
+        do { _ = try ArchiveReadSnapshot.capture(first, in: parent.appendingPathComponent("linked-volume"), maximumBytes: 1_024, cancellation: .init(deadline: .distantFuture)); throw NSError(domain: "ArchiveBatchTests", code: 14) } catch let failure as NSError where failure.domain == NSPOSIXErrorDomain { checks += 1 }
+    }
     print("Archive batch framing / FD / snapshot tests passed (\(checks) checks)")
 }

@@ -83,14 +83,14 @@ import UniformTypeIdentifiers
                 Button("添加 AppleScript") {configuration.scriptLibrary.append(InputScript())}
                 Text("脚本按绑定运行，最长15秒；系统自动化授权由目标应用按需请求。导入的脚本默认不执行，请先审阅。").font(.caption).foregroundStyle(.secondary)
             }
-            Section("文件夹同步") {
-                TextField("同步目录",text:$configuration.syncFolder)
+            Section("文件夹备份与交换") {
+                TextField("备份目录",text:$configuration.syncFolder)
                 HStack {
-                    Button("选择 iCloud Drive 或其他同步文件夹") {let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;if panel.runModal() == .OK,let url=panel.url {configuration.syncFolder=url.path}}
-                    Button("写入同步副本") {writeSync()}.disabled(configuration.syncFolder.isEmpty)
-                    Button("读取同步副本") {readSync()}.disabled(configuration.syncFolder.isEmpty)
+                    Button("选择备份或交换文件夹") {let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;if panel.runModal() == .OK,let url=panel.url {configuration.syncFolder=url.path}}
+                    Button("写入备份") {writeSync()}.disabled(configuration.syncFolder.isEmpty)
+                    Button("读取备份") {readSync()}.disabled(configuration.syncFolder.isEmpty)
                 }
-                Text("同步副本由所选文件夹的云服务传输。读取采用合并并保持新规则暂停；不会静默覆盖本机规则。此处不等同于 BAB 私有云服务或无损格式兼容。").font(.caption).foregroundStyle(.secondary)
+                Text("仅手动写入或读取备份。是否跨设备传输取决于所选文件夹的服务；本应用没有实时同步或多端冲突协议。读取时保留本机修改并暂停新规则；原有副本先备份。").font(.caption).foregroundStyle(.secondary)
             }
             Section("HID 鼠标设备") {HIDDeviceConfigurationView(profiles:$configuration.hidProfiles,actions:actions)}
             Section("设备实测") {InputDeviceTestView()}
@@ -117,10 +117,10 @@ import UniformTypeIdentifiers
     private func syncURL()throws->URL {
         let directory=URL(fileURLWithPath:configuration.syncFolder,isDirectory:true)
         var isDirectory:ObjCBool=false
-        guard FileManager.default.fileExists(atPath:directory.path,isDirectory:&isDirectory),isDirectory.boolValue else{throw SystemControlError.message("同步目录不存在或无法读取，请重新选择。")}
+        guard FileManager.default.fileExists(atPath:directory.path,isDirectory:&isDirectory),isDirectory.boolValue else{throw SystemControlError.message("备份目录不存在或无法读取，请重新选择。")}
         return directory.appendingPathComponent("搞操作输入规则.json")
     }
-    private func writeSync() {do {let url=try syncURL();if FileManager.default.fileExists(atPath:url.path) {let old=try Data(contentsOf:url);let backup=url.deletingLastPathComponent().appendingPathComponent("搞操作输入规则-备份-"+UUID().uuidString+".json");try old.write(to:backup,options:.withoutOverwriting)};try EnhancedRuleFiles.write(configuration,to:url);message="同步副本已写入；原有副本已备份。"} catch {message=error.localizedDescription}}
+    private func writeSync() {do {let url=try syncURL();if FileManager.default.fileExists(atPath:url.path) {let old=try Data(contentsOf:url);let backup=url.deletingLastPathComponent().appendingPathComponent("搞操作输入规则-备份-"+UUID().uuidString+".json");try old.write(to:backup,options:.withoutOverwriting)};try EnhancedRuleFiles.write(configuration,to:url);message="规则备份已写入；原有副本已保留。"} catch {message=error.localizedDescription}}
     private func readSync() {do {let result=try EnhancedRuleFiles.read(syncURL());message=try merge(result.configuration) ?? result.note} catch {message=error.localizedDescription}}
 }
 

@@ -43,6 +43,7 @@ def legacy_zip(filename, data):
     central=struct.pack('<IHHHHHHIIIHHHHHII',0x02014b50,20,20,0,0,0,0,crc,len(data),len(data),len(filename),0,0,0,0,0,0)+filename
     return local+central+struct.pack('<IHHHHIIH',0x06054b50,0,0,1,1,len(central),len(local),0)
 (root/'cp932.zip').write_bytes(legacy_zip('\u30c6\u30b9\u30c8.txt'.encode('cp932'),payload))
+(root/'gbk.zip').write_bytes(legacy_zip('中文文件.txt'.encode('gbk'),payload))
 (root/'payload.txt').write_bytes(payload)
 
 # Small self-generated containers using public formats and macOS independent tools.
@@ -65,6 +66,13 @@ header=struct.pack('<4sIIIIIBBHHHHH',b'MSCF',0,cab_size,0,files_offset,0,3,1,1,1
 folder=struct.pack('<IHH',data_offset,1,0)
 file_entry=struct.pack('<IIHHHH',len(payload),0,0,0,0,0x20)+name
 (root/'original.cab').write_bytes(header+folder+file_entry+struct.pack('<IHH',0,len(payload),len(payload))+payload)
+# MSZIP is CK plus a raw RFC 1951 stream, in a single <=32 KiB block.
+# Microsoft primary specification: https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-mci/3048c471-f739-4d30-bcb3-a962cfe84a69
+compressor=zlib.compressobj(wbits=-15)
+compressed=b'CK'+compressor.compress(payload)+compressor.flush()
+compressed_header=struct.pack('<4sIIIIIBBHHHHH',b'MSCF',0,data_offset+8+len(compressed),0,files_offset,0,3,1,1,1,0,0,0)
+compressed_folder=struct.pack('<IHH',data_offset,1,1)
+(root/'mszip.cab').write_bytes(compressed_header+compressed_folder+file_entry+struct.pack('<IHH',0,len(compressed),len(payload))+compressed)
 with tempfile.TemporaryDirectory(prefix='gao-iso-') as temporary:
     iso_source=pathlib.Path(temporary)/'source';iso_source.mkdir();(iso_source/'hello.txt').write_bytes(payload)
     # hdiutil is Apple's independent ISO producer, not part of our decoder.

@@ -103,6 +103,7 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
                 do {
                     try self.buildTree(value.items); self.document = value
                     self.status.stringValue = L10n.format("已读取 %ld 项；原压缩包保持不变。", value.items.count)
+                    if let reason = value.editCopyUnavailableReason { self.status.stringValue += "\n" + L10n.text(reason) }
                     self.preview.showMessage(L10n.text("选择一个普通文件以预览内容。"))
                 } catch { self.document = nil; self.preview.showMessage(error.localizedDescription); self.status.stringValue = error.localizedDescription }
             case .success(.readOnly(let listing)):
@@ -169,6 +170,8 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         let ready = !working && document != nil
         actionButtons.forEach { $0.isEnabled = ready }; editButtons.forEach { $0.isEnabled = ready && document?.canEditCopy == true }
         cleanHidden.isEnabled = ready && document?.canEditCopy == true
+        let reason = document?.editCopyUnavailableReason.map { L10n.text($0) }
+        editButtons.forEach { $0.toolTip = reason }; cleanHidden.toolTip = reason; copyName.toolTip = reason
         selectedButtons.forEach { $0.isEnabled = $0.isEnabled && !selectedNodes.isEmpty }
         extractName.isEnabled = !working; copyName.isEnabled = !working
     }

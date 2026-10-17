@@ -58,12 +58,38 @@ def iwa_uncompress(source):
     return bytes(out)
 
 count = 0
-for ext, main in [('docx','word/document.xml'),('xlsx','xl/workbook.xml'),('pptx','ppt/presentation.xml')]:
+def verify_private_markers(data, ext):
+    lowered = data.lower()
+    assert b'/users/' not in lowered, f'Local path in {ext} asset'
+    if len(LOCAL_ACCOUNT) > 4:
+        assert LOCAL_ACCOUNT not in lowered, f'Account marker in {ext} asset'
+    assert not re.search(rb'[a-z0-9_.+\-]+@(?:qq|163|gmail|outlook|icloud)\.com', lowered), f'Email in {ext} asset'
+
+for ext, main, content_type in [
+    ('docx','word/document.xml','application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'),
+    ('xlsx','xl/workbook.xml','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'),
+    ('pptx','ppt/presentation.xml','application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml')]:
     with zipfile.ZipFile(ROOT / ('Blank.'+ext)) as archive:
         assert archive.testzip() is None
         assert main in archive.namelist()
+        types = ET.fromstring(archive.read('[Content_Types].xml'))
+        assert any(node.attrib.get('PartName') == '/'+main and node.attrib.get('ContentType') == content_type for node in types), f'Wrong native content type: {ext}'
+        package_rels = ET.fromstring(archive.read('_rels/.rels'))
+        assert any(node.attrib.get('Type','').endswith('/officeDocument') and node.attrib.get('Target') == main for node in package_rels), f'Wrong native document relationship: {ext}'
         for name in archive.namelist():
-            if name.endswith('.xml') or name.endswith('.rels'): ET.fromstring(archive.read(name))
+            assert not any(part in ('..','') for part in name.split('/')), f'Invalid package path: {ext}'
+            assert not name.lower().endswith(('.exe','.js','.vbs')) and 'vbaproject' not in name.lower(), f'Unexpected executable part: {ext}'
+            # PPTX may contain a native non-executable printerSettings binary.
+            # Check known private markers in both ordinary and UTF-16 text.
+            source=archive.read(name)
+            verify_private_markers(source, ext)
+            if name.endswith('.bin'):
+                for encoding in ['utf-16-le','utf-16-be']:
+                    verify_private_markers(source.decode(encoding,errors='ignore').encode('utf-8'), ext)
+            if name.endswith('.xml') or name.endswith('.rels'):
+                element=ET.fromstring(source)
+                if name.endswith('.rels'):
+                    assert all(node.attrib.get('TargetMode') != 'External' for node in element), f'External relationship in blank {ext}'
         core = ET.fromstring(archive.read('docProps/core.xml'))
         for node in core:
             if node.tag.endswith('creator') or node.tag.endswith('lastModifiedBy'):
@@ -79,11 +105,7 @@ for ext in ['pages','numbers','key']:
             data = archive.read(name)
             if name.endswith('.iwa'): data = iwa_uncompress(data)
             # Test the current local account marker without storing or printing it.
-            lowered = data.lower()
-            assert b'/users/' not in lowered, f'Local path in {ext} asset'
-            if len(LOCAL_ACCOUNT) > 4:
-                assert LOCAL_ACCOUNT not in lowered, f'Account marker in {ext} asset'
-            assert not re.search(rb'[a-z0-9_.+\-]+@(?:qq|163|gmail|outlook|icloud)\.com', lowered), f'Email in {ext} asset'
+            verify_private_markers(data, ext)
         count += 1
 psd = (ROOT / 'Blank.psd').read_bytes()
 header = struct.unpack('>4sH6sHIIHH', psd[:26])

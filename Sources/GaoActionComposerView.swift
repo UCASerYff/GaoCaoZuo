@@ -12,6 +12,7 @@ import SwiftUI
     @State private var ocrOutput=""
     @State private var delay=0
     @State private var duplicates=false
+    @State private var duplicatesAvailable=false
     @State private var multiple=false
     @State private var status:String?
     @State private var unavailable:String?
@@ -60,7 +61,10 @@ import SwiftUI
             TextField("识别语言（可选，逗号分隔）",text:$value)
             Picker("输出",selection:$ocrOutput) {Text("提供方默认").tag("");Text("纯文本").tag("text");Text("Markdown").tag("markdown");Text("JSON").tag("json");Text("可搜索PDF").tag("searchablePDF")}
         }
-        if action == "storage.inspect" {Toggle("请求重复文件分析（须提供方声明支持）",isOn:$duplicates)}
+        if action == "storage.inspect" {
+            Toggle("请求重复文件分析（须提供方声明支持）",isOn:$duplicates).disabled(!duplicatesAvailable)
+            if !duplicatesAvailable {Text("当前提供方未声明重复文件引擎；仅可分析目录元数据。").font(.caption).foregroundStyle(.secondary)}
+        }
         if action == "files.search" || action == "portal.focusSearch" {TextField("搜索词",text:$value)}
         if action == "files.choose" {Toggle("允许多选",isOn:$multiple);TextField("允许的UTI（可选，逗号分隔）",text:$value)}
         if action == "associations.manage" {TextField("预填UTI（可选）",text:$value)}
@@ -74,7 +78,12 @@ import SwiftUI
             Text("这里只准备并交给提供方复核，不表示下载已完成。").font(.caption).foregroundStyle(.secondary)
         }
     }
-    private func refresh() {CrossApplicationAvailability.shared.invalidate();unavailable=CrossApplicationAvailability.shared.unavailableReason(for:selectedID)}
+    private func refresh() {
+        CrossApplicationAvailability.shared.invalidate()
+        unavailable=CrossApplicationAvailability.shared.unavailableReason(for:selectedID)
+        duplicatesAvailable=CrossApplicationAvailability.shared.supportsStorageDuplicates()
+        if !duplicatesAvailable {duplicates=false}
+    }
     private func chooseInputs() {
         let panel=NSOpenPanel()
         panel.canChooseDirectories=entry.referenceKind != nil

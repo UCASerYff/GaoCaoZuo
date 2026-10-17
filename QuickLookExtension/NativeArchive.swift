@@ -58,6 +58,14 @@ enum NativeArchive {
         let items: [Item]
         fileprivate let bound: BoundItem?
         var canEditCopy: Bool { ["zip", "7z"].contains(format) && !items.contains { $0.encrypted || $0.kind == .unsupported } }
+        var editCopyUnavailableReason: String? {
+            guard !canEditCopy else { return nil }
+            if ["zip", "7z"].contains(format), items.contains(where: \.encrypted) {
+                return "加密 ZIP/7Z 的带密码编辑请用主应用；此预览不会将加密成员改存为未加密内容。"
+            }
+            if !["zip", "7z"].contains(format) { return "此格式可在主应用中提取后新建 ZIP/7Z；此预览不提供重新保存。" }
+            return "原生编辑副本仅支持未加密且不含链接的 ZIP/7Z；原压缩包保留。"
+        }
     }
     struct VerifiedFile: Equatable { let size: Int64; let digest: String }
     enum Phase { case beforePayloadCreate, payloadReady, beforeCandidateCreate, candidateReady, beforePublish, afterCommit }

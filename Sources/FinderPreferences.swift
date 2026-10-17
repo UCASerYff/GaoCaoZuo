@@ -23,8 +23,21 @@ import SwiftUI
         } catch {data.block(error.localizedDescription);self.error=error.localizedDescription}
     }
     func update(_ body:(inout FinderMenuPreferences)->Void) {
-        do {var next=preferences;body(&next);try data.save(next,name:"finder-menu.json");preferences=next;changed?()}
+        do {var next=preferences;body(&next);try data.save(next,name:"finder-menu.json");preferences=next;error=nil;changed?()}
         catch {self.error=error.localizedDescription}
+    }
+    func addExcludedPath(_ raw:String) {
+        // Spaces are legal filename characters, including at the end of a path.
+        // Do not trim them into a different exclusion target.
+        let path=raw
+        guard path.hasPrefix("/"),!path.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains) else {error=L10n.text("请输入有效的绝对目录路径。");return}
+        let normalized=URL(fileURLWithPath:path).standardizedFileURL.path
+        update {value in if !value.excludedPaths.contains(where:{URL(fileURLWithPath:$0).standardizedFileURL.path == normalized}) {value.excludedPaths.append(normalized)}}
+    }
+    func addExcludedApplication(_ raw:String) {
+        let id=raw.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !id.isEmpty,id.utf8.count <= 512,!id.unicodeScalars.contains(where:CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains) else {error=L10n.text("请输入不含空白或控制字符的应用 Bundle ID。");return}
+        update {value in if !value.excludedApps.contains(id) {value.excludedApps.append(id)}}
     }
     func replaceForMigration(_ value:FinderMenuPreferences) throws {
         guard value.schema == 1 else {throw DataFailure.message("菜单配置版本无效。")};try data.save(value,name:"finder-menu.json");preferences=value;changed?()
@@ -56,8 +69,8 @@ struct FinderPreferenceView:View {
                     HStack {
                         Toggle("",isOn:Binding(get:{controller.preferences.items.first(where:{$0.id==item.id})?.enabled ?? false},set:{enabled in controller.update{value in if let i=value.items.firstIndex(where:{$0.id==item.id}){value.items[i].enabled=enabled}}})).labelsHidden()
                         Image(systemName:item.icon).frame(width:22)
-                        TextField("菜单名称",text:Binding(get:{controller.preferences.items.first(where:{$0.id==item.id})?.title ?? item.title},set:{title in controller.update{value in if let i=value.items.firstIndex(where:{$0.id==item.id}){value.items[i].title=String(title.prefix(120))}}}))
-                        Text(item.group).font(.caption).foregroundStyle(.secondary)
+                        TextField("菜单名称",text:Binding(get:{FinderMenuPreferences.displayTitle(controller.preferences.items.first(where:{$0.id==item.id}) ?? item)},set:{title in controller.update{value in if let i=value.items.firstIndex(where:{$0.id==item.id}){value.items[i].title=FinderMenuPreferences.storedTitle(String(title.prefix(120)),for:item.id)}}}))
+                        Text(L10n.text(item.group)).font(.caption).foregroundStyle(.secondary)
                         Button{controller.move(item.id,by:-1)}label:{Image(systemName:"arrow.up")}.buttonStyle(.borderless)
                         Button{controller.move(item.id,by:1)}label:{Image(systemName:"arrow.down")}.buttonStyle(.borderless)
                     }.draggable(item.id).dropDestination(for:String.self){ids,_ in
@@ -66,23 +79,23 @@ struct FinderPreferenceView:View {
                     }
                 }
             }.frame(minHeight:260)
-            HStack {TextField("排除目录的绝对路径",text:$excluded).textFieldStyle(.roundedBorder);Button("添加目录排除"){guard excluded.hasPrefix("/"),!excluded.contains("\0") else{return};controller.update{$0.excludedPaths.append(excluded)};excluded=""}}
+            HStack {TextField("排除目录的绝对路径",text:$excluded).textFieldStyle(.roundedBorder);Button("添加目录排除"){controller.addExcludedPath(excluded);if controller.error == nil {excluded=""}}}
             ForEach(controller.preferences.excludedPaths,id:\.self){path in HStack{Text("📁 "+path).font(.caption).lineLimit(1);Spacer();Button("移除"){controller.update{$0.excludedPaths.removeAll{$0==path}}}}}
             HStack {
                 TextField("排除应用的 Bundle ID (如 com.apple.finder)",text:$excludedApp).textFieldStyle(.roundedBorder)
-                Button("添加应用排除"){guard !excludedApp.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,!excludedApp.contains(" ") else{return};controller.update{$0.excludedApps.append(excludedApp.trimmingCharacters(in:.whitespacesAndNewlines))};excludedApp=""}
+                Button("添加应用排除"){controller.addExcludedApplication(excludedApp);if controller.error == nil {excludedApp=""}}
                 Button("选择应用…"){chooseApp()}
             }
             ForEach(controller.preferences.excludedApps,id:\.self){app in HStack{Text("🚫 "+app).font(.caption).lineLimit(1);Spacer();Button("移除"){controller.update{$0.excludedApps.removeAll{$0==app}}}}}
-            if let error=controller.error {Text(error).foregroundStyle(.red).font(.caption)}
+            if let error=controller.error {Text(L10n.text(error)).foregroundStyle(.red).font(.caption)}
             Text("访达工具栏按钮由系统的“自定工具栏”管理；此开关控制按钮内的菜单。").font(.caption).foregroundStyle(.secondary)
         }.padding().disabled(controller.data.failure != nil)
     }
     @State private var excludedApp = ""
     private func chooseApp() {
-        let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message="选择要排除右键菜单的应用程序"
+        let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message=L10n.text("选择要排除右键菜单的应用程序")
         if p.runModal() == .OK,let url=p.url,let bundle=Bundle(url:url),let id=bundle.bundleIdentifier {
-            controller.update{if !$0.excludedApps.contains(id){$0.excludedApps.append(id)}}
+            controller.addExcludedApplication(id)
         }
     }
     private func flag(_ key:WritableKeyPath<FinderMenuPreferences,Bool>)->Binding<Bool>{Binding(get:{controller.preferences[keyPath:key]},set:{value in controller.update{$0[keyPath:key]=value}})}

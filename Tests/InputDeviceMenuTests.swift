@@ -17,6 +17,27 @@ import AppKit
     let external=HIDDeviceDescriptor(id:"hid:2:3:session-124",name:"Pointer",vendor:2,product:3,location:0,buttonUsages:[1,2,3,5],registryID:124,usagePairs:["1:2"],hasWheelElement:true)
     let mouse=InputDeviceMatrix.currentMatrix(devices:[external],monitoringAuthorized:true)[0]
     try check(mouse.capabilities.buttonCount==4 && mouse.capabilities.supportsDiscreteScroll && !mouse.identity.isTrackpad,"不按设备名称猜测五个按钮或触控能力")
+    func connection(_ boot:String="BOOT-A",_ registry:UInt64=100,_ path:String="IOService:/Port/Pointer",_ pairs:[String]=["1:2"])->String {
+        HIDConnectionIdentity.identifier(bootSession:boot,registryID:registry,vendor:2,product:3,location:42,transport:"USB",usagePairs:pairs,interfacePath:path)
+    }
+    try check(HIDConnectionIdentity.isConnectionScoped(connection()),"新版绑定具有完整连接摘要")
+    try check(connection()==connection(),"同接口同启动身份可确定性重建")
+    try check(connection("BOOT-A",101) != connection(),"同型号和同端口重连仍不继承旧接口绑定")
+    try check(connection("BOOT-B") != connection(),"系统重启后注册ID复用不继承旧配置")
+    try check(connection("BOOT-A",100,"IOService:/OtherPort/Pointer") != connection(),"接口拓扑变化不被VID/PID掩盖")
+    try check(connection("BOOT-A",100,"IOService:/Port/Pointer",["1:2","1:1"]) == connection("BOOT-A",100,"IOService:/Port/Pointer",["1:1","1:2"]),"Usage集合排序不制造假重连")
+    try check(!HIDConnectionIdentity.isConnectionScoped("hid:2:3:42"),"旧VID/PID/location标识不会被当成新版连接证据")
+    let global=InputBinding(actionID:"fixture.global",keyCode:0)
+    var specific=global;specific.id=UUID();specific.appBundleID="com.fixture.editor";specific.actionID="fixture.app"
+    let effective=InputRules.effectiveBindings(in:[global,specific],appBundleID:"com.fixture.editor")
+    try check(effective.map(\.id)==[specific.id],"FlyKey与实际输入都只保留逐App覆盖后的绑定")
+    try check(InputRules.effectiveBindings(in:[global,specific],appBundleID:"com.fixture.other").map(\.id)==[global.id],"其他App仍使用原全局绑定")
+    specific.enabled=false
+    try check(InputRules.effectiveBindings(in:[global,specific],appBundleID:"com.fixture.editor").map(\.id)==[global.id],"禁用的逐App项不吞掉仍启用的全局项")
+    specific.enabled=true;var duplicate=specific;duplicate.id=UUID()
+    try check(InputRules.conflictingIDs(in:InputRules.effectiveBindings(in:[global,specific,duplicate],appBundleID:"com.fixture.editor"))==Set([specific.id,duplicate.id]),"同优先级冲突保留证据并暂停，不能借全局回退绕过")
+    try check(InputRules.match(in:[global,specific,duplicate],trigger:.hotkey,modifiers:global.modifiers,keyCode:0,appBundleID:"com.fixture.editor")==nil,"实际输入执行同样拒绝冲突的逐App规则，不意外执行全局动作")
+    try check(InputRules.match(in:[global,specific,duplicate],trigger:.hotkey,modifiers:global.modifiers,keyCode:0,appBundleID:"com.fixture.other")?.id==global.id,"另一个App的规则冲突不影响本App全局输入")
     let f=CGRect(x:-1800,y:-300,width:1800,height:1200)
     func edge(_ region:String,_ point:CGPoint,_ start:Double=0.25,_ end:Double=0.5)->Bool {EnhancedInputEngine.matchesEdge(region,at:point,frames:[f],start:start,end:end,width:10)}
     try check(edge("left",.init(x:-1795,y:0)),"负坐标屏左边段以该屏顶部为0")

@@ -52,6 +52,12 @@ enum CrossApplicationActions {
     private var cached:[String:Result<GaoActionProviderCapabilities,Error>]=[:]
     private var expires=Date.distantPast
     func invalidate(){expires = .distantPast}
+    func supportsStorageDuplicates() -> Bool {
+        guard let entry=CrossApplicationActions.entries.first(where:{$0.action=="storage.inspect"}),
+              let url=NSWorkspace.shared.urlForApplication(withBundleIdentifier:entry.bundleID),
+              let capabilities=try? GaoActionProviderCapabilities.load(appURL:url,bundleID:entry.bundleID) else {return false}
+        return (try? capabilities.require(action:entry.action,parameters:["mode":"duplicates"],items:false,references:true)) != nil
+    }
     func unavailableReason(for id:String)->String? {
         guard let entry=CrossApplicationActions.entries.first(where:{$0.id == id || $0.action == CrossApplicationActions.legacyIDs[id]}) else {return nil}
         if Date() >= expires {cached=[:];expires=Date().addingTimeInterval(5)}

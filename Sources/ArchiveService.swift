@@ -198,7 +198,7 @@ final class ArchiveService: ObservableObject {
         guard ["zip", "7z"].contains(archive.pathExtension.lowercased()) else {
             throw ArchiveError.invalid("仅 ZIP 与 7Z 支持重新保存；其他格式可提取后新建 ZIP/7Z。")
         }
-        let before = try FileTools.fingerprint(archive)
+        let before = try await performFileIO { cancellation in try cancellation.check(); return try FileTools.fingerprint(archive) }
         let root = try makeStage(in: fm.temporaryDirectory)
         defer { try? fm.removeItem(at: root) }
         let tree = root.appendingPathComponent("contents", isDirectory: true)
@@ -223,6 +223,9 @@ final class ArchiveService: ObservableObject {
         let format: ArchiveFormat = archive.pathExtension.lowercased() == "7z" ? .sevenZip : .zip
         let rebuilt = root.appendingPathComponent("edited." + format.rawValue)
         _ = try await create(items: children, destination: rebuilt, format: format, password: password, splitMB: nil, solid: false, options: options)
+        // Internal rebuilt files disappear with this edit workspace. They must
+        // never escape as recovery receipts if final destination publication fails.
+        lastResultReceipts = []; lastResultURL = nil
         if destination.standardizedFileURL == archive.standardizedFileURL,
            let mode = try fm.attributesOfItem(atPath: archive.path)[.posixPermissions] {
             // Editing must not turn a private 0600 archive into a world-readable default file.
@@ -244,8 +247,36 @@ final class ArchiveService: ObservableObject {
             guard try FileTools.fingerprint(candidate) == hash, try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
             _ = try fm.replaceItemAt(archive, withItemAt: candidate, backupItemName: nil, options: .usingNewMetadataOnly)
         } else {
-            try requireAbsent(destination)
-            try fm.copyItem(at: rebuilt, to: destination)
+            // Build beside the final destination, then publish one verified file
+            // with the same exclusive atomic rename used by extraction. A copy
+            // directly to destination exposes partial bytes and leaves a partial
+            // result on ENOSPC or cancellation.
+            let cancellation = ArchiveCreationIO.Cancellation(deadline: jobDeadline)
+            creationCancellation = cancellation; isRunning = true
+            defer { creationCancellation = nil; isRunning = false }
+            let finalStage = try await ArchiveFileIO.perform {
+                try cancellation.check()
+                try ArchiveFileIO.requireDirectory(destination.deletingLastPathComponent())
+                try ArchiveFileIO.requireAbsent(destination)
+                let value = destination.deletingLastPathComponent().appendingPathComponent(".gaocaozuo-stage-" + UUID().uuidString, isDirectory: true)
+                try FileManager.default.createDirectory(at: value, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                return value
+            }
+            do {
+                let observer = creationIOObserver
+                try await ArchiveFileIO.perform {
+                    let candidate = finalStage.appendingPathComponent("edited." + format.rawValue)
+                    try cancellation.check()
+                    try FileManager.default.copyItem(at: rebuilt, to: candidate)
+                    guard try FileTools.fingerprint(candidate) == hash, try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
+                    observer?(.publishing)
+                    try ArchiveCreationIO.publish(volumes: [candidate], targets: [destination], receipts: [.init(kind: .create, destination: destination, fingerprint: hash)], cancellation: cancellation)
+                }
+                if let warning = await ArchiveFileIO.removeStage(finalStage) { output += "\n" + warning }
+            } catch {
+                if let warning = await ArchiveFileIO.removeStage(finalStage) { output += "\n" + warning }
+                throw error
+            }
         }
         guard try FileTools.fingerprint(destination) == hash else { throw ArchiveError.invalid("保存结果核验失败；原包安全备份已保留。") }
         lastResultURL = destination
@@ -275,10 +306,10 @@ final class ArchiveService: ObservableObject {
         // A batch decoder opens only a verified job-local snapshot. Split volumes
         // and other formats retain the existing per-member backend path.
         let extensionName = opened.url.pathExtension.lowercased()
-        let snapshot: ArchiveBatchSnapshot?
-        if ["zip", "7z"].contains(extensionName) {
+        let snapshot: ArchiveReadSnapshot?
+        if ["zip", "7z"].contains(extensionName) || ArchiveReadSnapshot.isNumericSplit(opened.url) {
             snapshot = try await ArchiveFileIO.perform {
-                try ArchiveBatchSnapshot.capture(opened.url, in: stage.appendingPathComponent("container"), maximumBytes: options.maximumBytes, cancellation: cancellation)
+                try ArchiveReadSnapshot.capture(opened.url, in: stage.appendingPathComponent("container"), maximumBytes: options.maximumBytes, cancellation: cancellation)
             }
         } else { snapshot = nil }
         let archive = snapshot?.url ?? opened.url

@@ -65,8 +65,12 @@ try expect(!links.canEditCopy,"link-bearing archives are not silently rewritten"
 try rejects("archive link extraction") {_ = try NativeArchive.extract(links,selected:nil,directory:output,name:"links")}
 let encrypted=try NativeArchive.inspect(root.appendingPathComponent("encrypted.zip"))
 try expect(!encrypted.canEditCopy && encrypted.items.contains(where:\.encrypted),"encrypted archive editing cannot strip protection")
+try expect(encrypted.editCopyUnavailableReason?.contains("带密码编辑请用主应用") == true,"encrypted edit limitation identifies the existing password-aware main-app route")
 try expect(try NativeArchive.memberData(encrypted,path:"added.txt",password:"FixtureOnly") == Data("added new\n".utf8),"native AES ZIP extraction uses explicit password")
 try rejects("incorrect password") {_ = try NativeArchive.memberData(encrypted,path:"added.txt",password:"incorrect")}
+try rejects("fallback rejects special FIFO without a writer") {_ = try ArchiveQuickLookNative.list(url:root.appendingPathComponent("fifo"))}
+try rejects("loader fallback rejects special FIFO without a writer") {_ = try NativeArchivePreviewContent.load(root.appendingPathComponent("fifo"),cancellation:NativeArchive.Cancellation())}
+try rejects("fallback rejects a symlink before opening") {_ = try ArchiveQuickLookNative.list(url:root.appendingPathComponent("source-link.zip"))}
 let stream=root.appendingPathComponent("original-stream.gz")
 switch try NativeArchivePreviewContent.load(stream,cancellation:NativeArchive.Cancellation()) {
 case .readOnly(let listing):try expect(listing.contains("original-stream.gz") && !listing.contains("Path =") && !listing.isEmpty,"bounded read-only fallback preserves compressed-stream directory preview")
@@ -200,6 +204,7 @@ def main():
             for path in sorted(fixture.rglob("*")):
                 if path.is_file():
                     archive.write(path, path.relative_to(fixture).as_posix())
+        (root / "source-link.zip").symlink_to(root / "source.zip")
         with zipfile.ZipFile(root / "traversal.zip", "w") as archive:
             archive.writestr("../escape", b"no")
         with zipfile.ZipFile(root / "duplicate.zip", "w") as archive:

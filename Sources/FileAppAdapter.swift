@@ -26,7 +26,7 @@ enum FileAppAdapter {
             return seen.insert(directory.path).inserted ? directory : nil
         }
     }
-    static func terminalScript(bundleID: String, directories: [URL], newWindow: Bool) throws -> String {
+    static func terminalScript(bundleID: String, directories: [URL], newWindow: Bool, appURL:URL? = nil) throws -> String {
         guard terminalIDs.contains(bundleID), !directories.isEmpty else { throw FileToolsError.invalid("终端应用或工作目录无效。") }
         // Terminal's public scripting interface creates a window with an untargeted
         // `do script`, but exposes no new-tab command. Sending a global Cmd-T and
@@ -35,7 +35,10 @@ enum FileAppAdapter {
         guard bundleID != "com.apple.Terminal" || newWindow else {
             throw FileToolsError.invalid("Terminal 新标签页尚无法安全核验，未发送任何命令。请在文件设置中开启“Terminal 使用新窗口”，或使用支持明确创建标签页的 iTerm。")
         }
-        var lines = ["tell application id \"\(bundleID)\"", "activate"]
+        // The chosen bundle's path is also the AppleEvent target. LaunchServices
+        // resolution by bundle ID alone can pick a different installed copy.
+        let target=appURL.map{appleLiteral($0.path)} ?? "id \"\(bundleID)\""
+        var lines = ["tell application \(target)", "activate"]
         for directory in directories {
             guard directory.isFileURL, !directory.path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw FileToolsError.invalid("终端目录包含控制字符，未执行。") }
             let command = "cd -- " + shellLiteral(directory.path)
@@ -53,7 +56,7 @@ enum FileAppAdapter {
         guard !files.isEmpty, files.count <= 1000 else { throw FileToolsError.invalid("请选择 1–1000 个文件或目录。") }
         for file in files { _ = try EnhancedFileTools.checked(file); guard file.isFileURL, !file.path.contains("\0") else { throw FileToolsError.invalid("打开路径无效。") } }
         if bundleID == "com.apple.Terminal", disposition == .reuseWindow { return .terminalTabs(try workingDirectories(files)) }
-        if terminalIDs.contains(bundleID) { return .automation(try terminalScript(bundleID: bundleID, directories: workingDirectories(files), newWindow: disposition == .newWindow)) }
+        if terminalIDs.contains(bundleID) { return .automation(try terminalScript(bundleID: bundleID, directories: workingDirectories(files), newWindow: disposition == .newWindow,appURL:appURL)) }
         let isCode = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92"].contains(bundleID)
         if isCode {
             guard let executable = Bundle(url: appURL)?.executableURL else { throw FileToolsError.invalid("编辑器程序不完整。") }
@@ -75,12 +78,14 @@ enum FileAppAdapter {
         case .terminalTabs(let directories):
             try TerminalFolderService.start(directories:directories,appURL:appURL,completion:completion)
         case .workspace(let urls):
-            NSWorkspace.shared.open(urls, withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in completion(error) }
+            let configuration=NSWorkspace.OpenConfiguration()
+            configuration.allowsRunningApplicationSubstitution=false
+            NSWorkspace.shared.open(urls, withApplicationAt: appURL, configuration:configuration) { _, error in completion(error) }
         case .automation(let source):
             var failure: NSDictionary?
             guard let script = NSAppleScript(source: source) else { throw FileToolsError.invalid("无法构建终端自动化请求。") }
             script.executeAndReturnError(&failure)
-            if let failure { throw FileToolsError.invalid("终端自动化失败；请检查自动化权限（\(failure[NSAppleScript.errorNumber] ?? "未知")）。") }
+            if let failure { throw FileToolsError.invalid(L10n.format("终端自动化失败；请检查自动化权限（%@）。",String(describing:failure[NSAppleScript.errorNumber] ?? L10n.text("未知")))) }
             completion(nil)
         case .command(let executable, let arguments, let environment):
             let task = Process(); task.executableURL = executable; task.arguments = arguments

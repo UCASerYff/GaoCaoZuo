@@ -51,12 +51,27 @@ enum BABRuleImporter {
         guard bytes.count<=8*1024*1024 else {throw SystemControlError.message("输入操作快照超过8MiB。")}
         let digest=InputMigrationFingerprint.digest(bytes)
         var configuration=InputEnhancementConfiguration(),rows:[InputMigrationRow]=[]
-        if let library=source["ruleOfAppleScript"] as? [[String:Any]] {
+        if let rawLibrary=source["ruleOfAppleScript"] {
+            guard let library=rawLibrary as? [[String:Any]],library.count<=500 else {throw SystemControlError.message("脚本库格式无效或超过预算；原档案未覆盖。")}
             for (index,entry) in library.enumerated() {
-                guard let script=entry["AppleScript"] as? String,script.utf8.count<=65536 else{continue}
-                var item=InputScript();item.id=InputMigrationFingerprint.uuid(try InputMigrationFingerprint.canonical(["library":index,"entry":entry]))
-                item.name=entry["Name"] as? String ?? "导入脚本";item.source=script;configuration.scriptLibrary.append(item)
+                let id=InputMigrationFingerprint.uuid(try InputMigrationFingerprint.canonical(["library":index,"entry":entry]))
+                let keys=entry.keys.filter{!["Name","AppleScript","Enable"].contains($0)}.sorted()
+                var record=InputMigrationRow(id:id,module:"ruleOfAppleScript",groupIndex:0,rowIndex:index,
+                    sourceEnabled:sourceBool(entry["Enable"]),disposition:.unavailable,requirements:["scriptReview"],
+                    reason:"脚本内容缺失、类型未知或超过 64 KiB；原值保留在来源档案中，未执行。",mappedRuleID:nil,unknownKeys:keys)
+                if let script=entry["AppleScript"] as? String,script.utf8.count<=65536 {
+                    var item=InputScript();item.id=id
+                    item.name=entry["Name"] as? String ?? "导入脚本";item.source=script;configuration.scriptLibrary.append(item)
+                    record.disposition = .requiresReview
+                    record.reason="脚本源码与库条目保留为未执行资料；需用户逐条审阅后另行绑定。"+(keys.isEmpty ? "":"未知字段保留在来源档案。")
+                }
+                rows.append(record)
             }
+        }
+        for module in source.keys.sorted() where module.hasPrefix("ruleOf") && !modules.contains(module) && module != "ruleOfAppleScript" {
+            let id=InputMigrationFingerprint.uuid(try InputMigrationFingerprint.canonical(["module":module,"value":source[module]!]))
+            rows.append(.init(id:id,module:module,groupIndex:0,rowIndex:0,sourceEnabled:nil,disposition:.unavailable,
+                requirements:[],reason:"此来源规则模块未有已核实的触发/动作语义；完整原值已保留，未执行或猜测转换。",mappedRuleID:nil,unknownKeys:[module]))
         }
         for module in modules {
             guard let rawGroups=source[module] else{continue}

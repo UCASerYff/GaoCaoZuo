@@ -101,5 +101,17 @@ import AppKit
     configuration.hidProfiles[0].buttons.append(button)
     try rejects({try EnhancedInputValidation.validate(configuration)},"同设备按钮冲突不得任意选择")
     try check(EnhancedSystemPreset.wifiOn.mediaKey==nil && EnhancedSystemPreset.wifiOff.mediaKey==nil,"WiFi经CoreWLAN实现，不冒充媒体快捷键")
+    let invalid=ScrollTransformation.smoothingStep(CGPoint(x:Double.nan,y:1),duration:0.16)
+    try check(invalid.finished && invalid.x==0 && invalid.remaining == .zero,"非有限滚轮输入不崩溃或继续插值")
+    try check(ScrollTransformation.delta(.nan,profile:wheel,horizontal:false)==0,"非有限原滚轮delta保守归零")
+    let half=ScrollTransformation.smoothingStep(CGPoint(x:0.5,y:-0.5),duration:0.16)
+    try check(half.finished,"半像素残留按预算结束，不在正负半像素间无限振荡")
+    var residual=CGPoint(x:134,y:-93),totalX:Int32=0,totalY:Int32=0,finished=false
+    for _ in 0..<240 {
+        let step=ScrollTransformation.smoothingStep(residual,duration:0.16)
+        totalX += step.x;totalY += step.y;residual=step.remaining
+        if step.finished {finished=true;break}
+    }
+    try check(finished && abs(Double(totalX)-134)<=0.5 && abs(Double(totalY)+93)<=0.5,"滚轮插值有限结束并保留两个轴的累计位移")
     print("PASS: \(assertions)项输入/窗口增强组件验证；真实触控、压力、媒体键、Magic Mouse及多屏仍须设备验收")
 }

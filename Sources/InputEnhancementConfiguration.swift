@@ -150,7 +150,7 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
 struct ScrollDeviceProfile: Codable,Equatable,Identifiable {
     var id = UUID();var name = "滚轮设置";var enabled = false
     /// allWheel means only discrete wheel events; allPrecise means only continuous trackpad events.
-    /// HID IDs use vendor/product/location; a profile is never guessed from a device name.
+    /// Physical HID IDs are retained only; CGEvent streams cannot be bound to them safely.
     var deviceID = "allWheel"
     var reverseX = false;var reverseY = false
     var speed:Double = 1;var acceleration:Double = 0
@@ -273,7 +273,24 @@ enum DrawingRecognition {
 }
 
 enum ScrollTransformation {
+    struct Step {var x:Int32;var y:Int32;var remaining:CGPoint;var finished:Bool}
+    static func smoothingStep(_ remaining:CGPoint,duration:Double)->Step {
+        guard remaining.x.isFinite,remaining.y.isFinite,duration.isFinite,duration>0 else{return Step(x:0,y:0,remaining:.zero,finished:true)}
+        let fraction=min(1,1/(60*max(0.04,duration)*0.3))
+        func component(_ value:Double)->Int32 {
+            let delta=abs(value)<1 ? value:value*fraction
+            let rounded=delta.rounded()
+            // Integer event output must still make progress for a one-pixel tail.
+            let advancing=rounded==0 && abs(value)>0.5 ? (value>0 ? 1.0:-1.0):rounded
+            return Int32(max(-100000,min(100000,advancing)))
+        }
+        let x=component(remaining.x),y=component(remaining.y)
+        let next=CGPoint(x:remaining.x-Double(x),y:remaining.y-Double(y))
+        return Step(x:x,y:y,remaining:next,finished:abs(next.x)<=0.5 && abs(next.y)<=0.5)
+    }
+
     static func delta(_ value:Double,profile:ScrollDeviceProfile,horizontal:Bool)->Double {
+        guard value.isFinite,profile.speed.isFinite,profile.acceleration.isFinite else{return 0}
         let accelerated = value * profile.speed * (1 + profile.acceleration * min(abs(value)/20,3))
         return max(-10000,min(10000,accelerated)) * ((horizontal ? profile.reverseX : profile.reverseY) ? -1 : 1)
     }

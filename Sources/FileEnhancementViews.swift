@@ -17,7 +17,7 @@ extension FileEnhancementController {
                 let receipt=try createOffice(String(id.dropFirst(9)),in:directory);try store.record([receipt]);store.completeNewFile(receipt.destination);store.notify("已创建文档",outputs:[receipt.destination]);return true
             }
             if id=="file.template.import" {
-                let p=NSOpenPanel();p.canChooseFiles=true;p.canChooseDirectories=true;p.treatsFilePackagesAsDirectories=false;p.message="选择你拥有的模板文件或文档包；按原字节保存，不复制其他软件的商业模板。"
+                let p=NSOpenPanel();p.canChooseFiles=true;p.canChooseDirectories=true;p.treatsFilePackagesAsDirectories=false;p.message=L10n.text("选择你拥有的模板文件或文档包；按原字节保存，不复制其他软件的商业模板。")
                 if p.runModal() == .OK,let source=p.url {try importTemplate(source);store.notify("模板已导入")};return true
             }
             if id.hasPrefix("file.open."),let uuid=UUID(uuidString:String(id.dropFirst(10))),let app=settings.apps.first(where:{$0.id==uuid}) {try open(files,with:app){failure in Task{@MainActor in store.notify(failure?.localizedDescription ?? "已发送应用打开请求",failed:failure != nil)}};return true}
@@ -39,14 +39,14 @@ extension FileEnhancementController {
             case "file.path.real":let sources=files.isEmpty ? [directory] : files;store.clipboard.copyText(sources.map{$0.resolvingSymlinksInPath().path}.joined(separator:"\n"));store.notify("已复制真实路径")
             case "file.path.custom":let prefix=settings.customPathPrefix,sources=files.isEmpty ? [directory] : files;store.clipboard.copyText(sources.map{prefix+$0.path}.joined(separator:"\n"));store.notify("已复制自定义前缀路径")
             case "file.icon":
-                let p=NSOpenPanel();p.allowedContentTypes=[.image];p.message="选择用作图标的图片"
+                let p=NSOpenPanel();p.allowedContentTypes=[.image];p.message=L10n.text("选择用作图标的图片")
                 if p.runModal() == .OK,let url=p.url,let image=NSImage(contentsOf:url) {for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(image,forFile:file.path,options:[]) else{throw FileToolsError.invalid("无法设置图标：\(file.path)")}};store.notify("已设置图标")}
             case "file.icon.clear":for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(nil,forFile:file.path,options:[]) else{throw FileToolsError.invalid("无法清除图标：\(file.path)")}};store.notify("已恢复默认图标")
             case "file.wallpaper":guard let first=files.first else{throw FileToolsError.invalid("请选择图片。")};_ = try FileEnhancementImages.source(first);guard let screen=NSScreen.main else{throw FileToolsError.invalid("屏幕不可用。")};try NSWorkspace.shared.setDesktopImageURL(first,for:screen,options:[:]);store.notify("已设置桌面墙纸")
             case "file.airdrop","file.mail":
                 let name:NSSharingService.Name=id=="file.airdrop" ? .sendViaAirDrop : .composeEmail
                 guard let service=NSSharingService(named:name),service.canPerform(withItems:files) else{throw FileToolsError.invalid("系统当前无法使用该分享服务。")};service.perform(withItems:files)
-            case "file.terminal":try terminal(directory,newWindow:settings.terminalNewWindow){failure in Task{@MainActor in store.notify(failure?.localizedDescription ?? "已发送终端打开请求",failed:failure != nil)}}
+            case "file.terminal":try terminal(files.isEmpty ? [directory] : files,newWindow:settings.terminalNewWindow){failure in Task{@MainActor in store.notify(failure?.localizedDescription ?? L10n.text("已发送终端打开请求"),failed:failure != nil)}}
             case "file.ishot","file.ishot.markup","file.diskmap","file.capture.window","file.capture.display","file.images.pin","file.ocr","file.storage.duplicates","file.cleanup.review","file.apps.uninstall.review":
                 sendGaoAction(id:id,files:files,directory:directory,store:store)
             case "images.webp","images.icns","images.macicons","images.iosicons":let kind=String(id.dropFirst(7));store.work("转换图片"){try FileEnhancementImages.create(files,kind:kind)}
@@ -63,14 +63,17 @@ extension FileEnhancementController {
         guard let target=url.url,NSWorkspace.shared.open(target) else{throw FileToolsError.invalid("无法打开翻译网页。")}
     }
     func terminal(_ directory:URL,newWindow:Bool,completion:((Error?)->Void)?=nil) throws {
+        try terminal([directory],newWindow:newWindow,completion:completion)
+    }
+    func terminal(_ files:[URL],newWindow:Bool,completion:((Error?)->Void)?=nil) throws {
         guard let app=NSWorkspace.shared.urlForApplication(withBundleIdentifier:"com.apple.Terminal") else {throw FileToolsError.invalid("找不到系统终端应用。")}
-        try FileAppAdapter.open(files:[directory],bundleID:"com.apple.Terminal",appURL:app,disposition:newWindow ? .newWindow : .reuseWindow) { [weak self] failure in
+        try FileAppAdapter.open(files:files,bundleID:"com.apple.Terminal",appURL:app,disposition:newWindow ? .newWindow : .reuseWindow) { [weak self] failure in
             if let failure {Task{@MainActor in self?.error=failure.localizedDescription}}
             completion?(failure)
         }
     }
     func addApplication() throws {
-        let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message="选择用来打开当前文件或目录的应用"
+        let p=NSOpenPanel();p.allowedContentTypes=[.application];p.message=L10n.text("选择用来打开当前文件或目录的应用")
         guard p.runModal() == .OK,let url=p.url,let bundle=Bundle(url:url),let id=bundle.bundleIdentifier else{return}
         try update{$0.apps.append(.init(name:url.deletingPathExtension().lastPathComponent,bundleID:id,path:url.path))}
     }

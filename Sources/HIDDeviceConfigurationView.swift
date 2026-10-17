@@ -20,13 +20,21 @@ import SwiftUI
             }
             if monitor.devices.isEmpty {Text("尚未识别到接口；不会假定内置触控板或外置鼠标已连接。刷新识别不代表硬件动作验收。").font(.caption)}
             ForEach(monitor.devices) {device in
+                if !device.interfacePath.isEmpty {Text(L10n.text("接口路径：")+device.interfacePath).font(.caption.monospaced()).textSelection(.enabled)}
+                Text(L10n.text(device.bindingScope)).font(.caption).foregroundStyle(.secondary)
                 HStack {VStack(alignment:.leading){Text(device.name);Text("\(device.id) · 按钮Usage："+device.buttonUsages.map(String.init).joined(separator:",")).font(.caption.monospaced())};Spacer();Button("添加此设备配置"){var profile=HIDDeviceProfile();profile.name=device.name;profile.deviceID=device.id;profiles.append(profile)}}
             }
-            Text("录制读取公开HID鼠标按钮报告，不读取键盘文字；原始按钮保持不变。设备未连接、按钮报告未提供或权限被拒绝时，规则不会回退至其他鼠标。无位置ID的设备断接后须重新绑定。").font(.caption).foregroundStyle(.secondary)
+            Text("录制读取公开HID鼠标按钮报告，不读取键盘文字；原始按钮保持不变。设备未连接、按钮报告未提供或权限被拒绝时，规则不会回退至其他鼠标。配置仅绑定当前系统启动中的该条实际接口；断接、接口更换或系统重启后须重新绑定。不会按 VID/PID 或复用端口接管。").font(.caption).foregroundStyle(.secondary)
             ForEach($profiles) { $profile in
                 DisclosureGroup {
                     TextField("配置名称",text:$profile.name)
                     Text(profile.deviceID).font(.caption.monospaced())
+                    if !HIDConnectionIdentity.isConnectionScoped(profile.deviceID) {Text("旧设备标识缺少接口连接身份，已保留但不执行；请从已识别设备重新添加配置。").font(.caption).foregroundStyle(.orange)}
+                    Menu("重新绑定此配置到已识别接口") {
+                        ForEach(monitor.devices) {device in
+                            Button(device.name+" · "+String(device.registryID)) {profile.deviceID=device.id;profile.enabled=false}
+                        }
+                    }.disabled(monitor.devices.isEmpty)
                     if !monitor.devices.contains(where:{$0.id==profile.deviceID}) {Text("录制列表未发现此设备；实际监听时仍按完整设备ID匹配。").font(.caption).foregroundStyle(.secondary)}
                     ForEach($profile.buttons) { $button in
                         VStack(alignment:.leading) {
@@ -44,7 +52,7 @@ import SwiftUI
                     if profile.requestsTrackingAdjustment {
                         LabeledContent("请求速度（暂未应用）"){Slider(value:$profile.trackingSpeed,in:0.1...8);Text(profile.trackingSpeed,format:.number.precision(.fractionLength(2)))}
                         LabeledContent("请求加速度（暂未应用）"){Slider(value:$profile.trackingAcceleration,in:0...3);Text(profile.trackingAcceleration,format:.number.precision(.fractionLength(2)))}
-                        Text("当前公开用户态接口未提供可靠的逐设备跟踪控制，以上值仅保留在配置中，不会修改系统全局鼠标设置。需要此功能时仍需原驱动或原应用。").font(.caption).foregroundStyle(.orange)
+                        Text("公开 HID 服务属性接口存在，但本应用尚未实现经验证的设备服务归属、参数编码及读回回滚。以上值仅保留，不会修改硬件或全局设置。").font(.caption).foregroundStyle(.orange)
                     }
                     Button("删除设备配置",role:.destructive){profiles.removeAll{$0.id==profile.id}}
                 } label:{Toggle(profile.name,isOn:$profile.enabled)}

@@ -83,10 +83,12 @@ public final class FlyKeyController: ObservableObject {
         let key = UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode))
         if detector.flagsChanged(key: key, flags: event.flags.rawValue, now: now,
                                  modifier: configuration.triggerModifier, interval: configuration.doubleTapInterval) {
-            let capturedGeneration = generation, pid = front.processIdentifier
+            let capturedGeneration = generation
+            guard let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == capturedGeneration, self.configuration.enabled,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                      let current=NSWorkspace.shared.frontmostApplication,!current.isTerminated,
+                      identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)),
                       !IsSecureEventInputEnabled() else { return }
                 self.showHUD()
             }
@@ -108,7 +110,7 @@ public final class FlyKeyController: ObservableObject {
         let appName = app.localizedName ?? bundleID
         var extracted: [FlyKeyItem] = []
         if AXIsProcessTrusted() { extracted = extractMenuShortcuts(pid: app.processIdentifier, appName: appName) }
-        let actualBindings = bindings.filter { $0.enabled && ($0.appBundleID.isEmpty || $0.appBundleID == bundleID) }
+        let actualBindings = InputRules.effectiveBindings(in:bindings,appBundleID:bundleID)
         let conflicts = InputRules.conflictingIDs(in: actualBindings)
         for binding in actualBindings {
             extracted.append(FlyKeyItem(title: binding.title, path: [L10n.text("搞操作"), binding.title],

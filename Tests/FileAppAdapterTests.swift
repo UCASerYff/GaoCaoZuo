@@ -32,7 +32,8 @@ import Darwin
     guard case .terminalTabs(let serviceDirectories)=try FileAppAdapter.plan(bundleID:"com.apple.Terminal",appURL:root,files:[directory],disposition:.reuseWindow) else {throw DataFailure.message("Terminal tab must use the public folder service, never silently substitute a new window")}
     try expect(serviceDirectories == [directory],"Terminal tab paths are data for the system folder service")
     guard case .automation(let newWindowScript)=try FileAppAdapter.plan(bundleID:"com.apple.Terminal",appURL:root,files:[directory],disposition:.newWindow) else {throw DataFailure.message("Terminal new-window plan missing")}
-    try expect(newWindowScript == terminal,"explicit Terminal new-window disposition remains available")
+    try expect(newWindowScript == (try FileAppAdapter.terminalScript(bundleID:"com.apple.Terminal",directories:dirs,newWindow:true,appURL:root)),"explicit Terminal new-window disposition pins the selected app path")
+    try expect(newWindowScript.hasPrefix("tell application "+FileAppAdapter.appleLiteral(root.path)),"Terminal AppleEvents target the selected installed copy, not an arbitrary same-bundle-ID app")
     try expect(iterm.contains("create tab with default profile command") && !iterm.contains("write text"),"iTerm tabs use documented new-session override")
     let app=root.appendingPathComponent("Adapter.app"),mac=app.appendingPathComponent("Contents/MacOS"),resources=app.appendingPathComponent("Contents/Resources/app/out")
     try fm.createDirectory(at:mac,withIntermediateDirectories:true);try fm.createDirectory(at:resources,withIntermediateDirectories:true)

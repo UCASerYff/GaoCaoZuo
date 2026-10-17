@@ -10,6 +10,9 @@ struct GaoActionProviderCapabilities: Decodable {
         var parametersSchema:[String:GaoActionAnyCodable]
         var supportsReferences:Bool?
         var supportsItems:Bool?
+        var referencesSchema:[String:GaoActionAnyCodable]?
+        var requiresUserConfirmation:Bool?
+        var reviewOnly:Bool?
     }
     var schemaVersion:Int
     var bundleID:String
@@ -45,6 +48,17 @@ struct GaoActionProviderCapabilities: Decodable {
             guard let schema=properties[key] as? [String:Any] else {throw GaoActionError.providerNotReady("提供方参数 schema 无效")}
             try GaoActionParameterSchema.validate(value,schema:schema)
         }
+    }
+    func requireInputs(action:String,parameters:[String:Any],items:Bool,references:[GaoActionReference]) throws {
+        try require(action:action,parameters:parameters,items:items,references:!references.isEmpty)
+        guard let capability=actions.first(where:{$0.action==action}),let schema=capability.referencesSchema else {return}
+        let values=try references.map { reference -> [String:Any] in
+            guard let value=try JSONSerialization.jsonObject(with:JSONEncoder().encode(reference)) as? [String:Any] else {
+                throw GaoActionError.providerNotReady("无法核验提供方引用约束")
+            }
+            return value
+        }
+        try GaoActionParameterSchema.validate(values,schema:schema.mapValues(\.value))
     }
 }
 
@@ -205,11 +219,19 @@ final class GaoActionJournal {
     public func sendRequest(action:String,targetBundleID:String,parameters:[String:Any]=[:],inputFiles:[URL]=[],references:[GaoActionReference]=[]) async throws -> URL {
         let operation=GaoActionActivity.shared.begin();defer {GaoActionActivity.shared.end(operation)}
         let app=try providerURL(bundleID:targetBundleID,action:action,parameters:parameters,items:!inputFiles.isEmpty,references:!references.isEmpty)
+        try GaoActionProviderCapabilities.load(appURL:app,bundleID:targetBundleID).requireInputs(action:action,parameters:parameters,items:!inputFiles.isEmpty,references:references)
         let package=try await exportRequest(action:action,targetBundleID:targetBundleID,parameters:parameters,inputFiles:inputFiles,references:references)
         try await dispatch(package:package,app:app)
         return package
     }
     private func dispatch(package:URL,app:URL) async throws {
+        // Packaging is asynchronous and a retained request can be resent much
+        // later. Recheck the current provider against the actual new manifest
+        // at this common final gate, including referencesSchema.
+        let header=try GaoActionV1.inspectManifest(at:package)
+        let manifest=header.manifest
+        try GaoActionProviderCapabilities.load(appURL:app,bundleID:manifest.targetBundleID).requireInputs(
+            action:manifest.action,parameters:manifest.parameters.mapValues(\.value),items:!manifest.items.isEmpty,references:manifest.references)
         let config=NSWorkspace.OpenConfiguration();config.activates=true;config.allowsRunningApplicationSubstitution=false
         let id=package.deletingPathExtension().lastPathComponent
         try journal().transition(id,direction:"out",to:.dispatched)
@@ -285,6 +307,7 @@ final class GaoActionJournal {
         guard r.direction=="out",r.businessStatus==nil || r.businessStatus == .pending else {throw GaoActionError.invalidPackage("仅未完成请求可显式重新递交")}
         let m=r.manifest,parameters=m.parameters.mapValues(\.value)
         let app=try providerURL(bundleID:m.targetBundleID,action:m.action,parameters:parameters,items:!m.items.isEmpty,references:!m.references.isEmpty)
+        try GaoActionProviderCapabilities.load(appURL:app,bundleID:m.targetBundleID).requireInputs(action:m.action,parameters:parameters,items:!m.items.isEmpty,references:m.references)
         let url=URL(fileURLWithPath:r.packageDirectory,isDirectory:true)
         var ids=Set<String>()
         let old=try GaoActionV1.inspectManifest(at:url,now:GaoActionV1.parseDate(m.createdAt)!,expectedTarget:m.targetBundleID)
@@ -352,8 +375,17 @@ final class GaoActionJournal {
 
 private enum GaoActionParameterSchema {
     static func validate(_ value:Any,schema:[String:Any],depth:Int=0) throws {
-        guard depth<=8,let type=schema["type"] as? String else {throw GaoActionError.providerNotReady("提供方参数 schema 缺少类型")}
         func invalid() -> GaoActionError {.providerNotReady("本次参数不符合提供方能力 schema")}
+        guard depth<=8 else {throw invalid()}
+        if let constant=schema["const"],GaoActionAnyCodable(value) != GaoActionAnyCodable(constant) {throw invalid()}
+        // V1 supports this explicit subset, rather than silently ignoring a
+        // provider's new validation vocabulary and dispatching incompatible data.
+        let supported:Set<String>=["type","const","enum","minimum","maximum","minLength","maxLength","pattern","minItems","maxItems","items","properties","required","additionalProperties","description","title","default"]
+        guard Set(schema.keys).isSubset(of:supported) else {throw GaoActionError.providerNotReady("提供方使用了尚未支持的能力约束")}
+        guard let type=schema["type"] as? String else {
+            guard schema["const"] != nil,Set(schema.keys).isSubset(of:["const","description","title"]) else {throw GaoActionError.providerNotReady("提供方参数 schema 缺少类型")}
+            return
+        }
         switch type {
         case "string":
             guard let s=value as? String else {throw invalid()}
@@ -367,10 +399,22 @@ private enum GaoActionParameterSchema {
             if let min=schema["minimum"] as? Double,n.doubleValue<min {throw invalid()}
         case "boolean":guard let n=value as? NSNumber,CFGetTypeID(n)==CFBooleanGetTypeID() else {throw invalid()}
         case "array":
-            guard let a=value as? [Any],let item=schema["items"] as? [String:Any] else {throw invalid()}
+            guard let a=value as? [Any] else {throw invalid()}
             if let max=schema["maxItems"] as? Int,a.count>max {throw invalid()}
             if let min=schema["minItems"] as? Int,a.count<min {throw invalid()}
+            if let boolean=schema["items"] as? Bool {
+                guard boolean || a.isEmpty else {throw invalid()};return
+            }
+            guard let item=schema["items"] as? [String:Any] else {throw invalid()}
             for value in a {try validate(value,schema:item,depth:depth+1)}
+        case "object":
+            guard let object=value as? [String:Any],let properties=schema["properties"] as? [String:Any] else {throw invalid()}
+            if let required=schema["required"] as? [String],!Set(required).isSubset(of:Set(object.keys)) {throw invalid()}
+            if schema["additionalProperties"] as? Bool == false,!Set(object.keys).isSubset(of:Set(properties.keys)) {throw invalid()}
+            for (key,value) in object where properties[key] != nil {
+                guard let child=properties[key] as? [String:Any] else {throw invalid()}
+                try validate(value,schema:child,depth:depth+1)
+            }
         default:throw GaoActionError.providerNotReady("提供方使用了不支持的参数 schema 类型")
         }
     }

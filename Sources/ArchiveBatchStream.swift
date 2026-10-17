@@ -86,6 +86,73 @@ final class ArchiveBatchSnapshot: @unchecked Sendable {
     }
 }
 
+/// A job-local view of numeric split streams. This establishes exactly which
+/// named bytes were read; it does not establish that same-stem neighbors belong
+/// to the same author/archive, and never authorizes disposal of original volumes.
+final class ArchiveReadSnapshot: @unchecked Sendable {
+    let url: URL
+    let sources: [URL]
+    private let snapshots: [ArchiveBatchSnapshot]
+    private let originalFirst: URL
+    private init(url: URL, sources: [URL], snapshots: [ArchiveBatchSnapshot], originalFirst: URL) {
+        self.url = url; self.sources = sources; self.snapshots = snapshots; self.originalFirst = originalFirst
+    }
+    static func isNumericSplit(_ source: URL) -> Bool {
+        let parts = source.lastPathComponent.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 3 && ["zip", "7z"].contains(parts[parts.count - 2].lowercased()) &&
+            parts.last!.count == 3 && parts.last!.utf8.allSatisfy { (48...57).contains($0) }
+    }
+    /// Reject gaps and case/normalization aliases before a decoder can silently
+    /// truncate a stream at the first missing volume. Unrelated prefixes stay out.
+    static func numericMembers(_ source: URL) throws -> [URL] {
+        guard isNumericSplit(source), source.pathExtension == "001" else { throw ArchiveError.invalid("分卷读取必须从 .001 首卷开始；未移动任何原卷。") }
+        let stem = String(source.lastPathComponent.dropLast(3))
+        let normalized = stem.precomposedStringWithCanonicalMapping.lowercased()
+        let names = try FileManager.default.contentsOfDirectory(atPath: source.deletingLastPathComponent().path)
+        var found: [Int: URL] = [:]
+        for name in names {
+            guard name.count >= 3 else { continue }
+            let prefix = String(name.dropLast(3)), suffix = name.suffix(3)
+            guard prefix.precomposedStringWithCanonicalMapping.lowercased() == normalized,
+                  suffix.utf8.allSatisfy({ (48...57).contains($0) }), let number = Int(suffix) else { continue }
+            guard prefix == stem, number > 0, found[number] == nil else { throw ArchiveError.invalid("分卷名称大小写、规范化或序号存在冲突，原卷全部保留。") }
+            found[number] = source.deletingLastPathComponent().appendingPathComponent(name)
+        }
+        guard !found.isEmpty, found.count <= 999, let maximum = found.keys.max(), maximum == found.count,
+              (1...maximum).allSatisfy({ found[$0] != nil }) else { throw ArchiveError.invalid("分卷序号不连续或缺少首卷，原卷全部保留。") }
+        return (1...maximum).map { found[$0]! }
+    }
+    static func capture(_ source: URL, in directory: URL, maximumBytes: UInt64, cancellation: ArchiveCreationIO.Cancellation) throws -> ArchiveReadSnapshot {
+        if !isNumericSplit(source) {
+            let snapshot = try ArchiveBatchSnapshot.capture(source, in: directory, maximumBytes: maximumBytes, cancellation: cancellation)
+            return .init(url: snapshot.url, sources: [source], snapshots: [snapshot], originalFirst: source)
+        }
+        let sources = try numericMembers(source)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        var remaining = maximumBytes, snapshots: [ArchiveBatchSnapshot] = []
+        for (index, member) in sources.enumerated() {
+            try cancellation.check()
+            let holder = directory.appendingPathComponent("copy-" + String(index), isDirectory: true)
+            let snapshot = try ArchiveBatchSnapshot.capture(member, in: holder, maximumBytes: remaining, cancellation: cancellation)
+            let size = try FileManager.default.attributesOfItem(atPath: snapshot.url.path)[.size] as? NSNumber
+            guard let size, size.uint64Value <= remaining else { throw ArchiveError.invalid("分卷隔离副本超过当前容量预算。") }
+            remaining -= size.uint64Value
+            try ArchiveFileIO.moveExclusively(snapshot.url, to: directory.appendingPathComponent(member.lastPathComponent))
+            try FileManager.default.removeItem(at: holder)
+            snapshots.append(snapshot)
+        }
+        let result = ArchiveReadSnapshot(url: directory.appendingPathComponent(source.lastPathComponent), sources: sources, snapshots: snapshots, originalFirst: source)
+        try result.verify()
+        return result
+    }
+    func verify() throws {
+        for snapshot in snapshots { try snapshot.verify() }
+        if Self.isNumericSplit(originalFirst) {
+            guard try Self.numericMembers(originalFirst) == sources else { throw FileToolsError.changed(originalFirst) }
+        }
+    }
+}
+
 /// A decoder only emits framed bytes. Only this parent-side writer can create files,
 /// relative to a pinned, private staging directory. Names come from the checked index,
 /// never from decoder output. Frames are UInt32 index + UInt64 byte count, big endian.

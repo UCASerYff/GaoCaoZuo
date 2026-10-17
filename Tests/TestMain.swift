@@ -6,6 +6,38 @@ import Darwin
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
         let releaseTargeted=CommandLine.arguments.contains("--release-targeted")
+        if CommandLine.arguments.contains("--finder-adapters-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try runFinderCommandTests(renderMenus:false)
+            try runFileAppAdapterTests()
+            return
+        }
+        if CommandLine.arguments.contains("--input-targeted-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try runInputAutomationTests()
+            try runInputDeviceMenuTests()
+            try runInputEnhancementTests()
+            try runInputLifecycleTests()
+            try runBABMigrationTests()
+            try runCleanerSafetyTests()
+            if let source=CommandLine.arguments.firstIndex(of:"--input-private-snapshot"),let report=CommandLine.arguments.firstIndex(of:"--input-private-report"),
+               CommandLine.arguments.count>source+1,CommandLine.arguments.count>report+1 {
+                try runPrivateInputMigrationAudit(snapshot:URL(fileURLWithPath:CommandLine.arguments[source+1]),report:URL(fileURLWithPath:CommandLine.arguments[report+1]))
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--client-window-clipboard-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try await runGaoActionTests()
+            try runWindowTargetModeTests()
+            try runWindowProcessIdentityTests()
+            try runWindowFocusTests()
+            try await runWindowFocusTransactionTests()
+            try await runWindowLayoutTransactionTests()
+            try runClipboardSafetyTests()
+            try runClipboardPasteTransactionTests()
+            return
+        }
         if let i=CommandLine.arguments.firstIndex(of:"--upgrade-copy-check"),CommandLine.arguments.count > i+1 {
             try runUpgradeCopyCheck(directory:URL(fileURLWithPath:CommandLine.arguments[i+1],isDirectory:true))
             return

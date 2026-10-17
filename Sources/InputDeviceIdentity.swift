@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// An observed IOHID interface, not a claim that its hardware workflows were tested.
 struct InputDeviceIdentity: Codable, Identifiable, Equatable {
@@ -51,4 +52,19 @@ enum InputDeviceMatrix {
                          verificationState: monitoringAuthorized ? "已识别；硬件动作未验收" : "已识别；输入监听未获授权")
         }
     }
+}
+
+/// A binding is scoped to one actual IORegistry interface attachment in one boot.
+/// VID/PID/location (including a reused USB port) never establish ownership.
+/// No serial or hardware address is persisted; topology is hashed for comparison.
+enum HIDConnectionIdentity {
+    static func identifier(bootSession:String,registryID:UInt64,vendor:Int,product:Int,
+                           location:Int,transport:String,usagePairs:[String],interfacePath:String)->String {
+        let parts=[bootSession,String(registryID),String(vendor),String(product),String(location),transport,
+                   usagePairs.sorted().joined(separator:","),interfacePath]
+        let encoder=JSONEncoder()
+        let bytes=(try? encoder.encode(parts)) ?? Data()
+        return "hid-v2:"+SHA256.hash(data:bytes).map{String(format:"%02x",$0)}.joined()
+    }
+    static func isConnectionScoped(_ id:String)->Bool {id.hasPrefix("hid-v2:") && id.count==71}
 }

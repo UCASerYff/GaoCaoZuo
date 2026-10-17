@@ -244,6 +244,26 @@ import Darwin
     try rejected("未声明动作") {try capability.require(action:"capture.display",parameters:[:],items:false,references:false)}
     try rejected("未声明附件") {try capability.require(action:"capture.region",parameters:[:],items:true,references:false)}
     try rejected("未知能力参数") {try capability.require(action:"capture.region",parameters:["callbackURL":"https://example.org"],items:false,references:false)}
+    let referenceCaps:[String:Any] = ["schemaVersion":1,"bundleID":"com.gaoseries.GaoJiLing","appVersion":"fixture","actions":[[
+        "action":"storage.inspect","parametersSchema":["type":"object","properties":["mode":["type":"string","enum":["metadata"]]],"additionalProperties":false],
+        "supportsItems":false,"supportsReferences":true,
+        "referencesSchema":["type":"array","minItems":1,"maxItems":1,"items":["type":"object","properties":["kind":["const":"directory"]],"required":["kind"]]],
+        "requiresUserConfirmation":true,"reviewOnly":false
+    ]]]
+    let referenceCapability=try JSONDecoder().decode(GaoActionProviderCapabilities.self,from:JSONSerialization.data(withJSONObject:referenceCaps))
+    let directoryRef=GaoActionReference(id:UUID().uuidString,kind:.directory,fileURL:temp.absoluteString,displayName:"isolated fixture")
+    try referenceCapability.requireInputs(action:"storage.inspect",parameters:["mode":"metadata"],items:false,references:[directoryRef]);checks += 1
+    try rejected("提供方要求明确目录，不能发空引用") {try referenceCapability.requireInputs(action:"storage.inspect",parameters:[:],items:false,references:[])}
+    try rejected("提供方只接受一个目录") {try referenceCapability.requireInputs(action:"storage.inspect",parameters:[:],items:false,references:[directoryRef,directoryRef])}
+    var applicationRef=directoryRef;applicationRef.kind = .application
+    try rejected("引用类型不满足提供方const") {try referenceCapability.requireInputs(action:"storage.inspect",parameters:[:],items:false,references:[applicationRef])}
+    try rejected("元数据能力不能冒充重复文件引擎") {try referenceCapability.requireInputs(action:"storage.inspect",parameters:["mode":"duplicates"],items:false,references:[directoryRef])}
+    var noReferenceCaps=referenceCaps
+    noReferenceCaps["actions"]=[["action":"cleanup.review","parametersSchema":["type":"object","properties":[:],"additionalProperties":false],
+        "supportsItems":false,"supportsReferences":false,"referencesSchema":["type":"array","minItems":0,"maxItems":0,"items":false]]]
+    let noReferenceCapability=try JSONDecoder().decode(GaoActionProviderCapabilities.self,from:JSONSerialization.data(withJSONObject:noReferenceCaps))
+    try noReferenceCapability.requireInputs(action:"cleanup.review",parameters:[:],items:false,references:[]);checks += 1
+    try rejected("复核动作不接收目录引用") {try noReferenceCapability.requireInputs(action:"cleanup.review",parameters:[:],items:false,references:[directoryRef])}
     let client=GaoActionClient(dataDirectory:temp.appendingPathComponent("Client"))
     do {_ = try await client.sendRequest(action:"capture.region",targetBundleID:"com.gaoseries.NonExistentProvider")} catch GaoActionError.providerNotReady {checks += 1}
     print("PASS: GaoAction V1 canonical fixtures + \(checks) meaningful schema/FD staging/reference/journal/capability assertions; no provider or GUI completion claimed")

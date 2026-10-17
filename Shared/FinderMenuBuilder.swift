@@ -53,6 +53,61 @@ enum FinderMenuContext {
     }
     static func isExcluded(_ urls:[URL],appBundleID:String?=nil,preferences:FinderMenuPreferences)->Bool {
         if let appBundleID,!appBundleID.isEmpty,preferences.excludedApps.contains(appBundleID) {return true}
-        return urls.contains {url in preferences.excludedPaths.contains {path in url.path == path || url.path.hasPrefix(path.hasSuffix("/") ? path:path+"/")}}
+        // Compare path components after lexical normalization. This neither reads
+        // nor materializes cloud files, and /excluded must not match /excluded-2.
+        return urls.contains {url in preferences.excludedPaths.contains {path in
+            guard path.hasPrefix("/"),!path.contains("\0") else {return false}
+            let excluded=URL(fileURLWithPath:path).standardizedFileURL.path
+            let candidate=url.standardizedFileURL.path
+            return candidate == excluded || candidate.hasPrefix(excluded == "/" ? "/" : excluded+"/")
+        }}
+    }
+    /// Recheck visibility against the newest configuration when an old Finder
+    /// menu is clicked. A changed or disabled dynamic child cannot survive just
+    /// because its numeric menu tag was issued earlier.
+    static func isActionEnabled(_ action:String,snapshot:FinderMenuSnapshot)->Bool {
+        func enabled(_ id:String)->Bool {snapshot.preferences.items.contains{$0.id == id && $0.enabled && !$0.title.isEmpty}}
+        if action == "files.copy" {return enabled("folder.copy")}
+        if action == "files.move" {return enabled("folder.move")}
+        if action == "file.template.import" {return enabled("file.template.create")}
+        for prefix in ["folder.open.","folder.copy.","folder.move."] where action.hasPrefix(prefix) {
+            let id=String(action.dropFirst(prefix.count)),parent=String(prefix.dropLast())
+            return enabled(parent) && snapshot.folders.contains{$0.id == id && (parent == "folder.open" ? $0.isCommon : $0.isSend)}
+        }
+        for (prefix,binary) in [("template.",false),("binaryTemplate.",true)] where action.hasPrefix(prefix) {
+            let id=String(action.dropFirst(prefix.count))
+            return enabled("file.template.create") && snapshot.templates.contains{$0.id == id && $0.binary == binary}
+        }
+        if action.hasPrefix("file.open.") {
+            let id=String(action.dropFirst("file.open.".count))
+            return enabled("file.openApp") && snapshot.applications.contains{$0.id == id}
+        }
+        return FinderActionRequest.isAllowed(action) && enabled(action)
+    }
+}
+
+/// A menu is a choice about the objects that were visible when it opened.
+/// Finder may change selection or targetedURL before invoking the callback;
+/// never silently reinterpret that old choice as a request for other objects.
+struct FinderMenuInvocationContext {
+    let selection:[URL]
+    let container:URL?
+    let usesSelection:Bool
+    let appBundleID:String?
+    init(selection:[URL],container:URL?,usesSelection:Bool,appBundleID:String?) {
+        self.selection=selection.map(\.standardizedFileURL)
+        self.container=container?.standardizedFileURL
+        self.usesSelection=usesSelection
+        self.appBundleID=appBundleID
+    }
+    var menuURLs:[URL] {usesSelection ? selection : container.map{[$0]} ?? []}
+    func urls(for action:String)->[URL] {
+        FinderMenuContext.usesContainer(action) ? container.map{[$0]} ?? [] : menuURLs
+    }
+    func matches(selection:[URL],container:URL?,appBundleID:String?)->Bool {
+        guard self.appBundleID == appBundleID,self.container == container?.standardizedFileURL else {return false}
+        // Container, sidebar and toolbar actions ignore an unrelated stale Finder
+        // selection. Selection menus must preserve the exact ordered selection.
+        return !usesSelection || self.selection == selection.map(\.standardizedFileURL)
     }
 }

@@ -220,14 +220,14 @@ public enum GaoActionError: LocalizedError {
     case unknownAction(String), sizeExceeded(String), duplicateRequest(String), providerNotReady(String)
     public var errorDescription: String? {
         switch self {
-        case .invalidPackage(let s): return "GaoAction 校验失败：\(s)"
-        case .schemaUnsupported(let n): return "不支持 GaoAction schemaVersion \(n)"
-        case .expired: return "GaoAction 包已过期，请重新发送。"
-        case .pathTraversal: return "GaoAction 附件路径不安全。"
-        case .unknownAction(let s): return "不支持 GaoAction 动作：\(s)"
-        case .sizeExceeded(let s): return "GaoAction 超限：\(s)；请分批或另选文件。"
-        case .duplicateRequest: return "该请求已经接收；仅显示原状态，不重复执行。"
-        case .providerNotReady(let s): return "提供方尚未就绪：\(s)"
+        case .invalidPackage(let s): return L10n.format("GaoAction 校验失败：%@",L10n.text(s))
+        case .schemaUnsupported(let n): return L10n.format("不支持 GaoAction schemaVersion %d",n)
+        case .expired: return L10n.text("GaoAction 包已过期，请重新发送。")
+        case .pathTraversal: return L10n.text("GaoAction 附件路径不安全。")
+        case .unknownAction(let s): return L10n.format("不支持 GaoAction 动作：%@",s)
+        case .sizeExceeded(let s): return L10n.format("GaoAction 超限：%@；请分批或另选文件。",L10n.text(s))
+        case .duplicateRequest: return L10n.text("该请求已经接收；仅显示原状态，不重复执行。")
+        case .providerNotReady(let s): return L10n.format("提供方尚未就绪：%@",L10n.text(s))
         }
     }
 }

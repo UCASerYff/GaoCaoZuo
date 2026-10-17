@@ -60,6 +60,17 @@ func runWindowLayoutTransactionTests() async throws {
     let original = CGRect(x: 150, y: 120, width: 1000, height: 500)
     let area = CGRect(x: 0, y: 25, width: 1440, height: 850)
     let left = CGRect(x: 0, y: 25, width: 720, height: 850)
+    let primary = WindowDisplaySnapshot(id:1,frame:area,visibleFrame:area,scale:2)
+    let secondary = WindowDisplaySnapshot(id:2,frame:area.offsetBy(dx:1440,dy:0),visibleFrame:area.offsetBy(dx:1440,dy:0),scale:1)
+    try check(WindowDisplaySnapshot.permitsWrite(captured:[primary],current:[primary]),"相同显示器证据允许继续")
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:[primary,secondary],current:[secondary,primary]),"主显示器/坐标基准次序改变即拒绝")
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:[primary,secondary],current:[primary]),"热拔出拒绝旧坐标")
+    let savedRecoveryDisplays=[primary,secondary]
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:savedRecoveryDisplays,current:[primary]),"下一次恢复也须使用原记录的拓扑，不能以当前快照授权旧恢复坐标")
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:[primary],current:[.init(id:3,frame:area,visibleFrame:area,scale:2)]),"同几何不能冒充原显示器")
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:[primary],current:[.init(id:1,frame:area,visibleFrame:area,scale:1)]),"缩放变化拒绝")
+    try check(!WindowDisplaySnapshot.isValid([primary,primary]) && !WindowDisplaySnapshot.isValid([]),"缺失及重复显示器身份拒绝")
+    try check(!WindowDisplaySnapshot.permitsWrite(captured:[primary],current:[.init(id:1,frame:area,visibleFrame:area.insetBy(dx:0,dy:20),scale:2)]),"菜单栏/Dock工作区变化拒绝")
     func transaction(_ model: SimulatedLayoutWindow) -> WindowLayoutTransaction {
         WindowLayoutTransaction(pause: { model.tick(); await Task.yield() })
     }
@@ -72,6 +83,20 @@ func runWindowLayoutTransactionTests() async throws {
             read: read ?? { model.frame }, setSize: model.size, setPosition: model.position,
             saveOriginal: { model.saved = true }, didRestore: didRestore)
     }
+    let changedDisplay = SimulatedLayoutWindow(original)
+    var currentDisplays = [primary]
+    changedDisplay.onTick = { currentDisplays = [secondary] }
+    func validateDisplays() throws {
+        guard WindowDisplaySnapshot.permitsWrite(captured:[primary],current:currentDisplays) else {throw SystemControlError.message("模拟显示器已变化")}
+    }
+    var displayFailure:WindowLayoutFailure?
+    do {
+        _ = try await transaction(changedDisplay).execute(requested:left,original:original,workArea:area,resize:true,allowConstrained:true,
+            validate:validateDisplays,validateRollback:validateDisplays,read:{changedDisplay.frame},
+            setSize:changedDisplay.size,setPosition:changedDisplay.position,saveOriginal:{changedDisplay.saved=true})
+    } catch {displayFailure=error as? WindowLayoutFailure}
+    try check(displayFailure?.rollbackVerified == false && changedDisplay.writes == 3 && changedDisplay.saved,
+        "中途显示器改变停止后续写入和旧坐标回滚，保留原位置记录")
 
     let delayed = SimulatedLayoutWindow(original); delayed.latency = 4
     let delayedEngine = transaction(delayed)

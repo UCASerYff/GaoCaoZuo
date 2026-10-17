@@ -55,6 +55,7 @@ enum FinderCallbackMainActor {
 final class GaoFinderSync: FIFinderSync {
     private var observer:NSObjectProtocol?
     @MainActor private var menuActions:FinderMenuActionRegistry?
+    @MainActor private var invocation:FinderMenuInvocationContext?
     override init() {
         super.init()
         FinderCallbackMainActor.sync { updateScope() }
@@ -64,6 +65,7 @@ final class GaoFinderSync: FIFinderSync {
     }
     deinit {if let observer {DistributedNotificationCenter.default().removeObserver(observer)}}
     @MainActor private func updateScope() {
+        menuActions?.invalidate();invocation=nil
         let path=getpwuid(getuid()).flatMap{$0.pointee.pw_dir}.map{String(cString:$0)} ?? NSHomeDirectory()
         let preferences=FinderMenuSnapshot.read()?.preferences ?? FinderMenuPreferences()
         var roots:Set<URL>=[URL(fileURLWithPath:path,isDirectory:true)]
@@ -71,7 +73,14 @@ final class GaoFinderSync: FIFinderSync {
         FIFinderSyncController.default().directoryURLs=roots
     }
     override var toolbarItemName:String {"搞操作"}
-    override var toolbarItemToolTip:String {"当前目录的快捷操作"}
+    override var toolbarItemToolTip:String {
+        var value=""
+        FinderCallbackMainActor.sync {
+            L10n.setLanguage(FinderMenuSnapshot.read()?.language ?? "system")
+            value=L10n.text("当前目录的快捷操作")
+        }
+        return value
+    }
     override var toolbarItemImage:NSImage {
         var image:NSImage!
         FinderCallbackMainActor.sync { image=NSImage(systemSymbolName:"cursorarrow.motionlines",accessibilityDescription:"搞操作") ?? NSImage() }
@@ -84,30 +93,36 @@ final class GaoFinderSync: FIFinderSync {
     }
     @MainActor private func makeMenu(for menuKind:FIMenuKind)->NSMenu? {
         let registry=menuActions ?? FinderMenuActionRegistry();menuActions=registry
-        registry.invalidate()
+        registry.invalidate();invocation=nil
         guard [.contextualMenuForItems,.contextualMenuForContainer,.contextualMenuForSidebar,.toolbarItemMenu].contains(menuKind) else {return nil}
         let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
         if menuKind == .toolbarItemMenu && !snapshot.preferences.showToolbar {return nil}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
-        let urls=selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
         let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let context=FinderMenuInvocationContext(selection:selection,container:controller.targetedURL(),usesSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,appBundleID:frontApp)
+        let urls=context.menuURLs
         guard !urls.isEmpty,!FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences) else{return nil}
         let menu=FinderMenuBuilder.menu(snapshot:snapshot,urls:urls,hasSelection:menuKind == .contextualMenuForItems && !selection.isEmpty,target:self,selector:#selector(openAction(_:)),appBundleID:frontApp)
         guard registry.assignTags(in:menu,selector:#selector(openAction(_:))) else {return nil}
+        invocation=context
         return menu
     }
     @objc private func openAction(_ sender:NSMenuItem) {
         FinderCallbackMainActor.sync { performAction(sender) }
     }
     @MainActor private func performAction(_ sender:NSMenuItem) {
-        guard let action=menuActions?.action(for:sender.tag),FinderActionRequest.isAllowed(action) else {NSLog("GaoFinderSync ignored unknown or expired menu command");return}
+        guard let action=menuActions?.action(for:sender.tag),FinderActionRequest.isAllowed(action),let invocation else {NSLog("GaoFinderSync ignored unknown or expired menu command");return}
         let controller=FIFinderSyncController.default(),selection=controller.selectedItemURLs() ?? []
-        let containerAction=FinderMenuContext.usesContainer(action)
-        let urls=containerAction ? controller.targetedURL().map{[$0]} ?? selection : selection.isEmpty ? controller.targetedURL().map{[$0]} ?? [] : selection
         let snapshot=FinderMenuSnapshot.read() ?? FinderMenuSnapshot()
         let frontApp=NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        guard !FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences),
+        let urls=invocation.urls(for:action)
+        guard invocation.matches(selection:selection,container:controller.targetedURL(),appBundleID:frontApp),
+              FinderMenuContext.isActionEnabled(action,snapshot:snapshot),
+              !FinderMenuContext.isExcluded(urls,appBundleID:frontApp,preferences:snapshot.preferences),
               let url=FinderActionRequest.issue(action:action,urls:urls) else{return}
+        // A Finder callback consumes this menu choice once, even if opening the
+        // containing app later fails. A repeated click needs a fresh menu.
+        menuActions?.invalidate();self.invocation=nil
         let extensionURL=Bundle.main.bundleURL,pluginsURL=extensionURL.deletingLastPathComponent(),contentsURL=extensionURL.deletingLastPathComponent().deletingLastPathComponent(),appURL=extensionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         guard extensionURL.pathExtension == "appex",pluginsURL.lastPathComponent == "PlugIns",contentsURL.lastPathComponent == "Contents",appURL.pathExtension == "app",Bundle(url:appURL)?.bundleIdentifier == "com.gaoseries.GaoCaoZuo" else{return}
         let config=NSWorkspace.OpenConfiguration();config.activates=false;config.allowsRunningApplicationSubstitution=false;config.arguments=["--background-action"]

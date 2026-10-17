@@ -1,6 +1,7 @@
 import AppKit
 import IOKit.hid
 import Combine
+import Darwin
 
 struct HIDButtonMapping:Codable,Equatable,Identifiable {
     var id=UUID();var name="设备按钮";var enabled=false;var usage=1
@@ -25,9 +26,11 @@ struct HIDDeviceDescriptor:Identifiable,Equatable {
     var usagePairs:[String]=[]
     var hasWheelElement=false
     var hasPressureElement=false
-    var isTrackpad:Bool {usagePairs.contains("13:5") || name.localizedCaseInsensitiveContains("trackpad") || name.localizedCaseInsensitiveContains("touchpad")}
+    var interfacePath:String = ""
+    var bindingScope:String = "当前接口连接；断接或系统重启后须重新绑定"
+    var isTrackpad:Bool {usagePairs.contains("13:5")}
 }
-struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
+struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;var generation:Int = 0}
 
 @MainActor final class HIDInputDevices:ObservableObject {
     @Published private(set) var devices:[HIDDeviceDescriptor]=[]
@@ -37,6 +40,16 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
     private var manager:IOHIDManager?
     private var identifiers:[UInt64:String]=[:]
     private var pressed:Set<String>=[]
+    private static let bootSession:String = {
+        var size=0
+        guard sysctlbyname("kern.bootsessionuuid",nil,&size,nil,0)==0,size>1,size<1024 else {return UUID().uuidString}
+        var bytes=[CChar](repeating:0,count:size)
+        guard sysctlbyname("kern.bootsessionuuid",&bytes,&size,nil,0)==0 else{return UUID().uuidString}
+        return String(cString:bytes)
+    }()
+    func isCurrent(_ observation:HIDButtonObservation)->Bool {
+        observation.generation==connectionGeneration && devices.contains{$0.id==observation.deviceID}
+    }
     @Published private(set) var connectionGeneration=0
     private static let attached:IOHIDDeviceCallback={ context,result,_,device in
         guard let context,result==kIOReturnSuccess else{return}
@@ -82,7 +95,7 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
             IOHIDManagerUnscheduleFromRunLoop(manager,CFRunLoopGetMain(),CFRunLoopMode.commonModes.rawValue)
             IOHIDManagerClose(manager,IOOptionBits(kIOHIDOptionsTypeNone))
         }
-        manager=nil;identifiers.removeAll();pressed.removeAll();devices=[]
+        manager=nil;identifiers.removeAll();pressed.removeAll();devices=[];connectionGeneration += 1
         if !keepStatus {status="设备监听已停止"}
     }
     private static let matching:[[String:Int]] = [[kIOHIDDeviceUsagePageKey:1,kIOHIDDeviceUsageKey:2],[kIOHIDDeviceUsagePageKey:1,kIOHIDDeviceUsageKey:1],[kIOHIDDeviceUsagePageKey:13,kIOHIDDeviceUsageKey:5]]
@@ -94,8 +107,6 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
         func number(_ key:String)->Int {(IOHIDDeviceGetProperty(device,key as CFString) as? NSNumber)?.intValue ?? 0}
         let vendor=number(kIOHIDVendorIDKey),product=number(kIOHIDProductIDKey),location=number(kIOHIDLocationIDKey)
         let name=IOHIDDeviceGetProperty(device,kIOHIDProductKey as CFString) as? String ?? "鼠标/指针设备"
-        var id="hid:\(vendor):\(product):"+(location != 0 ? String(location):"session-\(registry)")
-        if identifiers.values.contains(id) {id += ":session-\(registry)"}
         let elements=IOHIDDeviceCopyMatchingElements(device,nil,0) as? [IOHIDElement] ?? []
         let usages=Set(elements.filter{IOHIDElementGetUsagePage($0)==9}.map{Int(IOHIDElementGetUsage($0))}.filter{(1...32).contains($0)}).sorted()
         let transport=IOHIDDeviceGetProperty(device,kIOHIDTransportKey as CFString) as? String ?? "未知"
@@ -104,11 +115,16 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
             guard let page=pair[kIOHIDDeviceUsagePageKey] as? NSNumber,let usage=pair[kIOHIDDeviceUsageKey] as? NSNumber else{return nil}
             return "\(page.intValue):\(usage.intValue)"
         }).sorted()
+        var path=[CChar](repeating:0,count:4096)
+        let pathResult=IORegistryEntryGetPath(IOHIDDeviceGetService(device),kIOServicePlane,&path)
+        let interfacePath=pathResult==kIOReturnSuccess ? String(cString:path):""
+        let id=HIDConnectionIdentity.identifier(bootSession:Self.bootSession,registryID:registry,vendor:vendor,
+            product:product,location:location,transport:transport,usagePairs:usagePairs,interfacePath:interfacePath)
         identifiers[registry]=id
         if !devices.contains(where:{$0.id==id}) {devices.append(.init(id:id,name:name,vendor:vendor,product:product,location:location,buttonUsages:usages,
             transport:transport,isBuiltIn:number(kIOHIDBuiltInKey) != 0,registryID:registry,usagePairs:usagePairs,
             hasWheelElement:elements.contains{IOHIDElementGetUsagePage($0)==1 && IOHIDElementGetUsage($0)==0x38},
-            hasPressureElement:elements.contains{IOHIDElementGetUsagePage($0)==13 && IOHIDElementGetUsage($0)==0x30}))
+            hasPressureElement:elements.contains{IOHIDElementGetUsagePage($0)==13 && IOHIDElementGetUsage($0)==0x30},interfacePath:interfacePath))
             connectionGeneration += 1}
     }
     private func remove(_ device:IOHIDDevice) {
@@ -123,7 +139,7 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool}
         let down=IOHIDValueGetIntegerValue(value) != 0,key=id+"|\(usage)"
         if down {guard pressed.insert(key).inserted else{return}} else {guard pressed.remove(key) != nil else{return}}
         lastButton="\(id) · Usage \(usage) · "+(down ? "按下":"松开")
-        onButton?(.init(deviceID:id,usage:usage,pressed:down))
+        onButton?(.init(deviceID:id,usage:usage,pressed:down,generation:connectionGeneration))
     }
     isolated deinit {
         if let manager {IOHIDManagerUnscheduleFromRunLoop(manager,CFRunLoopGetMain(),CFRunLoopMode.commonModes.rawValue);IOHIDManagerClose(manager,IOOptionBits(kIOHIDOptionsTypeNone))}

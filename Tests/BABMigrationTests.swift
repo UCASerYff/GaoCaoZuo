@@ -162,5 +162,52 @@ import AppKit
     let newScriptPayload=try EnhancedRuleFiles.importBAB(legacyScriptSource)
     let scriptUpgrade=try EnhancedRuleFiles.mergeBABUpgrade(imported:newScriptPayload,into:oldScriptConfig,legacySource:legacyScriptSource)
     try check(scriptUpgrade.configuration.scriptLibrary==oldScriptConfig.scriptLibrary,"旧随机脚本UUID与用户版本保留，不重添脚本")
+    var scriptAudited=document([keyboard()])
+    scriptAudited["ruleOfAppleScript"]=[["Name":"原脚本","AppleScript":"return 1","Enable":"1","FutureCondition":7],
+        ["Name":"缺失源码","AppleScript":Data([1])]]
+    scriptAudited["ruleOfFutureDevice"]=["original":Data([2,3])]
+    let scriptReport=try EnhancedRuleFiles.importBAB(scriptAudited)
+    let scriptRows=scriptReport.report!.rows.filter{$0.module=="ruleOfAppleScript"}
+    try check(scriptRows.count==2 && scriptRows[0].disposition == .requiresReview && scriptRows[1].disposition == .unavailable,"脚本条目逐项列原因，缺失源码不静默跳过")
+    try check(scriptRows[0].unknownKeys==["FutureCondition"] && scriptReport.configuration.scriptLibrary.count==1,"脚本未知字段保留且不会自动执行")
+    try check(scriptReport.report!.rows.contains{$0.module=="ruleOfFutureDevice" && $0.disposition == .unavailable},"未知规则模块显式列为未转换，原值仍保留")
+    let scriptReplayed=try EnhancedRuleFiles.mergeInputConfiguration(scriptReport.configuration,into:.init())
+    try check(scriptReplayed.configuration.scriptLibrary.count==1 && scriptReplayed.configuration.migrationSources[0].rows.count==4,"脚本和未知模块来源审计能合并往返")
     print("PASS: \(checks)项BAB来源保真、精确映射、旧UUID三向升级、设备门控与重放测试；未读真实配置、运行脚本或操作GUI")
+}
+
+/// Explicit, read-only audit of a human-authorized historical migration snapshot.
+/// It does not activate rules, run scripts, resolve private protocols or write App data.
+@MainActor func runPrivateInputMigrationAudit(snapshot:URL,report:URL)throws {
+    let attributes=try FileManager.default.attributesOfItem(atPath:snapshot.path)
+    guard attributes[.type] as? FileAttributeType == .typeRegular,
+          ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 16*1024*1024 else {
+        throw SystemControlError.message("来源快照不是预算内普通文件。")
+    }
+    let bytes=try Data(contentsOf:snapshot)
+    guard let document=try PropertyListSerialization.propertyList(from:bytes,format:nil) as? [String:Any],
+          let input=document["input"] as? [String:Any] else {throw SystemControlError.message("来源快照缺少独立 input 产品字段。")}
+    let parsed=try EnhancedRuleFiles.importBAB(input),source=parsed.report!
+    let candidates=Dictionary(uniqueKeysWithValues:parsed.configuration.rules.map{($0.migrationOrigin!.rowID,$0)})
+    let rows:[[String:Any]]=source.rows.map {row in
+        var value:[String:Any]=["sourceProduct":"Better And Better","module":row.module,"groupIndex":row.groupIndex,
+            "rowIndex":row.rowIndex,"disposition":row.disposition.rawValue,"requirements":row.requirements,
+            "reason":row.reason,"unknownKeys":row.unknownKeys,"sourceEnabled":row.sourceEnabled.map{$0 as Any} ?? NSNull()]
+        if let rule=candidates[row.id] {
+            value["mapping"]=["trigger":rule.trigger.rawValue,"actionKind":rule.effect.kind.rawValue,"actionID":rule.effect.actionID,
+                "windowTargetMode":rule.effect.windowTargetMode.rawValue,"enabled":rule.enabled]
+        }
+        return value
+    }
+    let counts=Dictionary(grouping:source.rows,by:{$0.disposition.rawValue}).mapValues(\.count)
+    let scripts=parsed.configuration.scriptLibrary.map{["id":$0.id.uuidString,"sourceSHA256":InputMigrationFingerprint.digest(Data($0.source.utf8)),"utf8Bytes":$0.source.utf8.count,"executed":false] as [String:Any]}
+    let value:[String:Any]=["schema":1,"sourceProduct":"Better And Better","sourceSnapshotSHA256":InputMigrationFingerprint.digest(bytes),
+        "operationalSnapshotSHA256":source.sha256,"rows":rows,"counts":counts,"retainedOperationalKeys":source.retainedKeys,
+        "omittedNonOperationalKeyCount":source.omittedKeyCount,"scripts":scripts,"allImportedRulesPaused":parsed.configuration.rules.allSatisfy{!$0.enabled},
+        "actualCurrentDataModified":false,"scriptsExecuted":false,"hardwareVerified":false,
+        "scope":"仅重新解析已有合法历史 input 快照；不是其他三产品迁移统计，也不证明当前替代完成。"]
+    let data=try JSONSerialization.data(withJSONObject:value,options:[.prettyPrinted,.sortedKeys])
+    try data.write(to:report,options:.atomic)
+    try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:report.path)
+    print("PASS: 只读重新解析 BAB 原快照；\(rows.count)条逐项来源审计；未激活规则、执行脚本或改动真实资料")
 }

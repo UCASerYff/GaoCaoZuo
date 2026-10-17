@@ -120,7 +120,12 @@ enum ArchiveQuickLookNative {
         let deadline=ProcessInfo.processInfo.systemUptime+max(0,limits.timeoutSeconds)
         let suffix=url.pathExtension.lowercased()
         if suffix=="ace" {throw Failure(message:"ACE 目录暂不能在系统空格预览中读取，请在搞操作中打开。")}
-        let handle=try FileHandle(forReadingFrom:url)
+        // The interactive reader can decline a non-regular URL and enter this
+        // fallback. A blocking FileHandle open here would hang on a FIFO before
+        // fstat/time budgets get any chance to reject it.
+        let descriptor=open(url.path,O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC)
+        guard descriptor>=0 else {throw Failure(message:"只能预览普通压缩文件，请在搞操作中打开。")}
+        let handle=FileHandle(fileDescriptor:descriptor,closeOnDealloc:true)
         defer {try? handle.close()}
         var info=stat()
         guard fstat(handle.fileDescriptor,&info)==0,(info.st_mode & UInt16(S_IFMT))==UInt16(S_IFREG) else {throw Failure(message:"只能预览普通压缩文件，请在搞操作中打开。")}

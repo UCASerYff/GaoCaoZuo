@@ -313,6 +313,7 @@ final class WindowManager: ObservableObject {
     private struct OriginalFrame {
         let element:AXUIElement; let pid:pid_t; let application:NSRunningApplication
         let identity:WindowProcessIdentity.Snapshot; let frame:CGRect
+        let displays:[WindowDisplaySnapshot]
         func matches(window:AXUIElement,pid:pid_t,application:NSRunningApplication,identity:WindowProcessIdentity.Snapshot?)->Bool {
             self.pid==pid && !self.application.isTerminated && self.application.isEqual(application)
                 && self.identity.matches(identity) && CFEqual(element,window)
@@ -329,6 +330,7 @@ final class WindowManager: ObservableObject {
         let moveWithPointer: Bool
         var snapEnabled = true
         var movementConfirmed = false
+        var displays: [WindowDisplaySnapshot] = []
     }
     private var dragSession: DragSession?
     private var dragGeneration: UInt64 = 0
@@ -435,11 +437,13 @@ final class WindowManager: ObservableObject {
             }
             let current = try readFrame(window)
             let originalIndex = originalFrames.firstIndex { $0.matches(window:window,pid:pid,application:application,identity:identity) }
+            let displays = try captureDisplays()
             let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
             let screens = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:primaryTop),configuration:configuration) }
             let desired: CGRect
             if action == .restore {
                 guard let originalIndex else { throw SystemControlError.message("这个窗口还没有可恢复的位置记录。") }
+                try validateDisplays(originalFrames[originalIndex].displays)
                 desired = originalFrames[originalIndex].frame
             } else {
                 var frame = try WindowGeometry.targetFrame(action: action, current: current, visibleFrames: screens)
@@ -460,7 +464,7 @@ final class WindowManager: ObservableObject {
             let outcome = try await applyLayout(desired, original: current, window: window, pid: pid,
                 application: application, identity: identity, capturedPID: capturedPID,
                 workArea: WindowGeometry.screenIndex(for: desired, in: screens).map { screens[$0] },
-                restoring: action == .restore)
+                restoring: action == .restore, displays: displays)
             if configuration.movePointerWithWindow && [.nextDisplay,.previousDisplay].contains(action) {
                 CGWarpMouseCursorPosition(CGPoint(x:outcome.actual.midX,y:outcome.actual.midY))
             }
@@ -495,7 +499,8 @@ final class WindowManager: ObservableObject {
             try ensureNotFullScreen(window)
             try checkSettable(window, attribute: kAXPositionAttribute)
             dragSession = DragSession(window: window, pid: pid, application:application,identity:identity,initialFrame: frame,
-                                      initialPointer: pointer, moveWithPointer: moveWithPointer, snapEnabled: snapEnabled)
+                                      initialPointer: pointer, moveWithPointer: moveWithPointer, snapEnabled: snapEnabled,
+                                      displays: try captureDisplays())
             lastError = nil
             return true
         } catch { lastError = error.localizedDescription; throw error }
@@ -517,6 +522,8 @@ final class WindowManager: ObservableObject {
            let snapped = snappedFrames.first(where: { $0.matches(window:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity) }),
            let original = originalFrames.first(where: { $0.matches(window:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity) }) {
             try checkDragApplication(drag)
+            try validateDisplays(original.displays)
+            try validateDisplays(snapped.displays)
             let restored = WindowEnhancementGeometry.restoredDragFrame(original:original.frame,snapped:snapped.frame,pointer:pointer)
             try checkSettable(drag.window,attribute:kAXSizeAttribute)
             // Restoring size is an asynchronous AX transaction too. Do not resume dragging or
@@ -565,7 +572,7 @@ final class WindowManager: ObservableObject {
                 let current=try self.readFrame(captured.window)
                 let outcome=try await self.applyLayout(requested,original:current,window:captured.window,pid:captured.pid,
                     application:captured.application,identity:captured.identity,capturedPID:captured.pid,
-                    workArea:nil,restoring:false,saveFrame:captured.initialFrame,additionalValidation:{
+                    workArea:nil,restoring:false,saveFrame:captured.initialFrame,displays:captured.displays,additionalValidation:{
                         guard self.dragGeneration==generation else {throw CancellationError()}
                     })
                 guard outcome.isExact else {throw SystemControlError.message("应用限制了拖离恢复尺寸，已停止拖动；原位置记录保留。")}
@@ -614,12 +621,12 @@ final class WindowManager: ObservableObject {
             snapPreview.hide()
             let outcome = try await applyLayout(desired, original: current, window: drag.window, pid: drag.pid,
                 application: application, identity: drag.identity, capturedPID: drag.pid,
-                workArea: workArea, restoring: false, saveFrame: drag.initialFrame,
+                workArea: workArea, restoring: false, saveFrame: drag.initialFrame, displays: drag.displays,
                 additionalValidation: {
                     guard self.dragGeneration == generation else { throw CancellationError() }
                 })
             snappedFrames.removeAll { $0.matches(window:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity) }
-            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity,frame:outcome.actual))
+            snappedFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity,frame:outcome.actual,displays:drag.displays))
             self.target = drag.window; targetPID = drag.pid
             targetApplication = application; targetIdentity = drag.identity
             lastError = outcome.isExact ? nil : outcomeMessage(outcome,title:snapTarget.action.title,application:application)
@@ -657,6 +664,7 @@ final class WindowManager: ObservableObject {
             try validateTarget(window,pid:pid,application:app,identity:identity)
             try ensureNotFullScreen(window)
             let original = try readFrame(window)
+            let displays = try captureDisplays()
             let top = NSScreen.screens.first?.frame.maxY ?? 0
             let frames = NSScreen.screens.map { WindowEnhancementGeometry.workArea(WindowGeometry.accessibilityRect(fromAppKit:$0.visibleFrame,primaryTop:top),configuration:configuration) }
             guard let index = WindowGeometry.screenIndex(for:original,in:frames) else { throw SystemControlError.message("没有可用显示器。") }
@@ -664,7 +672,7 @@ final class WindowManager: ObservableObject {
             try checkSettable(window,attribute:kAXPositionAttribute); try checkSettable(window,attribute:kAXSizeAttribute)
             try await restoreFocus(window,pid:pid,application:app,identity:identity,capturedPID:capturedPID)
             let outcome = try await applyLayout(desired,original:original,window:window,pid:pid,
-                application:app,identity:identity,capturedPID:capturedPID,workArea:frames[index],restoring:false)
+                application:app,identity:identity,capturedPID:capturedPID,workArea:frames[index],restoring:false,displays:displays)
             let message = outcomeMessage(outcome,title:layout.name,application:app)
             lastError = outcome.isExact ? nil : message
             return WindowOperationOutcome(message:message,isExact:outcome.isExact)
@@ -719,11 +727,24 @@ final class WindowManager: ObservableObject {
     private func applyLayout(_ desired: CGRect, original: CGRect, window: AXUIElement, pid: pid_t,
                              application: NSRunningApplication, identity: WindowProcessIdentity.Snapshot?, capturedPID: pid_t?,
                              workArea: CGRect?, restoring: Bool, saveFrame: CGRect? = nil,
+                             displays: [WindowDisplaySnapshot]? = nil,
                              additionalValidation: () throws -> Void = {}) async throws -> WindowLayoutOutcome {
         guard let identity else {throw SystemControlError.message("无法确认目标应用启动身份，请重新选择窗口。")}
+        let capturedDisplays = try displays ?? captureDisplays()
         func validateIdentity() throws {
             guard AXIsProcessTrusted() else { throw SystemControlError.message("辅助功能权限已失效，已停止窗口操作。") }
+            try validateDisplays(capturedDisplays)
             try validateTarget(window,pid:pid,application:application,identity:identity)
+            try ensureNotFullScreen(window)
+            var minimized: CFTypeRef?, modal: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window,kAXMinimizedAttribute as CFString,&minimized) == .success,
+               minimized as? Bool == true {
+                throw SystemControlError.message("目标窗口已最小化，已停止布局；原位置记录保留。")
+            }
+            if AXUIElementCopyAttributeValue(window,kAXModalAttribute as CFString,&modal) == .success,
+               modal as? Bool == true {
+                throw SystemControlError.message("目标窗口是模态窗口，未调整布局。")
+            }
         }
         return try await layoutTransaction.execute(requested:desired,original:original,workArea:workArea,
             resize:restoring || desired.size != original.size,allowConstrained:!restoring,
@@ -736,7 +757,7 @@ final class WindowManager: ObservableObject {
             }, validateRollback:validateIdentity, read:{try self.readFrame(window)},
             setSize:{try self.setSize($0,to:window)},setPosition:{try self.setPosition($0,to:window)},
             saveOriginal: {
-                if !restoring { self.rememberOriginal(DragSession(window:window,pid:pid,application:application,identity:identity,initialFrame:saveFrame ?? original,initialPointer:.zero,moveWithPointer:false)) }
+                if !restoring { self.rememberOriginal(DragSession(window:window,pid:pid,application:application,identity:identity,initialFrame:saveFrame ?? original,initialPointer:.zero,moveWithPointer:false,displays:capturedDisplays)) }
             }, didRestore: {
                 self.originalFrames.removeAll { $0.matches(window:window,pid:pid,application:application,identity:identity) }
                 self.snappedFrames.removeAll { $0.matches(window:window,pid:pid,application:application,identity:identity) }
@@ -822,6 +843,20 @@ final class WindowManager: ObservableObject {
             throw SystemControlError.message("前台应用或启动身份已变化，已取消这次窗口拖动。")
         }
         try validateTarget(drag.window,pid:drag.pid,application:drag.application,identity:drag.identity)
+        try validateDisplays(drag.displays)
+    }
+    private func captureDisplays() throws -> [WindowDisplaySnapshot] {
+        let displays = NSScreen.screens.map { screen in
+            WindowDisplaySnapshot(id:(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0,
+                frame:screen.frame,visibleFrame:screen.visibleFrame,scale:screen.backingScaleFactor)
+        }
+        guard WindowDisplaySnapshot.isValid(displays) else {throw SystemControlError.message("无法确认显示器布局，未移动窗口。")}
+        return displays
+    }
+    private func validateDisplays(_ captured: [WindowDisplaySnapshot]) throws {
+        guard WindowDisplaySnapshot.permitsWrite(captured:captured,current:try captureDisplays()) else {
+            throw SystemControlError.message("显示器或工作区已变化，已停止写入旧坐标；原位置记录保留。")
+        }
     }
     private func rememberOriginal(_ drag:DragSession) {
         guard !originalFrames.contains(where:{$0.matches(window:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity)}) else{return}
@@ -832,7 +867,7 @@ final class WindowManager: ObservableObject {
             // A failed token read stops actions; it must not destroy a potentially valid recovery record.
             return WindowProcessIdentity.definitelyDifferent(captured:record.identity,currentToken:WindowProcessIdentity.readToken(for:record.pid))
         }
-        originalFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity,frame:drag.initialFrame))
+        originalFrames.append(OriginalFrame(element:drag.window,pid:drag.pid,application:drag.application,identity:drag.identity,frame:drag.initialFrame,displays:drag.displays))
     }
     private func ensureNotFullScreen(_ window: AXUIElement) throws {
         var value: CFTypeRef?

@@ -34,7 +34,12 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var deliveryState=InputRuleDeliveryState()
     private var smoothTimer:Timer?
     private var scrollRemaining = CGPoint.zero
-    private var scrollTarget:pid_t?
+    private var scrollTarget:WindowProcessIdentity.Snapshot?
+    private var scrollProfile:UUID?
+    private var scrollLocation=CGPoint.zero
+    private var scrollFlags=CGEventFlags()
+    private var scrollBegan=false
+    private var lifecycleGeneration:UInt64=0
     private var scrollDuration:Double = 0.16
     private var activeScript:Process?
     private var pressureMonitor:Any?
@@ -89,7 +94,9 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         if !touch.isRunning {report?(touch.status)}
     }
     func stop() {
+        lifecycleGeneration &+= 1
         deviceMonitoringStarted=false
+        cancelSmoothScroll()
         finishTouchDrag();touch.stop();hid.stop();touchSession.removeAll()
         if let pressureMonitor {pressureBackend.remove(pressureMonitor)};pressureMonitor=nil
         if let localPressureMonitor {pressureBackend.remove(localPressureMonitor)};localPressureMonitor=nil;pressureLatched=false
@@ -105,11 +112,12 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func scheduleHold(_ r:EnhancedInputRule,key:String,pid:pid_t) {
         timers[key]?.invalidate()
         guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
+        let generation=lifecycleGeneration
         timers[key]=Timer.scheduledTimer(withTimeInterval:r.holdSeconds,repeats:false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else{return};self.timers[key]=nil
                 let mask=r.keyCode==63 && r.trigger == .keyHold ? EnhancedInputValidation.modifiers & ~UInt64(NSEvent.ModifierFlags.function.rawValue):EnhancedInputValidation.modifiers
-                guard self.allowed(pid:pid),NSRunningApplication(processIdentifier:pid)?.launchDate==launch,!IsSecureEventInputEnabled(),UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask else{return}
+                guard self.lifecycleGeneration==generation,self.allowed(pid:pid),NSRunningApplication(processIdentifier:pid)?.launchDate==launch,!IsSecureEventInputEnabled(),UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask else{return}
                 self.executeRule(r,pid:pid)
             }
         }
@@ -126,7 +134,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         // Release an already replaced key to its original recipient even after a focus/exclusion change.
         if type == .keyUp,let replacement=replacements.removeValue(forKey:code) {try? sendKey(replacement.0,down:false,pid:replacement.1);keys.remove(code);consumedKeys.remove(code);return true}
         if type == .keyUp,consumedKeys.contains(code),excludedApps.contains(app) {consumedKeys.remove(code);keys.remove(code);timers.removeValue(forKey:"k\(code)")?.invalidate();return true}
-        if excludedApps.contains(app) {drawing=nil;timers.values.forEach{$0.invalidate()};timers.removeAll();return false}
+        if excludedApps.contains(app) || IsSecureEventInputEnabled() {cancelSmoothScroll();drawing=nil;timers.values.forEach{$0.invalidate()};timers.removeAll();return false}
         let flags=event.flags.rawValue & EnhancedInputValidation.modifiers
         let now=ProcessInfo.processInfo.systemUptime
         var consume=false
@@ -200,8 +208,9 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         return consume && AXIsProcessTrusted()
     }
     static func matchesEdge(_ name:String,at point:CGPoint,frames:[CGRect]?=nil,start:Double=0,end:Double=1,width:Double=8)->Bool {
-        let top=NSScreen.screens.first?.frame.maxY ?? 0
-        let rectangles=frames ?? NSScreen.screens.map {WindowGeometry.accessibilityRect(fromAppKit:$0.frame,primaryTop:top)}
+        if let frames {return InputScreenEdgeGeometry.matches(name,point:point,frames:frames,start:start,end:end,width:width)}
+        let screens=NSScreen.screens,top=screens.first?.frame.maxY ?? 0
+        let rectangles=screens.map {WindowGeometry.accessibilityRect(fromAppKit:$0.frame,primaryTop:top)}
         return InputScreenEdgeGeometry.matches(name,point:point,frames:rectangles,start:start,end:end,width:width)
     }
     private func receivePressure(_ event:NSEvent) {
@@ -238,33 +247,61 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         if let found,let r=matching(.hotCorner,flags:flags,app:app).first(where:{$0.corner==found}) {scheduleHold(r,key:"corner",pid:pid)}
     }
     private func transformScroll(_ event:CGEvent,pid:pid_t,app:String,flags:UInt64)->Bool {
-        guard AXIsProcessTrusted() else{return false}
+        guard AXIsProcessTrusted(),!IsSecureEventInputEnabled() else{cancelSmoothScroll();return false}
         let precise=event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-        guard let p=configuration.scrollProfiles.first(where:{$0.enabled && $0.deviceID == (precise ? "allPrecise":"allWheel") && !$0.excludedApps.contains(app) && ($0.bypassModifiers==0 || flags & $0.bypassModifiers == 0)}) else{return false}
+        guard let p=configuration.scrollProfiles.first(where:{$0.enabled && $0.deviceID == (precise ? "allPrecise":"allWheel") && !$0.excludedApps.contains(app) && ($0.bypassModifiers==0 || flags & $0.bypassModifiers == 0)}) else{cancelSmoothScroll();return false}
         if p.smooth && !precise {
+            guard let front=NSWorkspace.shared.frontmostApplication,front.processIdentifier==pid,
+                  let identity=WindowProcessIdentity.capture(pid:pid,launchDate:front.launchDate) else {cancelSmoothScroll();return false}
+            // A new process/profile never inherits residual deltas from the old stream.
+            if scrollTarget?.matches(identity) != true || scrollProfile != p.id {cancelSmoothScroll()}
+            scrollTarget=identity;scrollProfile=p.id;scrollDuration=p.smoothingDuration
+            scrollLocation=event.location;scrollFlags=event.flags
             let y=event.getDoubleValueField(.scrollWheelEventDeltaAxis1)*10,x=event.getDoubleValueField(.scrollWheelEventDeltaAxis2)*10
-            if scrollTarget != pid {scrollRemaining = .zero};scrollTarget=pid;scrollDuration=p.smoothingDuration
-            scrollRemaining.x += ScrollTransformation.delta(x,profile:p,horizontal:true)
-            scrollRemaining.y += ScrollTransformation.delta(y,profile:p,horizontal:false)
+            scrollRemaining.x=max(-100000,min(100000,scrollRemaining.x+ScrollTransformation.delta(x,profile:p,horizontal:true)))
+            scrollRemaining.y=max(-100000,min(100000,scrollRemaining.y+ScrollTransformation.delta(y,profile:p,horizontal:false)))
             if smoothTimer==nil {
                 smoothTimer=Timer.scheduledTimer(withTimeInterval:1/60,repeats:true) { [weak self] _ in MainActor.assumeIsolated{self?.smoothTick()} }
             }
             return true
         }
+        cancelSmoothScroll()
+        // Copy-in-place transformation preserves the actual source's continuous,
+        // phase and momentum fields; it does not manufacture trackpad momentum.
         for (field,horizontal) in [(CGEventField.scrollWheelEventDeltaAxis1,false),(.scrollWheelEventDeltaAxis2,true),(.scrollWheelEventFixedPtDeltaAxis1,false),(.scrollWheelEventFixedPtDeltaAxis2,true),(.scrollWheelEventPointDeltaAxis1,false),(.scrollWheelEventPointDeltaAxis2,true)] {
             event.setDoubleValueField(field,value:ScrollTransformation.delta(event.getDoubleValueField(field),profile:p,horizontal:horizontal))
         }
         return false
     }
+    private func currentScrollPID()->pid_t? {
+        guard let target=scrollTarget,let front=NSWorkspace.shared.frontmostApplication,
+              allowed(pid:front.processIdentifier),!front.isTerminated,AXIsProcessTrusted(),!IsSecureEventInputEnabled(),
+              target.matches(WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate)) else{return nil}
+        return front.processIdentifier
+    }
+    private func postSmoothScroll(x:Int32,y:Int32,phase:CGScrollPhase) {
+        guard let pid=currentScrollPID(),let e=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:y,wheel2:x,wheel3:0) else{return}
+        e.location=scrollLocation;e.flags=scrollFlags
+        e.setIntegerValueField(.scrollWheelEventIsContinuous,value:1)
+        e.setIntegerValueField(.scrollWheelEventScrollPhase,value:Int64(phase.rawValue))
+        // This stream is wheel interpolation, not real physical trackpad momentum.
+        e.setIntegerValueField(.scrollWheelEventMomentumPhase,value:0)
+        e.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);e.postToPid(pid)
+    }
+    private func cancelSmoothScroll() {
+        if scrollBegan {postSmoothScroll(x:0,y:0,phase:.cancelled)}
+        smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero
+        scrollTarget=nil;scrollProfile=nil;scrollBegan=false
+    }
     private func smoothTick() {
-        guard let pid=scrollTarget,allowed(pid:pid),AXIsProcessTrusted() else {smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero;return}
-        let fraction=min(1,1/(60*max(0.04,scrollDuration)*0.3))
-        let dx=abs(scrollRemaining.x)<1 ? scrollRemaining.x : scrollRemaining.x*fraction
-        let dy=abs(scrollRemaining.y)<1 ? scrollRemaining.y : scrollRemaining.y*fraction
-        let ix=Int32(dx.rounded()),iy=Int32(dy.rounded())
-        scrollRemaining.x -= Double(ix);scrollRemaining.y -= Double(iy)
-        if ix != 0 || iy != 0,let e=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:2,wheel1:iy,wheel2:ix,wheel3:0) {e.setIntegerValueField(.eventSourceUserData,value:Self.syntheticTag);e.postToPid(pid)}
-        if abs(scrollRemaining.x)<0.5,abs(scrollRemaining.y)<0.5 {smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero}
+        guard currentScrollPID() != nil else {cancelSmoothScroll();return}
+        let step=ScrollTransformation.smoothingStep(scrollRemaining,duration:scrollDuration)
+        scrollRemaining=step.remaining
+        if step.x != 0 || step.y != 0 {postSmoothScroll(x:step.x,y:step.y,phase:scrollBegan ? .changed:.began);scrollBegan=true}
+        if step.finished {
+            if scrollBegan {postSmoothScroll(x:0,y:0,phase:.ended)}
+            scrollBegan=false;cancelSmoothScroll()
+        }
     }
     private func executeRule(_ rule:EnhancedInputRule,pid:pid_t) {
         guard deliveryState.accept(id:rule.id,interval:rule.minimumIntervalSeconds,now:ProcessInfo.processInfo.systemUptime) else{return}
@@ -272,16 +309,18 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     }
     private func executeLater(_ rule:EnhancedInputRule,pid:pid_t) {
         guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
+        let generation=lifecycleGeneration
         DispatchQueue.main.async { [weak self] in
-            guard let self,self.allowed(pid:pid),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
+            guard let self,self.lifecycleGeneration==generation,self.allowed(pid:pid),!IsSecureEventInputEnabled(),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
                   WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
             self.executeRule(rule,pid:pid)
         }
     }
     private func executeLater(_ effect:InputEffect,pid:pid_t) {
         guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
+        let generation=lifecycleGeneration
         DispatchQueue.main.async { [weak self] in
-            guard let self,self.allowed(pid:pid),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
+            guard let self,self.lifecycleGeneration==generation,self.allowed(pid:pid),!IsSecureEventInputEnabled(),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
                   WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
             self.execute(effect,pid:pid)
         }
@@ -343,7 +382,17 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         guard configuration.enabled,let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
         let app=front.bundleIdentifier ?? ""
         let mappings=configuration.hidProfiles.filter{$0.enabled && $0.deviceID==observation.deviceID}.flatMap(\.buttons).filter{$0.enabled && $0.usage==observation.usage && $0.whenReleased != observation.pressed && ($0.appBundleID.isEmpty || $0.appBundleID==app) && !$0.excludedApps.contains(app)}.sorted{!$0.appBundleID.isEmpty && $1.appBundleID.isEmpty}
-        if let first=mappings.first {executeLater(first.effect,pid:front.processIdentifier)}
+        guard hid.isCurrent(observation),HIDConnectionIdentity.isConnectionScoped(observation.deviceID),
+              let first=mappings.first,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
+        let mostSpecific=mappings.filter{$0.appBundleID.isEmpty == first.appBundleID.isEmpty}
+        guard mostSpecific.count==1 else{report?("同一设备按钮在相同应用范围内存在冲突，未执行。");return}
+        let generation=lifecycleGeneration,pid=front.processIdentifier
+        DispatchQueue.main.async { [weak self] in
+            guard let self,self.lifecycleGeneration==generation,self.hid.isCurrent(observation),self.allowed(pid:pid),
+                  !IsSecureEventInputEnabled(),let current=NSWorkspace.shared.frontmostApplication,
+                  identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)) else{return}
+            self.execute(first.effect,pid:pid)
+        }
     }
     private func receiveTouch(_ frame:RawTouchFrame) {
         guard configuration.enabled,let app=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(app.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{finishTouchDrag();touchSession.removeAll();return}
