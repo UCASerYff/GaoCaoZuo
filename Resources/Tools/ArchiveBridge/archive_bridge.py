@@ -3,7 +3,7 @@
 The caller enforces an OS write-denial sandbox for list/test/stream operations.
 """
 import ctypes as C
-import datetime, io, json, os, pathlib, stat, struct, sys
+import datetime, io, json, os, pathlib, stat, struct, sys, unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import acefile
 
@@ -26,6 +26,12 @@ def safe(s):
     if not s or any(ord(c)<32 or ord(c)==127 for c in s):raise ValueError('unsafe filename metadata')
     return s
 
+def same_member(name,member):
+    # Foundation may decompose argv strings on macOS. Match only Unicode
+    # canonical equivalents; preserve original metadata for the host's path
+    # validation and canonical-duplicate rejection, without case folding.
+    return member is not None and unicodedata.normalize('NFC',name)==unicodedata.normalize('NFC',member)
+
 def listing(path,n,directory=False,permissions=0o600,modified=None,enc=False,soft=None,hard=None):
     p=safe(path)
     print('Path = '+p);print('Size = '+str(n));print('Folder = '+('+' if directory else '-'));print('Encrypted = '+('+' if enc else '-'))
@@ -47,7 +53,7 @@ def ace(command,path,member,password,encoding,limit):
             else:name=m.raw_filename.decode(encoding,'strict')
             name=name.replace('\\','/')
             if command=='l': listing(name,m.size,m.is_dir(),modified=m.datetime,enc=m.is_enc())
-            elif command=='t' or (command=='x' and name==member):
+            elif command=='t' or (command=='x' and same_member(name,member)):
                 if not m.is_dir():
                     total=0
                     for b in a.readblocks(m,pwd=password or None):
@@ -85,7 +91,7 @@ def native(command,path,member,password,encoding,limit):
             if name=='data' and extension in streams:
                 name=pathlib.Path(path).stem+('.tar' if extension in ('.tgz','.tbz','.tbz2','.txz','.tzst') else '')
             n=size(entry);m=mode(entry);soft=symlink(entry);hard=hardlink(entry)
-            want=command=='t' or (command=='x' and name==member) or (command=='l' and n==0 and not stat.S_ISDIR(m) and not soft and not hard)
+            want=command=='t' or (command=='x' and same_member(name,member)) or (command=='l' and n==0 and not stat.S_ISDIR(m) and not soft and not hard)
             total=0
             if want:
                 while True:
@@ -149,7 +155,7 @@ def zip_adapter(command,path,member,password,encoding,limit):
                     try:modified=datetime.datetime(*info.date_time)
                     except ValueError:modified=None
                     listing(name,info.file_size,info.is_dir(),permissions&0o777 or 0o600,modified,bool(info.flag_bits&1),soft)
-                elif command=='t' or (command=='x' and name==member):
+                elif command=='t' or (command=='x' and same_member(name,member)):
                     if not info.is_dir():
                         total=0
                         with archive.open(info) as stream:

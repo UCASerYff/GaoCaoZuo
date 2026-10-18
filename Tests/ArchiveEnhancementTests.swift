@@ -122,6 +122,9 @@ enum ArchiveEnhancementTests {
         var legacy = ArchiveExtractionOptions(); legacy.filenameEncoding = "CP437"
         let names = try await service.list(archive: fixture.appendingPathComponent("cp437.ace"), password: nil, options: legacy)
         try expect(names.first?.path == "café.txt", "ACE CP437 exact decoded name")
+        let legacyOutput = root.appendingPathComponent("cp437-out")
+        _ = try await service.extract(archive: fixture.appendingPathComponent("cp437.ace"), to: legacyOutput, password: nil, selected: ["café.txt"], options: legacy)
+        try expect(try Data(contentsOf: legacyOutput.appendingPathComponent("café.txt")) == payload, "ACE CP437 selected bytes roundtrip across Foundation argv normalization")
         legacy.filenameEncoding = "CP932"
         let japan = try await service.list(archive: fixture.appendingPathComponent("cp932.zip"), password: nil, options: legacy)
         try expect(japan.first?.path == "テスト.txt", "ZIP CP932 exact decoded name")
