@@ -217,12 +217,15 @@ struct OperationPanelView: View {
                 ScrollView {
                     LazyVStack(spacing:2) {
                         ForEach(Array(actions.enumerated()),id:\.element.id) { index,action in
-                            Button { close(); store.prepare(action.id) } label: {
+                            Button { run(action.id) } label: {
                                 HStack(spacing:12) { Image(systemName:action.icon).frame(width:22).foregroundStyle(.tint); VStack(alignment:.leading,spacing:3) { Text(action.title); Text(action.detail).font(.caption).foregroundStyle(.secondary) }; Spacer(); if store.settings.favorites.contains(action.id) { Image(systemName:"star.fill").font(.caption).foregroundStyle(.orange) } }.padding(10).frame(maxWidth:.infinity,alignment:.leading).background(index == selected ? Color.accentColor.opacity(0.12) : .clear,in:RoundedRectangle(cornerRadius:8))
-                            }.buttonStyle(.plain).disabled(action.unavailableReason != nil).help(action.unavailableReason ?? action.detail).id(index)
+                            }.buttonStyle(.plain).disabled(action.unavailableReason != nil).help(action.unavailableReason ?? action.detail).id(action.id)
                         }
                     }.padding(8)
-                }.onChange(of:selected) { _,index in withAnimation(.easeOut(duration:0.1)){proxy.scrollTo(index,anchor:.center)} }
+                }.onChange(of:selected) { _,index in
+                    guard actions.indices.contains(index) else {return}
+                    withAnimation(.easeOut(duration:0.1)){proxy.scrollTo(actions[index].id,anchor:.center)}
+                }
             }
             Divider()
             HStack { Text("↑↓ 选择 · 回车执行"); Spacer(); Button("选择文件…",action:store.chooseFiles).buttonStyle(.plain); Button("打开主窗口"){close();store.showMain?()}.buttonStyle(.plain) }.font(.caption).foregroundStyle(.secondary).padding(12)
@@ -234,7 +237,13 @@ struct OperationPanelView: View {
         .onMoveCommand { direction in if direction == .down { selected = min(selected+1,max(0,actions.count-1)) }; if direction == .up { selected = max(0,selected-1) } }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { acceptDrop($0,store:store) }
     }
-    private func runSelected() { if actions.indices.contains(selected),actions[selected].unavailableReason == nil { let id = actions[selected].id; close(); store.prepare(id) } }
+    private func run(_ id:String) {
+        // A visible row can outlive a search update in a lazy stack. Recheck
+        // its stable identity against the current query before any side effect.
+        guard actions.contains(where:{$0.id == id && $0.unavailableReason == nil}) else {return}
+        close();store.prepare(id)
+    }
+    private func runSelected() {if actions.indices.contains(selected) {run(actions[selected].id)}}
 }
 
 @MainActor func acceptDrop(_ providers: [NSItemProvider], store: OperationStore) -> Bool {
