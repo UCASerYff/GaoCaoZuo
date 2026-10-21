@@ -29,6 +29,10 @@ struct ClipboardPasteTransaction {
     static func requireUnblocked(_ reason:String?) throws {
         if let reason {throw DataFailure.message(reason.isEmpty ? "当前输入模式暂不允许自动粘贴。" : reason)}
     }
+    func permitsTemporaryInstallation(changeCount: Int, targetMatches: Bool) -> Bool {
+        phase == .preparing && temporaryChangeCount == nil
+            && original.changeCount == changeCount && targetMatches
+    }
     mutating func installedTemporary(changeCount: Int) throws {
         guard phase == .preparing, changeCount != original.changeCount else { throw DataFailure.message("临时剪贴板状态无效，未发送粘贴。") }
         temporaryChangeCount = changeCount; phase = .waitingForTarget

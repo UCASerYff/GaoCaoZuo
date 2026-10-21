@@ -20,6 +20,9 @@ import Foundation
          (type:"com.example.opaque",data:Data([0,255,1,0]))]
     ],changeCount:10,currentCount:10)
     var transaction=ClipboardPasteTransaction(original:original,sendEnterRequested:true)
+    try check(transaction.permitsTemporaryInstallation(changeCount:10,targetMatches:true),"前台目标完整匹配才可安装临时内容")
+    try check(!transaction.permitsTemporaryInstallation(changeCount:10,targetMatches:false),"等待激活不替换原剪贴板")
+    try check(!transaction.permitsTemporaryInstallation(changeCount:11,targetMatches:true),"激活过程中用户复制新内容即拒绝替换")
     try ClipboardPasteTransaction.requireIdle(nil)
     try ClipboardPasteTransaction.requireUnblocked(nil)
     try rejects("开始前清洁模式门控拒绝") {try ClipboardPasteTransaction.requireUnblocked("请先退出清洁模式。")}
@@ -29,6 +32,7 @@ import Foundation
     try rejects("原板计数不能冒充临时板") {try transaction.installedTemporary(changeCount:10)}
     try check(!transaction.eventWasSubmitted && !transaction.mayRestoreOriginal,"准备尚未发送或替换")
     try transaction.installedTemporary(changeCount:11)
+    try check(!transaction.permitsTemporaryInstallation(changeCount:10,targetMatches:true),"一笔事务不能二次安装临时内容")
     try check(transaction.phase == .waitingForTarget && transaction.mayRestoreOriginal,"安装后等待目标并保留恢复来源")
     try rejects("等待目标禁止重叠") {try ClipboardPasteTransaction.requireIdle(transaction)}
     try rejects("等待不能确认插入") {try transaction.requiresUserReview()}
@@ -74,6 +78,10 @@ import Foundation
     try check(transaction.ownsTemporary(changeCount:13) && !transaction.ownsTemporary(changeCount:11),"恢复清空后只持有新计数")
     try rejects("恢复失败尚未处理仍禁止新事务") {try ClipboardPasteTransaction.requireIdle(transaction)}
     var unsent=ClipboardPasteTransaction(original:original,sendEnterRequested:false)
+    var failedActivation=ClipboardPasteTransaction(original:original,sendEnterRequested:false)
+    failedActivation.failedBeforeSubmission()
+    try check(!failedActivation.mayRestoreOriginal && !failedActivation.eventWasSubmitted,"激活失败未触板，不得恢复覆盖用户当前内容")
+    try check(!failedActivation.permitsTemporaryInstallation(changeCount:10,targetMatches:true),"已失败的激活不能重用旧快照安装临时内容")
     try unsent.installedTemporary(changeCount:20)
     unsent.failedBeforeSubmission()
     try check(!unsent.eventWasSubmitted && unsent.phase == .failedBeforeSubmission,"发送前失败有明确恢复状态")

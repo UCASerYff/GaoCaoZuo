@@ -21,6 +21,7 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     private var document: NativeArchive.Document?, archiveURL: URL?
     private var access: ArchiveQuickLookResourceAccess?, additions: [ArchiveQuickLookResourceAccess] = [], deletions = Set<String>()
     private var generation = UUID(), activeJob = UUID(), cancellation: NativeArchive.Cancellation?, working = false
+    private var selectionPanel: NSOpenPanel?
     private let group = DispatchGroup()
     override func loadView() {
         outline.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("archive-name")))
@@ -71,11 +72,13 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         super.viewWillAppear(); if access == nil, let archiveURL { access = ArchiveQuickLookResourceAccess(url: archiveURL) }
     }
     override func viewDidDisappear() {
-        super.viewDidDisappear(); generation = UUID(); cancellation?.cancel(); access = nil; additions = []; document = nil; roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
+        super.viewDidDisappear(); generation = UUID(); selectionPanel?.cancel(nil); selectionPanel = nil
+        cancellation?.cancel(); access = nil; additions = []; document = nil; roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
     }
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         _ = view
-        generation = UUID(); document = nil; archiveURL = url; access = nil
+        generation = UUID(); selectionPanel?.cancel(nil); selectionPanel = nil
+        document = nil; archiveURL = url; access = nil
         roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
         startPreview(url, request: NativeArchivePreviewRequest(token: generation, completion: handler))
     }
@@ -167,17 +170,20 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     func controlTextDidChange(_ notification: Notification) { outline.reloadData(); outline.expandItem(nil, expandChildren: true); updateButtons() }
     private var selectedNodes: [Node] { outline.selectedRowIndexes.compactMap { outline.item(atRow: $0) as? Node } }
     private func updateButtons() {
-        let ready = !working && document != nil
+        let ready = !working && selectionPanel == nil && document != nil
         actionButtons.forEach { $0.isEnabled = ready }; editButtons.forEach { $0.isEnabled = ready && document?.canEditCopy == true }
         cleanHidden.isEnabled = ready && document?.canEditCopy == true
         let reason = document?.editCopyUnavailableReason.map { L10n.text($0) }
         editButtons.forEach { $0.toolTip = reason }; cleanHidden.toolTip = reason; copyName.toolTip = reason
         selectedButtons.forEach { $0.isEnabled = $0.isEnabled && !selectedNodes.isEmpty }
-        extractName.isEnabled = !working; copyName.isEnabled = !working
+        extractName.isEnabled = !working && selectionPanel == nil; copyName.isEnabled = !working && selectionPanel == nil
     }
     @objc private func expandAll() { outline.expandItem(nil, expandChildren: true) }
     @objc private func collapseAll() { outline.collapseItem(nil, collapseChildren: true) }
-    @objc private func cancelArchiveOperation() { cancellation?.cancel(); if working { status.stringValue = L10n.text("正在停止；等待后台操作结束，原压缩包保持不变。") } }
+    @objc private func cancelArchiveOperation() {
+        if let selectionPanel { selectionPanel.cancel(nil); return }
+        cancellation?.cancel(); if working { status.stringValue = L10n.text("正在停止；等待后台操作结束，原压缩包保持不变。") }
+    }
     @objc private func previewSelected() {
         guard !working, let document, selectedNodes.count == 1, let item = selectedNodes.first?.item, item.kind == .file else { return }
         let context = currentContext()
@@ -215,9 +221,9 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         let context = currentContext()
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
         panel.prompt = L10n.text("加入编辑计划"); panel.message = L10n.text("文件只加入编辑计划；保存新副本前不会写入原压缩包。")
-        panel.begin { [weak self] response in
-            guard response == .OK, let self, !self.working, self.isCurrent(context) else { return }
-            self.additions += panel.urls.map { ArchiveQuickLookResourceAccess(url: $0) }; self.planChanged()
+        presentSelectionPanel(panel, context: context) { [weak self] urls in
+            guard let self else { return }
+            self.additions += urls.map { ArchiveQuickLookResourceAccess(url: $0) }; self.planChanged()
         }
     }
     @objc private func clearPlan() { guard !working else { return }; deletions = []; additions = []; cleanHidden.state = .off; outline.reloadData(); planChanged() }
@@ -237,9 +243,36 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     private func chooseDirectory(context: NativeArchiveRequestContext, _ completion: @escaping (URL, ArchiveQuickLookResourceAccess) -> Void) {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
         panel.prompt = L10n.text("选择结果目录"); panel.message = L10n.text("仅访问你选中的目录；同名结果停止，原压缩包保留。")
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url, let self, !self.working, self.isCurrent(context) else { return }
+        presentSelectionPanel(panel, context: context) { urls in
+            guard urls.count == 1, let url = urls.first else { return }
             completion(url, ArchiveQuickLookResourceAccess(url: url))
+        }
+    }
+    private func presentSelectionPanel(_ panel: NSOpenPanel, context: NativeArchiveRequestContext, completion: @escaping ([URL]) -> Void) {
+        guard !working, selectionPanel == nil, isCurrent(context) else { return }
+        guard let parent = view.window, parent.isVisible, parent.attachedSheet == nil else {
+            status.stringValue = L10n.text("当前预览窗口不可用，请关闭预览后用搞操作打开。")
+            return
+        }
+        // Finder hosts a remote view. An unattached modeless open panel can
+        // abort without becoming key; attach the Powerbox to this preview.
+        selectionPanel = panel; updateButtons()
+        panel.beginSheetModal(for: parent) { [weak self, weak panel] response in
+            guard let self, let panel, self.selectionPanel === panel else { return }
+            panel.orderOut(nil); self.selectionPanel = nil; self.updateButtons()
+            guard !self.working, self.isCurrent(context) else { return }
+            switch response {
+            case .OK:
+                guard !panel.urls.isEmpty else {
+                    self.status.stringValue = L10n.text("未获得所选位置的访问权限，未执行操作。")
+                    return
+                }
+                completion(panel.urls)
+            case .cancel:
+                self.status.stringValue = L10n.text("已取消选择，未执行操作，原压缩包保持不变。")
+            default:
+                self.status.stringValue = L10n.text("预览宿主无法显示选择窗口，请用搞操作打开后重试。")
+            }
         }
     }
     private func requestedPassword(for encrypted: Bool, context: NativeArchiveRequestContext) -> String? {

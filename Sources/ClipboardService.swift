@@ -363,7 +363,7 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         // A stale captured target must fail, rather than silently rebinding to
         // whichever app happens to be foreground when preparation finishes.
         if pasteTarget == nil {capturePasteTarget()}
-        guard let target=pasteTarget,target.isValid(requireFrontmost:false),
+        guard let target=pasteTarget,target.canActivate(),
               let application=NSRunningApplication(processIdentifier:target.pid),!application.isTerminated else {
             throw DataFailure.message("原粘贴目标、焦点或选区已失效。请重新进入目标输入框，再打开剪贴板。")
         }
@@ -377,27 +377,19 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         guard original.changeCount == expectedSourceCount,board.changeCount == original.changeCount else {
             throw DataFailure.message("剪贴板已改变，未执行自动粘贴。")
         }
-        // Keep this snapshot only in memory. Set the lease before the first
-        // write, so Quit and overlapping commands cannot discard its source.
+        // Retain the rich snapshot while restoring the target, but leave the
+        // system pasteboard untouched until the exact foreground focus matches.
         let id=UUID()
         pasteTransaction=ClipboardPasteTransaction(id:id,original:original,sendEnterRequested:sendEnter)
         transactionTarget=target
         transactionCompletion=onSubmitted
         hasActivePasteTransaction=true
         do {
-            guard target.isValid(requireFrontmost:false),permitsTargetActivation(target),
+            guard target.canActivate(),permitsTargetActivation(target),
                   board.changeCount == original.changeCount else {throw DataFailure.message("临时替换前目标或剪贴板已变化，未发送粘贴。")}
-            let cleared=board.clearContents()
-            try pasteTransaction?.installedTemporary(changeCount:cleared)
-            count=cleared
-            guard board.changeCount == cleared else {throw DataFailure.message("剪贴板已由其他操作改变，未写入临时内容。")}
-            guard board.writeObjects(objects) else {throw DataFailure.message("无法写入系统剪贴板，未发送自动粘贴。")}
-            let temporaryCount=board.changeCount
-            pasteTransaction?.replaceTemporaryOwnership(changeCount:temporaryCount)
-            count=temporaryCount
             // Activation is permitted only while this app or the exact
             // captured process remains foreground. No later retry steals focus.
-            guard target.isValid(requireFrontmost:false),permitsTargetActivation(target) else {
+            guard target.canActivate(),permitsTargetActivation(target) else {
                 throw DataFailure.message("前台目标已改变，未发送粘贴。")
             }
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != target.pid,
@@ -409,13 +401,30 @@ struct ClipboardDocument: Codable { var schema = 1; var items: [ClipboardItem] =
         pasteTask=Task { @MainActor [weak self] in
             for _ in 0..<15 {
                 guard let self,self.pasteTransaction?.id == id,!Task.isCancelled else {return}
-                guard self.pasteTransaction?.ownsTemporary(changeCount:board.changeCount) == true,
-                      target.isValid(requireFrontmost:false) else {
+                guard self.pasteTransaction?.permitsTemporaryInstallation(changeCount:board.changeCount,targetMatches:target.canActivate()) == true else {
                     self.failBeforeSubmission(id:id,message:"粘贴前权限、输入状态、原目标或剪贴板已改变，未发送。堆栈内容保留。")
                     return
                 }
                 if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid {
                     do {
+                        // Inactive apps can temporarily expose no focused AX
+                        // window. Validate their real focus only after normal
+                        // activation, before touching any pasteboard bytes.
+                        guard target.isValid(requireFrontmost:true) else {
+                            throw DataFailure.message("原目标窗口、输入框或选区已改变，未替换剪贴板或发送粘贴。")
+                        }
+                        try ClipboardPasteTransaction.requireUnblocked(self.pasteBlockingReason?())
+                        guard self.pasteTransaction?.permitsTemporaryInstallation(changeCount:board.changeCount,targetMatches:target.isValid(requireFrontmost:true)) == true else {
+                            throw DataFailure.message("原目标或剪贴板已改变，未替换剪贴板。")
+                        }
+                        let cleared=board.clearContents()
+                        try self.pasteTransaction?.installedTemporary(changeCount:cleared)
+                        self.count=cleared
+                        guard board.changeCount == cleared else {throw DataFailure.message("剪贴板已由其他操作改变，未写入临时内容。")}
+                        guard board.writeObjects(objects) else {throw DataFailure.message("无法写入系统剪贴板，未发送自动粘贴。")}
+                        let temporaryCount=board.changeCount
+                        self.pasteTransaction?.replaceTemporaryOwnership(changeCount:temporaryCount)
+                        self.count=temporaryCount
                         try beforeSubmit?()
                         try ClipboardPasteTransaction.requireUnblocked(self.pasteBlockingReason?())
                         // No client callback or suspension is allowed between

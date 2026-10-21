@@ -95,3 +95,7 @@ PDF 无法读取或超过 100 页内嵌预览预算。	The PDF cannot be read or
 取消	Cancel
 已核验并保存：%@；原压缩包保持不变。	Verified and saved: %@. The original archive is unchanged.
 请关闭预览，在 Finder 中选择“打开方式”→“搞操作”。	Close the preview, then choose Open With → GaoCaoZuo in Finder.
+当前预览窗口不可用，请关闭预览后用搞操作打开。	The preview window is unavailable. Close it and open the archive in GaoCaoZuo.
+未获得所选位置的访问权限，未执行操作。	Access to the selected location was not granted. No operation was performed.
+已取消选择，未执行操作，原压缩包保持不变。	Selection cancelled. No operation was performed; the original archive is unchanged.
+预览宿主无法显示选择窗口，请用搞操作打开后重试。	The preview host cannot display the chooser. Open the archive in GaoCaoZuo to retry.

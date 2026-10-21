@@ -6,6 +6,13 @@ import Darwin
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
         let releaseTargeted=CommandLine.arguments.contains("--release-targeted")
+        if CommandLine.arguments.contains("--capabilities-and-paste-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try await runGaoActionTests()
+            try runClipboardSafetyTests()
+            try runClipboardPasteTransactionTests()
+            return
+        }
         if CommandLine.arguments.contains("--finder-adapters-only") {
             GaoLocale.shared.setLanguage(.zhHans)
             try runFinderCommandTests(renderMenus:false)

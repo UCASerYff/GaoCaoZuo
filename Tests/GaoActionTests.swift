@@ -264,6 +264,55 @@ import Darwin
     let noReferenceCapability=try JSONDecoder().decode(GaoActionProviderCapabilities.self,from:JSONSerialization.data(withJSONObject:noReferenceCaps))
     try noReferenceCapability.requireInputs(action:"cleanup.review",parameters:[:],items:false,references:[]);checks += 1
     try rejected("复核动作不接收目录引用") {try noReferenceCapability.requireInputs(action:"cleanup.review",parameters:[:],items:false,references:[directoryRef])}
+    // Exercise both explicit download capability dialects; neither launches a
+    // provider nor starts a download. Identity/version checks read disk afresh.
+    let downloadSchema:[String:Any]=["type":"object","properties":[
+        "urls":["type":"array","minItems":1,"maxItems":32,"items":["type":"string","format":"uri"]],
+        "mediaType":["type":"string","enum":["file"]]],"required":["urls"],"additionalProperties":false]
+    func writeDownload(_ action:[String:Any],owner:String="com.gaoseries.GaoXiaZai",version:String="1.00") throws {
+        let info:[String:Any]=["CFBundleIdentifier":"com.gaoseries.GaoXiaZai","CFBundleShortVersionString":version]
+        try PropertyListSerialization.data(fromPropertyList:info,format:.xml,options:0).write(to:fake.appendingPathComponent("Contents/Info.plist"))
+        try JSONSerialization.data(withJSONObject:["schemaVersion":1,"bundleID":owner,"appVersion":"1.00","actions":[action]]).write(to:resources.appendingPathComponent("GaoCapabilities.json"))
+    }
+    let alternate:[String:Any]=["action":"downloads.prepare","parameters":downloadSchema,"items":["maxCount":0],"references":["maxCount":0]]
+    let legacy:[String:Any]=["action":"downloads.prepare","parametersSchema":downloadSchema,"supportsItems":false,"supportsReferences":false]
+    for action in [alternate,legacy] {
+        try writeDownload(action)
+        let declared=try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")
+        try declared.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/a?x=1"],"mediaType":"file"],items:false,references:false);checks += 1
+        let invalidParameters:[[String:Any]]=[[:],["urls":[]],["urls":["relative/path"]],["urls":["file:///tmp/private"]],
+            ["urls":["https://user:secret@example.invalid/a"]],["urls":["https://example.invalid/a b"]],
+            ["urls":Array(repeating:"https://example.invalid/a",count:33)],
+            ["urls":["https://example.invalid/a"],"mediaType":"video"],["urls":["https://example.invalid/a"],"shell":"ignored"]]
+        for bad in invalidParameters {
+            try rejected("严格下载参数拒绝") {try declared.require(action:"downloads.prepare",parameters:bad,items:false,references:false)}
+        }
+        try rejected("下载不接收附件") {try declared.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/a"]],items:true,references:false)}
+        try rejected("下载不接收引用") {try declared.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/a"]],items:false,references:true)}
+    }
+    var mixed=alternate;mixed["parametersSchema"]=downloadSchema;try writeDownload(mixed)
+    try rejected("不能混用两种参数形状") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    var limits=alternate;limits["items"]=["maxCount":1];try writeDownload(limits)
+    try rejected("不能忽略非零输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    limits["items"]=["maxCount":0,"futureConstraint":true];try writeDownload(limits)
+    try rejected("不能忽略未知输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    var invalidSchema=downloadSchema;var properties=downloadSchema["properties"] as! [String:Any]
+    properties["mediaType"]=["type":"string","format":"futureFormat"];invalidSchema["properties"]=properties
+    var invalid=alternate;invalid["parameters"]=invalidSchema;try writeDownload(invalid)
+    try rejected("未填写的可选参数也不能隐藏未知schema") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try writeDownload(alternate,owner:"com.gaoseries.GaoMenHu")
+    try rejected("能力表归属不符") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try writeDownload(alternate,version:"1.01")
+    try rejected("不使用Bundle缓存掩盖版本变化") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try writeDownload(alternate)
+    _ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai");checks += 1
+    let installedDownload=URL(fileURLWithPath:"/Applications/搞下载.app",isDirectory:true)
+    if FileManager.default.fileExists(atPath:installedDownload.path) {
+        let installed=try GaoActionProviderCapabilities.load(appURL:installedDownload,bundleID:"com.gaoseries.GaoXiaZai")
+        try installed.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/fixture"],"mediaType":"file"],items:false,references:false)
+        checks += 1
+        print("Installed download capability read-only PASS (\(installed.appVersion)); no app or download started")
+    }
     let client=GaoActionClient(dataDirectory:temp.appendingPathComponent("Client"))
     do {_ = try await client.sendRequest(action:"capture.region",targetBundleID:"com.gaoseries.NonExistentProvider")} catch GaoActionError.providerNotReady {checks += 1}
     print("PASS: GaoAction V1 canonical fixtures + \(checks) meaningful schema/FD staging/reference/journal/capability assertions; no provider or GUI completion claimed")

@@ -36,9 +36,16 @@ struct ClipboardPasteTarget {
                     role:role,editableText:editable,capturedAt:Date())
         return candidate.isValid(requireFrontmost:true) ? candidate : nil
     }
-    @MainActor func isValid(requireFrontmost: Bool, checkRange: Bool = true, requireEditableText: Bool = false) -> Bool {
+    /// Eligibility permits only restoring this exact process to the foreground.
+    /// It is never sufficient to replace the pasteboard or dispatch an event.
+    @MainActor func canActivate() -> Bool {
         let age=Date().timeIntervalSince(capturedAt)
-        guard age >= 0, age <= 60,AXIsProcessTrusted(),!IsSecureEventInputEnabled(),
+        return age >= 0 && age <= 60 && AXIsProcessTrusted() && !IsSecureEventInputEnabled()
+            && WindowProcessIdentity.auditTokenString(for:pid) == identity
+            && NSRunningApplication(processIdentifier:pid).map { !$0.isTerminated } == true
+    }
+    @MainActor func isValid(requireFrontmost: Bool, checkRange: Bool = true, requireEditableText: Bool = false) -> Bool {
+        guard canActivate(),
               WindowProcessIdentity.auditTokenString(for:pid) == identity,
               let app=NSRunningApplication(processIdentifier:pid), !app.isTerminated,
               !requireFrontmost || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {return false}
