@@ -131,7 +131,6 @@ final class WindowLayoutTransaction {
                 if !allowConstrained { didRestore() }
                 return WindowLayoutOutcome(requested: requested, actual: actual)
             }
-            guard allowConstrained else { throw SystemControlError.message("目标应用拒绝恢复记录中的窗口位置或尺寸。") }
             if resize {
                 // The current width is known to be accepted, so a narrow requested width cannot block full height.
                 try check()
@@ -144,6 +143,18 @@ final class WindowLayoutTransaction {
                     let widthTarget = CGRect(origin: actual.origin, size: CGSize(width: requested.width, height: actual.height))
                     actual = try await settle(expected: widthTarget)
                 }
+            }
+            if !allowConstrained {
+                // Restore gets the same bounded axis retries as a layout, but must
+                // still match the saved frame. Never fit a constrained restore.
+                try check()
+                try? setPosition(requested.origin)
+                actual = try await settle(expected: requested)
+                guard Self.matches(actual, requested) else {
+                    throw SystemControlError.message("目标应用拒绝恢复记录中的窗口位置或尺寸。")
+                }
+                didRestore()
+                return WindowLayoutOutcome(requested: requested, actual: actual)
             }
             let fitted = Self.fittedFrame(size: actual.size, requested: requested, workArea: workArea)
             try check()

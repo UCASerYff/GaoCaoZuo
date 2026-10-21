@@ -12,6 +12,7 @@ private final class SimulatedLayoutWindow {
     var rejectAll = false
     var rejectRollback = false
     var rejectPositions = false
+    var rejectCoupledResize = false
     var identityValid = true
     var writes = 0
     var writtenSizes: [CGSize] = []
@@ -26,6 +27,9 @@ private final class SimulatedLayoutWindow {
         writtenSizes.append(value)
         writes += 1; writeBeforeSave = writeBeforeSave || !saved
         guard !rejectAll, !(rejectRollback && value == initial.size) else { throw SystemControlError.message("模拟尺寸拒绝") }
+        guard !rejectCoupledResize || value.width == frame.width || value.height == frame.height else {
+            throw SystemControlError.message("模拟同时修改宽高被拒绝，分轴可接受")
+        }
         var accepted = value
         if let minimumWidth, value.width < minimumWidth {
             if rejectSmallSize { throw SystemControlError.message("模拟整个 CGSize 被最小宽度拒绝") }
@@ -158,6 +162,32 @@ func runWindowLayoutTransactionTests() async throws {
     restoreModel.minimumWidth = nil
     let restored = try await run(transaction(restoreModel), restoreModel, desired: original, restoring: true, didRestore: { journal = nil })
     try check(restored.isExact && restoreModel.frame == original && journal == nil, "只有精确恢复确认后才清除记录")
+
+    let coupledRestore = SimulatedLayoutWindow(left)
+    coupledRestore.rejectCoupledResize = true
+    var coupledJournal: CGRect? = original
+    let coupledResult = try await run(transaction(coupledRestore), coupledRestore,
+        desired: original, restoring: true, didRestore: { coupledJournal = nil })
+    try check(coupledResult.isExact && coupledRestore.frame == original && coupledJournal == nil,
+              "整体尺寸被拒绝时恢复也分轴重试，精确读回后才清除记录")
+    try check(coupledRestore.writtenSizes.contains(CGSize(width:left.width,height:original.height))
+              && coupledRestore.writtenSizes.contains(original.size),
+              "恢复使用已接受宽度修改高度，再修改宽度，未接受受限尺寸为成功")
+
+    let coupledLimited = SimulatedLayoutWindow(CGRect(x:0,y:25,width:1300,height:850))
+    coupledLimited.minimumWidth = 1200
+    var limitedJournal: CGRect? = original
+    var coupledLimitedFailure: WindowLayoutFailure?
+    do {
+        _ = try await run(transaction(coupledLimited), coupledLimited,
+            desired: original, restoring: true, didRestore: { limitedJournal = nil })
+    } catch { coupledLimitedFailure = error as? WindowLayoutFailure }
+    try check(coupledLimitedFailure?.rollbackVerified == true
+              && coupledLimited.frame == coupledLimited.initial && limitedJournal == original,
+              "分轴后仍受最小尺寸限制的恢复必须失败，保留记录并精确回滚")
+    try check(!coupledLimited.writtenPositions.contains(WindowLayoutTransaction.fittedFrame(
+        size:CGSize(width:1200,height:original.height),requested:original,workArea:area).origin),
+              "恢复失败不能尝试把受限尺寸贴合为替代成功")
 
     let rollbackRefused = SimulatedLayoutWindow(original); rollbackRefused.rejectRollback = true
     var interrupt = false
