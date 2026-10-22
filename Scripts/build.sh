@@ -7,17 +7,23 @@ BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 if [[ $# != 0 ]]; then
   [[ $# == 2 && "$1" == '--app-only' && "$2" == /* && "$2" == *.app && ! -e "$2" ]] || { print -u2 '用法：build.sh [--app-only <不存在的绝对路径.app>]'; exit 1; }
 fi
-STAGING=$(mktemp -d /private/tmp/gaocaozuo-build.XXXXXX)
-trap 'rm -rf "$STAGING"' EXIT
+BUILD_ROOT=$(mktemp -d /private/tmp/gaocaozuo-build.XXXXXX)
+STAGING="$BUILD_ROOT/Build.noindex"
+mkdir -p "$STAGING"
+trap 'rm -rf "$BUILD_ROOT"' EXIT
 APP="$STAGING/搞操作.app"
 EXT="$APP/Contents/PlugIns/GaoFinderSync.appex"
 QL_EXT="$APP/Contents/PlugIns/GaoArchiveQuickLook.appex"
+BROKER="$QL_EXT/Contents/XPCServices/ArchiveBroker.xpc"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT/Contents/MacOS" "$QL_EXT/Contents/MacOS"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 ditto "$PROJECT_DIR/Sources" "$STAGING/Sources"
 ditto "$PROJECT_DIR/FinderExtension" "$STAGING/FinderExtension"
 ditto "$PROJECT_DIR/Shared" "$STAGING/Shared"
 ditto "$PROJECT_DIR/QuickLookExtension" "$STAGING/QuickLookExtension"
+cp "$PROJECT_DIR/Scripts/QuickLookArchiveBrokerMain.swift" "$STAGING/BrokerMain.swift"
+cp "$PROJECT_DIR/Scripts/QuickLookCallerAccess.c" "$STAGING/QuickLookCallerAccess.c"
+mkdir -p "$BROKER/Contents/MacOS"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Assets/Lettering.png" -nt "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Scripts/ComposeIcon.swift" -nt "$PROJECT_DIR/Assets/AppIcon.png" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/ComposeIcon.swift" "$PROJECT_DIR/Assets/Lettering.png" "$PROJECT_DIR/Assets/AppIcon.png"
 fi
@@ -30,12 +36,20 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos
   "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoArchiveQuickLook -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
-  "$STAGING"/QuickLookExtension/*.swift "$STAGING/Shared/GaoLocalization.swift" -framework AppKit -framework QuickLookUI -framework PDFKit -framework ImageIO -framework CryptoKit -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
+  "$STAGING"/QuickLookExtension/*.swift "$STAGING/Shared/GaoLocalization.swift" "$STAGING/Shared/QuickLookArchiveEditProtocol.swift" "$STAGING/Shared/QuickLookArchiveBroker.swift" -framework AppKit -framework QuickLookUI -framework PDFKit -framework ImageIO -framework CryptoKit -framework Security -o "$QL_EXT/Contents/MacOS/GaoArchiveQuickLook"
+BROKER_SOURCES=("$STAGING"/Sources/*.swift)
+BROKER_SOURCES=("${(@)BROKER_SOURCES:#*/App.swift}")
+xcrun clang -O2 -target arm64-apple-macos14.0 -c "$STAGING/QuickLookCallerAccess.c" -o "$STAGING/QuickLookCallerAccess.o"
+swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
+  "${BROKER_SOURCES[@]}" "$STAGING"/Shared/*.swift "$STAGING/BrokerMain.swift" "$STAGING/QuickLookCallerAccess.o" \
+  -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers -framework CryptoKit \
+  -framework ApplicationServices -framework Carbon -framework CoreImage -framework ServiceManagement \
+  -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -o "$BROKER/Contents/MacOS/ArchiveBroker"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
-python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$APP/Contents/Resources" "$EXT/Contents/Resources" "$QL_EXT/Contents/Resources"
+python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$APP/Contents/Resources" "$EXT/Contents/Resources" "$QL_EXT/Contents/Resources" "$BROKER/Contents/Resources"
 python3 - "$APP/Contents/Resources/GaoCapabilities.json" "$APP_VERSION" <<'PY'
 import json,sys
 from pathlib import Path
@@ -49,6 +63,11 @@ ditto "$PROJECT_DIR/Docs" "$APP/Contents/Resources/Docs"
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$APP/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER"
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$EXT/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER" --extension
 python3 "$PROJECT_DIR/Scripts/make_plist.py" "$QL_EXT/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER" --quicklook
+python3 - "$BROKER/Contents/Info.plist" "$APP_VERSION" "$BUILD_NUMBER" <<'PY'
+import plistlib,sys
+from pathlib import Path
+Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoseries.GaoCaoZuo.QuickLook.ArchiveBroker','CFBundleExecutable':'ArchiveBroker','CFBundlePackageType':'XPC!','CFBundleShortVersionString':sys.argv[2],'CFBundleVersion':sys.argv[3],'XPCService':{'ServiceType':'Application','RunLoopType':'NSRunLoop'}}))
+PY
 plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist" "$QL_EXT/Contents/Info.plist"
 if [[ -f "$APP/Contents/Resources/Tools/7zz" ]]; then
   chmod 755 "$APP/Contents/Resources/Tools/7zz"
@@ -60,6 +79,9 @@ while IFS= read -r -d '' native; do
     codesign --force --sign - --timestamp=none "$native"
   fi
 done < <(find "$APP/Contents/Resources/Tools" -type f -print0)
+# The broker uses the main app's existing permissions. Only fixed archive
+# operations are exposed; every parser/rebuilder is sandboxed by its job scope.
+codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook.ArchiveBroker "$BROKER"
 codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook --entitlements "$PROJECT_DIR/QuickLookExtension/QuickLook.entitlements" "$QL_EXT"
 codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.FinderSync --entitlements "$PROJECT_DIR/Resources/FinderSync.entitlements" "$EXT"
 codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo "$APP"

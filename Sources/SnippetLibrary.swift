@@ -134,6 +134,7 @@ public final class PasteStack: ObservableObject {
     @Published public private(set) var items: [String] = []
     @Published public private(set) var entries: [AdvancedSnippet] = []
     @Published public private(set) var failure: String?
+    @Published var mergeCopyRecovery:ClipboardExplicitCopy.Recovery?
     private var library: SnippetLibraryStore?
     private var generation: UInt64 = 0
     private var persistenceBlocked = false
@@ -234,11 +235,26 @@ public final class PasteStack: ObservableObject {
     }
     public func mergeAll(separator: String = "\n") -> String {
         do {
-            let merged=try mergedText(separator:separator),board=NSPasteboard.general
-            board.clearContents()
-            guard board.setString(merged,forType:.string) else {throw DataFailure.message("无法写入系统剪贴板，堆栈已保留。")}
-            return merged
-        } catch {failure=error.localizedDescription;return ""}
+            guard mergeCopyRecovery==nil else {throw DataFailure.message("请先处理复制前剪贴板的恢复选择。")}
+            guard !IsSecureEventInputEnabled() else {throw DataFailure.message("安全输入期间不读取剪贴板。")}
+            let board=NSPasteboard.general,count=NSPasteboard.general.changeCount
+            let prepared=try preparedMerge(separator:separator)
+            try ClipboardExplicitCopy.publish(prepared,to:board,expectedCount:count,shouldProceed:{!IsSecureEventInputEnabled()})
+            return prepared.string(forType:.string) ?? ""
+        } catch {
+            if let value=error as? ClipboardExplicitCopy.Failure {mergeCopyRecovery=value.recovery}
+            failure=error.localizedDescription;return ""
+        }
+    }
+
+    /// Build every representation before touching the system clipboard. A failed
+    /// attachment/read/serialization leaves both the queue and clipboard intact.
+    public func preparedMerge(separator:String = "\n") throws -> NSPasteboardItem {
+        guard !persistenceBlocked,!entries.isEmpty,let library else {throw DataFailure.message(failure ?? "粘贴堆栈为空。")}
+        try library.validateCurrentRevision()
+        let result=try PasteStackRichMerge.prepare(entries,library:library,separator:separator)
+        try library.validateCurrentRevision()
+        return result
     }
 
     public func clear() {
@@ -334,7 +350,7 @@ public enum SnippetCSVCodec {
             throw DataFailure.message("CSV 文件为空或未包含有效数据行。")
         }
         guard rows.count <= maxImportRows + 1 else {
-            throw DataFailure.message("CSV 记录超过 \(maxImportRows) 行安全限制。")
+            throw DataFailure.message(L10n.format("CSV 记录超过 %@ 行安全限制。", String(describing: (maxImportRows))))
         }
 
         guard rows[0] == ["名称", "快捷码", "分组", "执行方式", "内容"] || rows[0] == ["name", "shortcut", "group", "mode", "text"] else {
@@ -347,7 +363,7 @@ public enum SnippetCSVCodec {
         // Skip header
         for (offset, fields) in rows.dropFirst().enumerated() {
             if fields.allSatisfy({ $0.isEmpty }) { continue }
-            guard fields.count == 5 else { throw DataFailure.message("CSV 第 \(offset + 2) 条记录的列数不正确，未导入。") }
+            guard fields.count == 5 else { throw DataFailure.message(L10n.format("CSV 第 %@ 条记录的列数不正确，未导入。", String(describing: (offset + 2)))) }
 
             let name = cleanImportField(fields[0])
             let shortcut = cleanImportField(fields[1])
@@ -356,7 +372,7 @@ public enum SnippetCSVCodec {
             let text = cleanImportField(fields[4])
 
             guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !text.isEmpty else {
-                throw DataFailure.message("CSV 第 \(offset + 2) 条记录缺少名称或内容，未导入。")
+                throw DataFailure.message(L10n.format("CSV 第 %@ 条记录缺少名称或内容，未导入。", String(describing: (offset + 2))))
             }
 
             var groupID: UUID? = nil
@@ -396,7 +412,7 @@ public enum SnippetCSVCodec {
                     var uniqueSnippet = newSnippet
                     var count = 1
                     repeat {
-                        uniqueSnippet.name = count == 1 ? "\(name) (副本)" : "\(name) (副本 \(count))"
+                        uniqueSnippet.name = count == 1 ? L10n.format("%@ (副本)", String(describing: (name))) : L10n.format("%@ (副本 %@)", String(describing: (name)), String(describing: (count)))
                         count += 1
                     } while resultSnippets.contains(where: { $0.name == uniqueSnippet.name })
                     if resultSnippets.contains(where: { $0.shortcut?.lowercased() == uniqueSnippet.shortcut?.lowercased() && $0.shortcut != nil }) {

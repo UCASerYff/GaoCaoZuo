@@ -25,7 +25,7 @@ struct OperationRootView: View {
                 Divider()
                 SelectionBar(store:store)
                 Divider()
-                if !store.dataHealthy { Label("资料保护模式：\(store.data.failure ?? "无法写入资料")",systemImage:"exclamationmark.shield").font(.callout).foregroundStyle(.red).padding().frame(maxWidth:.infinity,alignment:.leading) }
+                if !store.dataHealthy { Label(L10n.format("资料保护模式：%@", String(describing: (store.data.failure ?? "无法写入资料"))),systemImage:"exclamationmark.shield").font(.callout).foregroundStyle(.red).padding().frame(maxWidth:.infinity,alignment:.leading) }
                 sectionContent
                 Divider()
                 OperationTaskStatusView(store: store)
@@ -56,13 +56,13 @@ private struct OperationTaskStatusView: View {
             if store.busy || store.workflowRunning || archive.isRunning {
                 ProgressView().controlSize(.small)
             }
-            Text(store.awaitingArchivePassword ? "等待解压密码" : store.message)
+            Text(store.awaitingArchivePassword ? L10n.text("等待解压密码") : store.message)
                 .lineLimit(2).font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if store.queuedCount > 0 {
                 Menu {
                     Button("清除等待任务") { store.cancelWaitingJobs() }
-                } label: { Label("等待 \(store.queuedCount) 项", systemImage: "list.bullet") }
+                } label: { Label(L10n.format("等待 %@ 项", String(describing: (store.queuedCount))), systemImage: "list.bullet") }
                 .controlSize(.small).fixedSize()
             }
             if archive.isRunning || store.awaitingArchivePassword {
@@ -85,7 +85,7 @@ struct SelectionBar: View {
         HStack(spacing:12) {
             Image(systemName:store.selection.isEmpty ? "tray" : "doc.on.doc").foregroundStyle(.secondary)
             VStack(alignment:.leading,spacing:3) {
-                Text(store.selection.isEmpty ? "拖入文件，或点击选择文件" : "已选择 \(store.selection.count) 项").font(.callout.weight(.medium))
+                Text(store.selection.isEmpty ? "拖入文件，或点击选择文件" : L10n.format("已选择 %@ 项", String(describing: (store.selection.count)))).font(.callout.weight(.medium))
                 if !store.selection.isEmpty { Text(store.selection.prefix(3).map(\.lastPathComponent).joined(separator:"、") + (store.selection.count > 3 ? "…" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(store.selection.map(\.path).joined(separator:"\n")) }
             }
             Spacer()
@@ -197,7 +197,7 @@ struct OperationPanelView: View {
         }
         let workflows = store.settings.workflows.map { workflow in
             OperationAction(id: "workflow.run." + workflow.id.uuidString, title: workflow.name,
-                            detail: "运行组合操作 · \(workflow.steps.count) 个步骤", icon: "square.stack.3d.up",
+                            detail: L10n.format("运行组合操作 · %@ 个步骤", String(describing: (workflow.steps.count))), icon: "square.stack.3d.up",
                             section: .workflows, keywords: "组合 工作流 workflow")
         }
         let all = (store.actionChoices + workflows).filter { $0.id != "panel.show" && $0.matches(query) }
@@ -212,7 +212,7 @@ struct OperationPanelView: View {
         VStack(spacing:0) {
             HStack { Image(systemName:"magnifyingglass").foregroundStyle(.secondary); TextField("搜索操作，或输入 :短语码",text:$query).textFieldStyle(.plain).font(.title3).focused($focused).onSubmit(runSelected); Text("esc").font(.caption).foregroundStyle(.secondary) }.padding(18)
             Divider()
-            if !store.selection.isEmpty { HStack { Label("\(store.selection.count) 个已选项目",systemImage:"doc.on.doc"); Text(store.selection.first?.lastPathComponent ?? "").lineLimit(1); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(10) }
+            if !store.selection.isEmpty { HStack { Label(L10n.format("%@ 个已选项目", String(describing: (store.selection.count))),systemImage:"doc.on.doc"); Text(store.selection.first?.lastPathComponent ?? "").lineLimit(1); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(10) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing:2) {
@@ -276,7 +276,7 @@ struct ClipboardWorkspace: View {
             HStack { Text("剪贴板").font(.title3.weight(.semibold)); Toggle("记录新复制的内容",isOn:Binding(get:{store.settings.clipboardEnabled},set:{v in store.update {$0.clipboardEnabled = v}})); Spacer(); TextField("搜索历史",text:$search).textFieldStyle(.roundedBorder).frame(width:220) }
             Text("历史保存在本机。来源标记为机密或临时的内容会跳过；可在设置中排除应用。").font(.callout).foregroundStyle(.secondary)
             if let error = clipboard.error { Label(error,systemImage:"exclamationmark.triangle").foregroundStyle(.red) }
-            HStack { Text("\(clipboard.items.count) 条 · 保留 \(store.settings.clipboardDays) 天").font(.caption).foregroundStyle(.secondary); Spacer(); Button("清除未固定历史…"){confirmClear()} }
+            HStack { Text(L10n.format("%@ 条 · 保留 %@ 天", String(describing: (clipboard.items.count)), String(describing: (store.settings.clipboardDays)))).font(.caption).foregroundStyle(.secondary); Spacer(); Button("清除未固定历史…"){confirmClear()} }
             HStack {
                 Picker("分组",selection:$groupFilter) {Text("全部").tag("");ForEach(Array(Set(clipboard.items.compactMap(\.group))).sorted(),id:\.self) {Text($0).tag($0)}}.frame(width:240)
                 if clipboard.hasActivePasteTransaction {Button("处理待确认粘贴") {store.showPasteReview?()}}
@@ -290,8 +290,8 @@ struct ClipboardWorkspace: View {
                     VStack(alignment:.leading,spacing:4) { Text(item.title).lineLimit(2); Text(item.date,style:.date).font(.caption).foregroundStyle(.secondary); if !item.sourceApp.isEmpty { Text(item.sourceApp).font(.caption2).foregroundStyle(.tertiary) } }
                     Spacer()
                     Button { clipboard.pin(item.id) } label: { Image(systemName:item.pinned ? "pin.fill" : "pin") }.buttonStyle(.borderless)
-                    Button("复制"){do {try clipboard.copy(item);store.message = "已复制"} catch {store.error = error.localizedDescription}}.buttonStyle(.borderless)
-                    if item.kind == .text { Button("纯文本"){do{try clipboard.copy(item,plain:true);store.message = "已复制为纯文本"}catch{store.error = error.localizedDescription}}.buttonStyle(.borderless) }
+                    Button("复制"){do {try clipboard.copy(item);store.message = L10n.text("已复制")} catch {store.error = error.localizedDescription}}.buttonStyle(.borderless)
+                    if item.kind == .text { Button("纯文本"){do{try clipboard.copy(item,plain:true);store.message = L10n.text("已复制为纯文本")}catch{store.error = error.localizedDescription}}.buttonStyle(.borderless) }
                     Button("粘贴"){do{try clipboard.paste(item)}catch{store.error = error.localizedDescription}}.buttonStyle(.borderless)
                     Menu { Button("分组与标签…") {metadataItem=item};Button("加入粘贴堆栈") {do {try clipboard.pushToStack(item)} catch {store.error=error.localizedDescription}} } label: {Image(systemName:"ellipsis.circle")}.menuStyle(.borderlessButton).frame(width:24)
                     Button { clipboard.delete(item.id) } label: { Image(systemName:"trash") }.buttonStyle(.borderless)
@@ -316,7 +316,7 @@ struct RecoveryView: View {
         VStack(alignment:.leading,spacing:12) {
             Text("恢复记录").font(.title3.weight(.semibold))
             Text("恢复前会核验目标内容；原位置冲突、文件变化或文件缺失时停止。新建、复制和转换的结果恢复时移入废纸篓。").font(.callout).foregroundStyle(.secondary)
-            List(store.receipts) { receipt in HStack { VStack(alignment:.leading,spacing:4) { Text(receipt.destination.lastPathComponent).font(.headline); Text(receipt.destination.path).font(.caption).foregroundStyle(.secondary).lineLimit(1); Text(receipt.date,style:.date).font(.caption) }; Spacer(); Text(receipt.kind.rawValue).font(.caption).foregroundStyle(.secondary); Button("恢复…") { let alert=NSAlert();alert.messageText="恢复这次操作？";alert.informativeText=receipt.destination.path;alert.addButton(withTitle:"恢复");alert.addButton(withTitle:"取消");if alert.runModal() == .alertFirstButtonReturn {store.undo(receipt)} }.disabled(store.busy || !store.dataHealthy) } }.overlay { if store.receipts.isEmpty {ContentUnavailableView("暂无恢复记录",systemImage:"clock.arrow.circlepath")} }
+            List(store.receipts) { receipt in HStack { VStack(alignment:.leading,spacing:4) { Text(receipt.destination.lastPathComponent).font(.headline); Text(receipt.destination.path).font(.caption).foregroundStyle(.secondary).lineLimit(1); Text(receipt.date,style:.date).font(.caption) }; Spacer(); Text(receipt.kind.rawValue).font(.caption).foregroundStyle(.secondary); Button("恢复…") { let alert=NSAlert();alert.messageText=L10n.text("恢复这次操作？");alert.informativeText=receipt.destination.path;alert.addButton(withTitle:L10n.text("恢复"));alert.addButton(withTitle:L10n.text("取消"));if alert.runModal() == .alertFirstButtonReturn {store.undo(receipt)} }.disabled(store.busy || !store.dataHealthy) } }.overlay { if store.receipts.isEmpty {ContentUnavailableView("暂无恢复记录",systemImage:"clock.arrow.circlepath")} }
         }.padding(20)
     }
 }

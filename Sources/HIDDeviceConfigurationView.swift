@@ -5,6 +5,8 @@ import SwiftUI
     @Binding var profiles:[HIDDeviceProfile]
     let actions:[InputActionChoice]
     @StateObject private var monitor=HIDInputDevices()
+    @State private var trackingInspector=HIDTrackingServiceBackend()
+    @State private var trackingReadiness:[String:String]=[:]
     var body:some View {
         VStack(alignment:.leading,spacing:10) {
             Text(L10n.text(monitor.status)).font(.caption)
@@ -13,8 +15,8 @@ import SwiftUI
             ForEach(InputDeviceMatrix.currentMatrix(devices:monitor.devices,monitoringAuthorized:CGPreflightListenEventAccess())) {entry in
                 VStack(alignment:.leading) {
                     Text(entry.identity.productName + " · " + L10n.text(entry.verificationState))
-                    Text("VID " + (entry.identity.vendorID==0 ? L10n.text("未提供"):String(entry.identity.vendorID)) + " / PID " + (entry.identity.productID==0 ? L10n.text("未提供"):String(entry.identity.productID)) + " / 位置 \(entry.identity.locationID) · " + entry.identity.transport + " · " + (entry.identity.isBuiltIn ? L10n.text("内置"):L10n.text("外置/未知"))).font(.caption)
-                    Text("接口 \(entry.identity.registryID) · Usage " + entry.identity.usagePairs.joined(separator:", ")).font(.caption.monospaced())
+                    Text("VID " + (entry.identity.vendorID==0 ? L10n.text("未提供"):String(entry.identity.vendorID)) + " / PID " + (entry.identity.productID==0 ? L10n.text("未提供"):String(entry.identity.productID)) + L10n.format(" / 位置 %@ · ", String(describing: (entry.identity.locationID))) + entry.identity.transport + " · " + (entry.identity.isBuiltIn ? L10n.text("内置"):L10n.text("外置/未知"))).font(.caption)
+                    Text(L10n.format("接口 %@ · Usage ", String(describing: (entry.identity.registryID))) + entry.identity.usagePairs.joined(separator:", ")).font(.caption.monospaced())
                     Text(L10n.text(entry.capabilities.notes)).font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -22,7 +24,7 @@ import SwiftUI
             ForEach(monitor.devices) {device in
                 if !device.interfacePath.isEmpty {Text(L10n.text("接口路径：")+device.interfacePath).font(.caption.monospaced()).textSelection(.enabled)}
                 Text(L10n.text(device.bindingScope)).font(.caption).foregroundStyle(.secondary)
-                HStack {VStack(alignment:.leading){Text(device.name);Text("\(device.id) · 按钮Usage："+device.buttonUsages.map(String.init).joined(separator:",")).font(.caption.monospaced())};Spacer();Button("添加此设备配置"){var profile=HIDDeviceProfile();profile.name=device.name;profile.deviceID=device.id;profiles.append(profile)}}
+                HStack {VStack(alignment:.leading){Text(device.name);Text(L10n.format("%@ · 按钮Usage：", String(describing: (device.id)))+device.buttonUsages.map(String.init).joined(separator:",")).font(.caption.monospaced())};Spacer();Button("添加此设备配置"){var profile=HIDDeviceProfile();profile.name=device.name;profile.deviceID=device.id;profiles.append(profile)}}
             }
             Text("录制读取公开HID鼠标按钮报告，不读取键盘文字；原始按钮保持不变。设备未连接、按钮报告未提供或权限被拒绝时，规则不会回退至其他鼠标。配置仅绑定当前系统启动中的该条实际接口；断接、接口更换或系统重启后须重新绑定。不会按 VID/PID 或复用端口接管。").font(.caption).foregroundStyle(.secondary)
             ForEach($profiles) { $profile in
@@ -48,15 +50,22 @@ import SwiftUI
                         }
                     }
                     Button("添加录制按钮映射"){profile.buttons.append(HIDButtonMapping())}
-                    Toggle("保留逐设备跟踪调校意向",isOn:$profile.requestsTrackingAdjustment)
+                    Toggle("逐设备跟踪调校",isOn:$profile.requestsTrackingAdjustment)
                     if profile.requestsTrackingAdjustment {
-                        LabeledContent("请求速度（暂未应用）"){Slider(value:$profile.trackingSpeed,in:0.1...8);Text(profile.trackingSpeed,format:.number.precision(.fractionLength(2)))}
-                        LabeledContent("请求加速度（暂未应用）"){Slider(value:$profile.trackingAcceleration,in:0...3);Text(profile.trackingAcceleration,format:.number.precision(.fractionLength(2)))}
-                        Text("公开 HID 服务属性接口存在，但本应用尚未实现经验证的设备服务归属、参数编码及读回回滚。以上值仅保留，不会修改硬件或全局设置。").font(.caption).foregroundStyle(.orange)
+                        LabeledContent("相对原值速度"){Slider(value:$profile.trackingSpeed,in:0.1...8);Text(profile.trackingSpeed,format:.number.precision(.fractionLength(2)))}
+                        LabeledContent("加速度"){Slider(value:$profile.trackingAcceleration,in:0...3);Text(profile.trackingAcceleration,format:.number.precision(.fractionLength(2)))}
+                        Text(L10n.text(trackingReadiness[profile.deviceID] ?? "调校设备未连接或需要重新绑定；未修改其他设备。")).font(.caption).foregroundStyle(.secondary)
+                        Text("保存并启用配置后，先备份真实原值，再向唯一设备服务写入并读回；停用或退出时恢复。设备不提供原值或读回失败时拒绝调校，系统或其他应用更改的值不会被强行覆盖。这里的设备检查只读，不代表硬件调校已经验收。").font(.caption).foregroundStyle(.secondary)
                     }
                     Button("删除设备配置",role:.destructive){profiles.removeAll{$0.id==profile.id}}
                 } label:{Toggle(profile.name,isOn:$profile.enabled)}
             }
         }.onAppear {monitor.start(recordButtons:false)}.onDisappear {monitor.stop()}
+        .onReceive(monitor.$devices) {devices in
+            trackingInspector.refresh(devices)
+            trackingReadiness=Dictionary(uniqueKeysWithValues:devices.map{device in
+                (device.id,trackingInspector.refusal[device.id] ?? "已唯一识别设备服务并读到原值；应用后的实际读回状态见高级输入状态。")
+            })
+        }
     }
 }

@@ -119,7 +119,7 @@ struct ToolSheet: View {
                     if folder {
                         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else{throw DataFailure.message("请输入有效的文件夹名称。")}
                         output=dir.appendingPathComponent(name)
-                        guard mkdir(output.path,0o755) == 0 else{throw DataFailure.message("无法创建文件夹：\(String(cString:strerror(errno)))")}
+                        guard mkdir(output.path,0o755) == 0 else{throw DataFailure.message(L10n.format("无法创建文件夹：%@", String(describing: (String(cString:strerror(errno))))))}
                     } else { output=try FileTools.createFile(in:dir,name:name,content:text) }
                     return [.init(kind:.create,destination:output,fingerprint:try FileTools.fingerprint(output))]
                 }
@@ -137,7 +137,7 @@ struct ToolSheet: View {
     private var renameView: some View {
         VStack(alignment:.leading,spacing:14) {
             TextField("命名模板",text:$pattern).textFieldStyle(.roundedBorder).onChange(of:pattern){_,_ in updatePreview()}
-            Stepper("起始序号：\(start)",value:$start,in:0...999999).onChange(of:start){_,_ in updatePreview()}
+            Stepper(L10n.format("起始序号：%@", String(describing: (start))),value:$start,in:0...999999).onChange(of:start){_,_ in updatePreview()}
             Text("{name} 原名称 · {ext} 扩展名 · {n} 序号 · {n:03} 三位补零；同名冲突停止。").font(.callout).foregroundStyle(.secondary)
             if let previewError { Text(previewError).foregroundStyle(.red) }
             ForEach(plans) { plan in HStack { Text(plan.source.lastPathComponent).frame(maxWidth:.infinity,alignment:.leading); Image(systemName:"arrow.right").foregroundStyle(.secondary); Text(plan.destination.lastPathComponent).frame(maxWidth:.infinity,alignment:.leading) }.padding(.vertical,3) }
@@ -152,15 +152,15 @@ struct ToolSheet: View {
                 HStack { TextField("压缩包名称",text:$filename).textFieldStyle(.roundedBorder); Picker("格式",selection:$format){ForEach(ArchiveFormat.allCases){Text($0.title).tag($0)}}.frame(width:170).onChange(of:format){_,value in filename=URL(fileURLWithPath:filename).deletingPathExtension().lastPathComponent+"."+value.rawValue;if value == .zip {solid=false}} }
                 SecureField("加密密码（留空不加密）",text:$password).textFieldStyle(.roundedBorder)
                 Toggle("将密码保存到系统钥匙串",isOn:$rememberPassword).disabled(password.isEmpty)
-                Picker("压缩等级", selection: $archiveCreation.level) { ForEach(ArchiveCompressionLevel.allCases) { Text($0.title).tag($0) } }
-                Stepper("CPU 线程：\(archiveCreation.threads == 0 ? "自动" : String(archiveCreation.threads))", value: $archiveCreation.threads, in: 0...256)
+                Picker("压缩等级", selection: $archiveCreation.level) { ForEach(ArchiveCompressionLevel.allCases) { Text(L10n.text($0.title)).tag($0) } }
+                Stepper(L10n.format("CPU 线程：%@", String(describing: (archiveCreation.threads == 0 ? L10n.text("自动") : String(archiveCreation.threads)))), value: $archiveCreation.threads, in: 0...256)
                 Toggle("每个项目分别压缩", isOn: $archiveCreation.separateItems).disabled(split)
                 Toggle("名称附加日期", isOn: $archiveCreation.appendDate)
                 Toggle("完成后显示结果", isOn: $archiveCreation.revealResults)
                 Toggle("核验完成后将原件移到废纸篓", isOn: $archiveCreation.trashOriginals)
                 DisclosureGroup("忽略文件模式") { Text("每行一条，支持 * 和 ?，例如 .DS_Store、*.tmp").font(.caption).foregroundStyle(.secondary); TextEditor(text: $ignoredPatterns).frame(height: 70) }
                 Toggle("分卷压缩",isOn:$split)
-                if split { Stepper("每卷 \(splitMB) MB",value:$splitMB,in:1...100000) }
+                if split { Stepper(L10n.format("每卷 %@ MB", String(describing: (splitMB))),value:$splitMB,in:1...100000) }
                 if format == .sevenZip { Toggle("固实压缩",isOn:$solid); Toggle("加密文件名", isOn: $archiveCreation.encryptFileNames).disabled(password.isEmpty) }
                 Text("ZIP 使用 AES256，可使用中文密码；部分系统自带解压器不支持 AES。7Z 可分别选择文件名加密与固实压缩。").font(.caption).foregroundStyle(.secondary)
                 Button("开始压缩",action:createArchive).buttonStyle(.borderedProminent).disabled(running || filename.isEmpty || !store.dataHealthy)
@@ -173,13 +173,13 @@ struct ToolSheet: View {
                 DisclosureGroup("解压预算与编码") {
                     Toggle("展开多层 TAR 容器", isOn: $archiveExtraction.recursiveContainers)
                     Toggle("允许包内安全链接", isOn: $archiveExtraction.allowSafeLinks)
-                    Stepper("展开容量：\(archiveExtraction.maximumExpandedGiB) GiB", value: $archiveExtraction.maximumExpandedGiB, in: 1...16_384)
-                    Stepper("项目数：\(archiveExtraction.maximumEntries)", value: $archiveExtraction.maximumEntries, in: 1...5_000_000, step: 10_000)
-                    Stepper("时间：\(archiveExtraction.maximumMinutes) 分钟", value: $archiveExtraction.maximumMinutes, in: 1...1_440, step: 10)
-                    Picker("文件名编码", selection: $archiveExtraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? "自动" : $0).tag($0) } }
+                    Stepper(L10n.format("展开容量：%@ GiB", String(describing: (archiveExtraction.maximumExpandedGiB))), value: $archiveExtraction.maximumExpandedGiB, in: 1...16_384)
+                    Stepper(L10n.format("项目数：%@", String(describing: (archiveExtraction.maximumEntries))), value: $archiveExtraction.maximumEntries, in: 1...5_000_000, step: 10_000)
+                    Stepper(L10n.format("时间：%@ 分钟", String(describing: (archiveExtraction.maximumMinutes))), value: $archiveExtraction.maximumMinutes, in: 1...1_440, step: 10)
+                    Picker("文件名编码", selection: $archiveExtraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? L10n.text("自动") : $0).tag($0) } }
                 }
-                HStack { Button(request.actionID == "archive.list" ? "刷新列表" : "查看包内文件",action:listArchive).disabled(running || items.count != 1); Button("全部解压"){extractArchive(selected:nil)}.buttonStyle(.borderedProminent).disabled(running || items.count != 1 || !store.dataHealthy); if !selectedPaths.isEmpty { Button("提取勾选 \(selectedPaths.count) 项"){extractArchive(selected:Array(selectedPaths))}.disabled(running || !store.dataHealthy) } }
-                if !entries.isEmpty { HStack { Text("\(entries.count) 个项目").font(.caption); Spacer(); Button("全选文件"){selectedPaths=Set(entries.filter{!$0.isDirectory}.map(\.path))};Button("清除勾选"){selectedPaths=[]} }; ForEach(entries.prefix(2000)) { entry in HStack { Toggle(isOn:Binding(get:{selectedPaths.contains(entry.path)},set:{v in if v{selectedPaths.insert(entry.path)}else{selectedPaths.remove(entry.path)}})){Label(entry.path,systemImage:entry.isDirectory ? "folder" : "doc")}; Spacer(); Text(ByteCountFormatter.string(fromByteCount:Int64(clamping:entry.size),countStyle:.file)).font(.caption).foregroundStyle(.secondary) }.disabled(entry.isDirectory) }; if entries.count > 2000 {Text("列表仅展示前 2000 项；全部解压仍处理完整内容。").font(.caption).foregroundStyle(.secondary)} }
+                HStack { Button(request.actionID == "archive.list" ? "刷新列表" : "查看包内文件",action:listArchive).disabled(running || items.count != 1); Button("全部解压"){extractArchive(selected:nil)}.buttonStyle(.borderedProminent).disabled(running || items.count != 1 || !store.dataHealthy); if !selectedPaths.isEmpty { Button(L10n.format("提取勾选 %@ 项", String(describing: (selectedPaths.count)))){extractArchive(selected:Array(selectedPaths))}.disabled(running || !store.dataHealthy) } }
+                if !entries.isEmpty { HStack { Text(L10n.format("%@ 个项目", String(describing: (entries.count)))).font(.caption); Spacer(); Button("全选文件"){selectedPaths=Set(entries.filter{!$0.isDirectory}.map(\.path))};Button("清除勾选"){selectedPaths=[]} }; ForEach(entries.prefix(2000)) { entry in HStack { Toggle(isOn:Binding(get:{selectedPaths.contains(entry.path)},set:{v in if v{selectedPaths.insert(entry.path)}else{selectedPaths.remove(entry.path)}})){Label(entry.path,systemImage:entry.isDirectory ? "folder" : "doc")}; Spacer(); Text(ByteCountFormatter.string(fromByteCount:Int64(clamping:entry.size),countStyle:.file)).font(.caption).foregroundStyle(.secondary) }.disabled(entry.isDirectory) }; if entries.count > 2000 {Text("列表仅展示前 2000 项；全部解压仍处理完整内容。").font(.caption).foregroundStyle(.secondary)} }
             }
             if archive.isRunning { if let p=archive.progress{ProgressView(value:p)}else{ProgressView()} }
             if !archive.output.isEmpty {
@@ -255,7 +255,7 @@ struct ToolSheet: View {
         var warning:String?
         if remember,let password {
             do {try PasswordVault.save(password,account:account)}
-            catch {warning="\(title)，但密码未能保存到钥匙串：\(error.localizedDescription)"}
+            catch {warning=L10n.format("%@，但密码未能保存到钥匙串：%@", String(describing: (title)), String(describing: (error.localizedDescription)))}
         }
         if store.sheet?.id == request.id {store.sheet=nil}
         store.notify(warning ?? title,failed:warning != nil,outputs:outputs)
@@ -265,7 +265,7 @@ struct ToolSheet: View {
             directoryPicker
             Picker("输出格式",selection:$imageFormat){Text("PNG").tag("png");Text("JPEG").tag("jpeg");Text("HEIC").tag("heic");Text("TIFF").tag("tiff")}.pickerStyle(.segmented)
             Toggle("限制最长边",isOn:$resize)
-            if resize { Stepper("最长边 \(maxDimension) 像素",value:$maxDimension,in:16...16384,step:16) }
+            if resize { Stepper(L10n.format("最长边 %@ 像素", String(describing: (maxDimension))),value:$maxDimension,in:16...16384,step:16) }
             Text("保留原图片，输出为新文件。多帧与多页图片会提示；转换会去除源图片定位等元数据。").font(.callout).foregroundStyle(.secondary)
             Button("转换图片") { let items=items,to=URL(fileURLWithPath:directory),format=imageFormat,size=resize ? maxDimension : nil;store.work("图片转换"){let outputs=try FileTools.convertImages(items:items,to:to,format:format,maxDimension:size);return try outputs.map{.init(kind:.convert,destination:$0,fingerprint:try FileTools.fingerprint($0))}} }.buttonStyle(.borderedProminent).disabled(running || !store.dataHealthy)
         }

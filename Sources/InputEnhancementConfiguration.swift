@@ -7,11 +7,17 @@ struct InputEnhancementConfiguration: Codable, Equatable {
     var scrollProfiles: [ScrollDeviceProfile] = []
     var experimentalRawTouch = false
     var syncFolder: String = ""
+    var iCloudSyncEnabled=false
+    var iCloudSyncFolder=""
+    var iCloudSyncBookmark:Data?=nil
+    var cloudPendingScriptRules:[UUID]=[]
+    var cloudPendingHIDMappings:[UUID]=[]
+    var cloudPendingHIDProfiles:[UUID]=[]
     var scriptLibrary: [InputScript] = []
     var hidProfiles: [HIDDeviceProfile] = []
     var migrationSources:[InputMigrationSource] = []
     init() {}
-    enum CodingKeys: String, CodingKey { case enabled,rules,scrollProfiles,experimentalRawTouch,syncFolder,scriptLibrary,hidProfiles,migrationSources }
+    enum CodingKeys: String, CodingKey { case enabled,rules,scrollProfiles,experimentalRawTouch,syncFolder,scriptLibrary,hidProfiles,migrationSources,iCloudSyncEnabled,iCloudSyncFolder,iCloudSyncBookmark,cloudPendingScriptRules,cloudPendingHIDMappings,cloudPendingHIDProfiles }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy:CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self,forKey:.enabled) ?? false
@@ -19,6 +25,12 @@ struct InputEnhancementConfiguration: Codable, Equatable {
         scrollProfiles = try c.decodeIfPresent([ScrollDeviceProfile].self,forKey:.scrollProfiles) ?? []
         experimentalRawTouch = try c.decodeIfPresent(Bool.self,forKey:.experimentalRawTouch) ?? false
         syncFolder = try c.decodeIfPresent(String.self,forKey:.syncFolder) ?? ""
+        iCloudSyncEnabled=try c.decodeIfPresent(Bool.self,forKey:.iCloudSyncEnabled) ?? false
+        iCloudSyncFolder=try c.decodeIfPresent(String.self,forKey:.iCloudSyncFolder) ?? ""
+        iCloudSyncBookmark=try c.decodeIfPresent(Data.self,forKey:.iCloudSyncBookmark)
+        cloudPendingScriptRules=try c.decodeIfPresent([UUID].self,forKey:.cloudPendingScriptRules) ?? []
+        cloudPendingHIDMappings=try c.decodeIfPresent([UUID].self,forKey:.cloudPendingHIDMappings) ?? []
+        cloudPendingHIDProfiles=try c.decodeIfPresent([UUID].self,forKey:.cloudPendingHIDProfiles) ?? []
         scriptLibrary = try c.decodeIfPresent([InputScript].self,forKey:.scriptLibrary) ?? []
         hidProfiles = try c.decodeIfPresent([HIDDeviceProfile].self,forKey:.hidProfiles) ?? []
         migrationSources = try c.decodeIfPresent([InputMigrationSource].self,forKey:.migrationSources) ?? []
@@ -150,7 +162,8 @@ struct EnhancedInputRule:Codable,Equatable,Identifiable {
 struct ScrollDeviceProfile: Codable,Equatable,Identifiable {
     var id = UUID();var name = "滚轮设置";var enabled = false
     /// allWheel means only discrete wheel events; allPrecise means only continuous trackpad events.
-    /// Physical HID IDs are retained only; CGEvent streams cannot be bound to them safely.
+    /// A physical connection ID requires that event's verified HID sender;
+    /// unidentified/ambiguous sources never fall back to a physical/global rule.
     var deviceID = "allWheel"
     var reverseX = false;var reverseY = false
     var speed:Double = 1;var acceleration:Double = 0

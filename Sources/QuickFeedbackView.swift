@@ -10,14 +10,14 @@ struct QuickFeedbackView: View {
             HStack(alignment:.top,spacing:10) {
                 if store.feedback.kind == .running {ProgressView().controlSize(.small)}
                 else {Image(systemName:store.feedback.kind == .failure ? "exclamationmark.circle.fill" : "checkmark.circle.fill").foregroundStyle(store.feedback.kind == .failure ? .orange : .green)}
-                Text(store.feedback.title).font(.callout.weight(.medium)).lineLimit(3).frame(maxWidth:.infinity,alignment:.leading)
+                Text(L10n.text(store.feedback.title)).font(.callout.weight(.medium)).lineLimit(3).frame(maxWidth:.infinity,alignment:.leading)
                 Button(action:close){Image(systemName:"xmark")}.buttonStyle(.plain).foregroundStyle(.secondary)
             }
             if archive.isRunning,let progress=archive.progress {ProgressView(value:progress)}
             HStack(spacing:12) {
-                if store.queuedCount > 0 {Text("等待 \(store.queuedCount) 项").font(.caption).foregroundStyle(.secondary)}
+                if store.queuedCount > 0 {Text(L10n.format("等待 %@ 项", String(describing: (store.queuedCount)))).font(.caption).foregroundStyle(.secondary)}
                 if !store.feedback.outputs.isEmpty {
-                    Text(store.feedback.outputs.count == 1 ? store.feedback.outputs[0].lastPathComponent : "\(store.feedback.outputs.count) 个结果").font(.caption).lineLimit(1).foregroundStyle(.secondary)
+                    Text(store.feedback.outputs.count == 1 ? store.feedback.outputs[0].lastPathComponent : L10n.format("%@ 个结果", String(describing: (store.feedback.outputs.count)))).font(.caption).lineLimit(1).foregroundStyle(.secondary)
                     Spacer(minLength:0)
                     Button("显示结果"){NSWorkspace.shared.activateFileViewerSelecting(store.feedback.outputs);close()}.controlSize(.small)
                 } else {Spacer(minLength:0)}

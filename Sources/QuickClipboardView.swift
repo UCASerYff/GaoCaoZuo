@@ -133,7 +133,7 @@ import SwiftUI
                     HStack(spacing: 6) {
                         if item.pinned { Label("已固定", systemImage: "pin.fill") }
                         Text(item.date, style: .relative)
-                        if item.kind == .files { Text("\(item.paths?.count ?? 0) 个文件") }
+                        if item.kind == .files { Text(L10n.format("%@ 个文件", String(describing: (item.paths?.count ?? 0)))) }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 Image(systemName: "return").font(.caption).foregroundStyle(.tertiary).padding(.top, 4)

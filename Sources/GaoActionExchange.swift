@@ -77,7 +77,7 @@ struct GaoActionProviderCapabilities: Decodable {
         return capabilities
     }
     func require(action:String,parameters:[String:Any],items:Bool,references:Bool) throws {
-        guard let capability=actions.first(where:{$0.action==action}) else {throw GaoActionError.providerNotReady("目标应用尚未声明实现 \(action)")}
+        guard let capability=actions.first(where:{$0.action==action}) else {throw GaoActionError.providerNotReady(L10n.format("目标应用尚未声明实现 %@", String(describing: (action))))}
         guard (!items || capability.supportsItems != false),(!references || capability.supportsReferences != false),
               let properties=capability.parametersSchema["properties"]?.value as? [String:Any],Set(parameters.keys).isSubset(of:Set(properties.keys)) else {throw GaoActionError.providerNotReady("提供方未声明本次附件、引用或可选参数")}
         try GaoActionParameterSchema.validate(parameters,schema:capability.parametersSchema.mapValues(\.value))
@@ -238,9 +238,9 @@ final class GaoActionJournal {
         _ = try j.recoverInterruptedRecords();journalCache=j;return j
     }
     public func providerURL(bundleID:String,action:String,parameters:[String:Any]=[:],items:Bool=false,references:Bool=false) throws -> URL {
-        guard let app=NSWorkspace.shared.urlForApplication(withBundleIdentifier:bundleID) else {throw GaoActionError.providerNotReady("未安装 \(bundleID)；本次动作未执行")}
+        guard let app=NSWorkspace.shared.urlForApplication(withBundleIdentifier:bundleID) else {throw GaoActionError.providerNotReady(L10n.format("未安装 %@；本次动作未执行", String(describing: (bundleID))))}
         do {try GaoActionProviderCapabilities.load(appURL:app,bundleID:bundleID).require(action:action,parameters:parameters,items:items,references:references)}
-        catch {throw GaoActionError.providerNotReady("\(bundleID) 的能力表未就绪或不兼容；本次动作未执行（\(error.localizedDescription)）")}
+        catch {throw GaoActionError.providerNotReady(L10n.format("%@ 的能力表未就绪或不兼容；本次动作未执行（%@）", String(describing: (bundleID)), String(describing: (error.localizedDescription))))}
         return app
     }
     public func isProviderAvailable(bundleID:String,action:String) -> Bool {(try? providerURL(bundleID:bundleID,action:action)) != nil}
@@ -290,7 +290,7 @@ final class GaoActionJournal {
             let header=try await Task.detached {try GaoActionV1.inspectManifest(at:url,expectedTarget:GaoActionV1.ownBundleID)}.value
             let j=try journal()
             if case .duplicate(let old)=try j.preflight(header.manifest,digest:header.digest) {
-                notify("该结果已接收：\(old.businessStatus?.rawValue ?? old.state.rawValue)；未重复处理。",false)
+                notify(L10n.format("该结果已接收：%@；未重复处理。", String(describing: (old.businessStatus?.rawValue ?? old.state.rawValue))),false)
                 showHistory();return
             }
             let destination=incomingDirectory
@@ -298,7 +298,7 @@ final class GaoActionJournal {
             created=package
             guard package.manifestSHA256==header.digest else {throw GaoActionError.invalidPackage("校验与复制之间 manifest 改变，拒绝处理")}
             if case .duplicate(let old)=try j.receive(package) {
-                notify("该结果已接收：\(old.businessStatus?.rawValue ?? old.state.rawValue)；未重复处理。",false);showHistory();return
+                notify(L10n.format("该结果已接收：%@；未重复处理。", String(describing: (old.businessStatus?.rawValue ?? old.state.rawValue))),false);showHistory();return
             }
             retained=true
             try await confirm(package,notify:notify)
@@ -324,7 +324,7 @@ final class GaoActionJournal {
         try await Task.detached(priority:.userInitiated) {try GaoActionV1.verifyRetainedPackage(package)}.value
         try journal().acceptResult(m.requestID)
         if !package.files.isEmpty {NSWorkspace.shared.activateFileViewerSelecting(package.files)}
-        notify("已接收结果；提供方报告 \(m.status!.rawValue)。",false)
+        notify(L10n.format("已接收结果；提供方报告 %@。", String(describing: (m.status!.rawValue))),false)
     }
     func history() throws -> [GaoActionJournalRecord] {try journal().history()}
     func acceptDeferred(_ r:GaoActionJournalRecord,notify:@escaping (String,Bool)->Void) async throws {
@@ -403,7 +403,7 @@ final class GaoActionJournal {
                     }
                 }
             }
-            if !message.isEmpty {Text(message).font(.caption).textSelection(.enabled)}
+            if !message.isEmpty {Text(L10n.text(message)).font(.caption).textSelection(.enabled)}
         }.padding(18).frame(minWidth:760,minHeight:500).onAppear{refresh()}
     }
     private func run(_ action:@escaping @MainActor () async throws -> Void) {

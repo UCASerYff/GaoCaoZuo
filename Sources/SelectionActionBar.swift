@@ -295,7 +295,7 @@ private struct SelectionBarContentView: View {
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 Spacer()
-                Text("\(snapshot.selectedText.count) 字")
+                Text(L10n.format("%@ 字", String(describing: (snapshot.selectedText.count))))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Button(action: onDismiss) {
@@ -363,11 +363,11 @@ private struct SelectionBarContentView: View {
             if showingStats {
                 let stats = SelectionTransformations.statistics(snapshot.selectedText)
                 HStack(spacing: 12) {
-                    Text("字符: \(stats.characterCount)")
-                    Text("词数: \(stats.wordCount)")
-                    Text("中文: \(stats.cjkCharacterCount)")
-                    Text("行数: \(stats.lineCount)")
-                    Text("字节: \(stats.byteCount)")
+                    Text(L10n.format("字符: %@", String(describing: (stats.characterCount))))
+                    Text(L10n.format("词数: %@", String(describing: (stats.wordCount))))
+                    Text(L10n.format("中文: %@", String(describing: (stats.cjkCharacterCount))))
+                    Text(L10n.format("行数: %@", String(describing: (stats.lineCount))))
+                    Text(L10n.format("字节: %@", String(describing: (stats.byteCount))))
                 }
                 .font(.system(size: 10, weight: .regular, design: .monospaced))
                 .foregroundStyle(.secondary)

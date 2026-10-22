@@ -47,7 +47,7 @@ enum InputDeviceMatrix {
                 supportsPressure: device.hasPressureElement, supportsTipTap: false,
                 supportsContinuousScroll: false, supportsDiscreteScroll: device.hasWheelElement,
                 supportsPerDeviceSpeedHardwareApplied: false,
-                notes: "按钮/滚轮/压力仅表示HID描述符有相应元素，不证明实际投递；未公开元素也不证明硬件不具备。授权为CG事件监听预检，HID按钮还须实测。连续滚动无法从CGEvent绑定此设备；TipTap为默认关闭的实验私有触控算法；逐设备速度未应用。")
+                notes: "按钮/滚轮/压力仅表示HID描述符有相应元素，不证明实际投递；未公开元素也不证明硬件不具备。授权为CG事件监听预检，HID按钮还须实测。逐设备滚动须匹配当前事件的实际设备来源；未知或多义来源保持原样。TipTap为默认关闭的实验私有触控算法；逐设备调校只在原值可读且唯一绑定的服务上应用，识别列表不表示已应用。")
             return Entry(identity: identity, capabilities: capabilities, verifiedOnCurrentMachine: false,
                          verificationState: monitoringAuthorized ? "已识别；硬件动作未验收" : "已识别；输入监听未获授权")
         }

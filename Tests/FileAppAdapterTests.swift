@@ -13,6 +13,12 @@ import Darwin
     }
     let directory=root.appendingPathComponent("中文 空格 '单双\"引号 `$() ; & #")
     try fm.createDirectory(at:directory,withIntermediateDirectories:false)
+    let requestBoard=NSPasteboard.withUniqueName()
+    defer {requestBoard.releaseGlobally()}
+    try TerminalFolderService.prepareDirectoryPasteboard(directory,board:requestBoard)
+    try expect(requestBoard.pasteboardItems?.count == 1,"Terminal service has exactly one directory request item")
+    try expect(requestBoard.string(forType:.fileURL).flatMap{URL(string:$0)}?.standardizedFileURL.path == directory.standardizedFileURL.path,"Terminal file service preserves the Unicode and punctuation directory as a standard file URL")
+    try expect(requestBoard.string(forType:.init("public.plain-text")) == directory.path && requestBoard.string(forType:.string) == directory.path,"Terminal text representations preserve the literal directory without shell interpretation")
     let file=directory.appendingPathComponent("-文件 ' \" ; $.txt");try Data("only test".utf8).write(to:file)
     let other=directory.appendingPathComponent("第二文件.txt");try Data("second".utf8).write(to:other)
     let dirs=try FileAppAdapter.workingDirectories([file,other,directory])
@@ -35,10 +41,26 @@ import Darwin
     try expect(newWindowScript == (try FileAppAdapter.terminalScript(bundleID:"com.apple.Terminal",directories:dirs,newWindow:true,appURL:root)),"explicit Terminal new-window disposition pins the selected app path")
     try expect(newWindowScript.hasPrefix("tell application "+FileAppAdapter.appleLiteral(root.path)),"Terminal AppleEvents target the selected installed copy, not an arbitrary same-bundle-ID app")
     try expect(iterm.contains("create tab with default profile command") && !iterm.contains("write text"),"iTerm tabs use documented new-session override")
+    // Validate generated focus text only; this fixture is never opened and no
+    // AppleScript is compiled or sent to a real Terminal process.
+    let terminalApp=directory.appendingPathComponent("终端 ' \" \\ $().app")
+    try fm.createDirectory(at:terminalApp.appendingPathComponent("Contents"),withIntermediateDirectories:true)
+    try PropertyListSerialization.data(fromPropertyList:["CFBundleIdentifier":"com.apple.Terminal"],format:.xml,options:0).write(to:terminalApp.appendingPathComponent("Contents/Info.plist"))
+    let focus=try TerminalFolderService.terminalFocusScript(appURL:terminalApp,windowID:72164)
+    try expect(focus.hasPrefix("tell application "+FileAppAdapter.appleLiteral(terminalApp.path)+"\n") && focus.contains("终端 ' \\\" \\\\ $().app"),"Terminal focus targets the exact selected app path with Unicode, quotes and backslashes escaped")
+    try expect(focus.contains("every window whose id is 72164") && focus.contains("(count of candidates) is not 1"),"Terminal focus requires one exact positive captured window ID")
+    try expect(focus.contains("visible of targetWindow") && focus.contains("miniaturized of targetWindow") && focus.contains("activate\n") && focus.contains("set frontmost of targetWindow to true"),"Terminal focus checks captured-window visibility before activating that window")
+    try expect(!["do script","write text","keystroke","System Events","create tab","create window","close window"].contains(where:{focus.contains($0)}),"Terminal focus cannot create sessions, send shell input or control unrelated apps")
+    for invalidID in [0,-1] {
+        try rejects("Terminal focus rejects nonpositive window identity") {_ = try TerminalFolderService.terminalFocusScript(appURL:terminalApp,windowID:invalidID)}
+    }
+    try rejects("Terminal focus rejects non-file application URLs") {_ = try TerminalFolderService.terminalFocusScript(appURL:URL(string:"https://example.com/Terminal.app")!,windowID:72164)}
+    try rejects("Terminal focus rejects a missing Terminal bundle identity") {_ = try TerminalFolderService.terminalFocusScript(appURL:root,windowID:72164)}
     let app=root.appendingPathComponent("Adapter.app"),mac=app.appendingPathComponent("Contents/MacOS"),resources=app.appendingPathComponent("Contents/Resources/app/out")
     try fm.createDirectory(at:mac,withIntermediateDirectories:true);try fm.createDirectory(at:resources,withIntermediateDirectories:true)
     let executable=mac.appendingPathComponent("Editor");try Data("test executable is never run".utf8).write(to:executable);try fm.setAttributes([.posixPermissions:0o700],ofItemAtPath:executable.path)
     try PropertyListSerialization.data(fromPropertyList:["CFBundleIdentifier":"com.microsoft.VSCode","CFBundleExecutable":"Editor"],format:.xml,options:0).write(to:app.appendingPathComponent("Contents/Info.plist"))
+    try rejects("Terminal focus rejects a different app's bundle identity") {_ = try TerminalFolderService.terminalFocusScript(appURL:app,windowID:72164)}
     try Data("test CLI is never run".utf8).write(to:resources.appendingPathComponent("cli.js"))
     for id in ["com.microsoft.VSCode","com.todesktop.230313mzl4w4u92"] {
         guard case .command(let exe,let args,let env)=try FileAppAdapter.plan(bundleID:id,appURL:app,files:[file,other,directory],disposition:.newWindow) else {throw DataFailure.message("missing editor adapter")}

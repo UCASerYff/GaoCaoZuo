@@ -113,6 +113,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     let data: LocalData
     let clipboard: ClipboardService
     let snippetLibrary: SnippetLibraryStore
+    let inputCloudSync:InputCloudSync
     let windows = WindowManager()
     let input = InputController()
     let archive = ArchiveService()
@@ -145,6 +146,8 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         finderPreferences = FinderPreferenceController(directory:directory)
         clipboard = ClipboardService(directory: directory)
         snippetLibrary = SnippetLibraryStore(dataDirectory: directory)
+        inputCloudSync=InputCloudSync(directory:directory.appendingPathComponent("InputCloudSync",isDirectory:true))
+        archive.volumeEvidence=ArchiveVolumeEvidenceStore(directory:directory.appendingPathComponent("ArchiveVolumeEvidence",isDirectory:true))
         do {
             if let saved = try data.load("settings.json", as: OperationSettings.self) {
                 guard saved.schema == 1 else { throw DataFailure.message("设置来自更新版本，已保留原资料并停止写入。") }
@@ -165,6 +168,15 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         }
         snippetObserver = snippetLibrary.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         clipboard.configure(settings)
+        inputCloudSync.apply={ [weak self] configuration in
+            guard let self,self.ready,self.dataHealthy else {throw DataFailure.message("本机资料不可写，iCloud 未覆盖规则。")}
+            try EnhancedInputValidation.validate(configuration)
+            var next=self.settings;next.inputEnhancements=configuration
+            try self.data.save(next,name:"settings.json")
+            self.ready=false;self.settings=next;self.ready=true
+            self.clipboard.configure(next);self.onSettingsChanged?()
+        }
+        inputCloudSync.configure(settings.inputEnhancements)
         archiveObserver = archive.$isRunning.dropFirst().sink { [weak self] running in
             if !running { Task { @MainActor in self?.drainQuickJobs() } }
         }
@@ -173,7 +185,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         // Reconfigure even if persistence fails, so a requested disable takes
         // effect immediately and unhealthy data stops the runtime listeners.
         defer {onSettingsChanged?()}
-        do { try data.save(settings, name:"settings.json"); clipboard.configure(settings) }
+        do { try data.save(settings, name:"settings.json"); clipboard.configure(settings);inputCloudSync.configure(settings.inputEnhancements) }
         catch {
             self.error = error.localizedDescription
             var stopped=settings;stopped.clipboardEnabled=false;clipboard.configure(stopped)
@@ -198,7 +210,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     }
     func chooseFiles() {
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
-        panel.message = "选择要操作的文件或文件夹"
+        panel.message = L10n.text("选择要操作的文件或文件夹")
         if panel.runModal() == .OK { selection = panel.urls }
     }
     func chooseDirectory(prompt: String = "选择目录") -> URL? {
@@ -210,7 +222,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         return (try? first.resourceValues(forKeys:[.isDirectoryKey]).isDirectory) == true ? first : first.deletingLastPathComponent()
     }
     func addFolder() { if let url = chooseDirectory(prompt:"收藏一个常用目录") { update {$0.folders.append(.init(name:url.lastPathComponent,path:url.path))} } }
-    func openFolder(_ folder: FavoriteFolder) { if !NSWorkspace.shared.open(URL(fileURLWithPath:folder.path)) { error = "无法打开目录：\(folder.path)" } }
+    func openFolder(_ folder: FavoriteFolder) { if !NSWorkspace.shared.open(URL(fileURLWithPath:folder.path)) { error = L10n.format("无法打开目录：%@", String(describing: (folder.path))) } }
     func prepare(_ id: String, targetMode:InputWindowTargetMode = .inheritSettings) { prepare(id, files: selection,targetMode:targetMode) }
     func captureSelectionForActions() {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
@@ -224,7 +236,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         let choices = actionChoices
         if let reason=choices.first(where:{$0.id == id})?.unavailableReason {notify(reason,failed:true);return}
         if let descriptor = ActionRegistry.shared.descriptor(for:id), !descriptor.requiredPermission.isSatisfied {
-            notify("此动作需要" + descriptor.requiredPermission.title + "权限，请在权限页开启。", failed:true)
+            notify(L10n.format("此动作需要%@权限，请在权限页开启。",L10n.text(descriptor.requiredPermission.title)), failed:true)
             showPermissions?(); return
         }
         if id == "finder.popup" { showFinderPopup(); return }
@@ -268,10 +280,8 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         if id == "clipboard.stack.push" { do { try clipboard.pushCurrentToStack(); notify("已加入粘贴堆栈") } catch { notify(error.localizedDescription,failed:true) }; return }
         if id == "clipboard.stack.merge" {
             do {
-                let text=try PasteStack.shared.mergedText(),board=NSPasteboard.general
-                board.clearContents()
-                guard board.setString(text,forType:.string) else {throw DataFailure.message("无法写入系统剪贴板，堆栈已保留。")}
-                notify("已合并复制文字，堆栈项目保留")
+                try clipboard.copyMergedStack()
+                notify("已合并复制，富文本与附件保留，堆栈项目保留")
             } catch {notify(error.localizedDescription,failed:true)}
             return
         }
@@ -317,14 +327,14 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         if archiveEnhancements.handle(id:archiveID,files:selected,store:self) {return}
         if fileEnhancements.handle(id:id,files:selected,store:self) {return}
         if id == "path.copy" || id == "name.copy" {
-            clipboard.copyText(selected.map{id == "path.copy" ? $0.path : $0.lastPathComponent}.joined(separator:"\n"));notify("已复制 \(selected.count) 项");return
+            clipboard.copyText(selected.map{id == "path.copy" ? $0.path : $0.lastPathComponent}.joined(separator:"\n"));notify(L10n.format("已复制 %@ 项", String(describing: (selected.count))));return
         }
         if id == "finder.reveal" { NSWorkspace.shared.activateFileViewerSelecting(selected);return }
         if id == "terminal.open" {openTerminal(directory(for:selected));return}
         if runQuickAction(id,files:selected) {return}
         let mapped: String
         switch id {case "archive.custom":mapped="archive.create";case "archive.extract.custom":mapped="archive.extract";case "new.custom":mapped="new.text";default:mapped=id}
-        guard OperationAction.all.contains(where:{$0.id == id}) || id.hasPrefix("template.") else {notify("未找到动作：\(id)",failed:true);return}
+        guard OperationAction.all.contains(where:{$0.id == id}) || id.hasPrefix("template.") else {notify(L10n.format("未找到动作：%@", String(describing: (id))),failed:true);return}
         guard sheet == nil else {notify("请先完成当前自定义操作",failed:true);showMain?();return}
         selection=selected
         sheet=ToolRequest(actionID:mapped,title:OperationAction.all.first(where:{$0.id == id})?.title,files:selected)
@@ -347,8 +357,8 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         catch {
             let saveFailure=error.localizedDescription
             do { try FileTools.undo(records) }
-            catch {throw DataFailure.message("恢复记录无法保存：\(saveFailure)\n自动恢复也未完成：\(error.localizedDescription)\n请核验：\(records.map{ $0.destination.path }.joined(separator:"、"))")}
-            throw DataFailure.message("恢复记录无法保存，刚完成的文件操作已恢复：\(saveFailure)")
+            catch {throw DataFailure.message(L10n.format("恢复记录无法保存：%@\n自动恢复也未完成：%@\n请核验：%@", String(describing: (saveFailure)), String(describing: (error.localizedDescription)), String(describing: (records.map{ $0.destination.path }.joined(separator:"、")))))}
+            throw DataFailure.message(L10n.format("恢复记录无法保存，刚完成的文件操作已恢复：%@", String(describing: (saveFailure))))
         }
     }
     func work(_ label: String, task: @escaping () throws -> [FileOperationReceipt]) {
@@ -357,11 +367,11 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         Task {
             do {
                 let records = try await Task.detached(priority:.userInitiated) { try task() }.value
-                try record(records); sheet = nil; notify("\(label)完成，共 \(records.count) 项",outputs:records.map(\.destination))
+                try record(records); sheet = nil; notify(L10n.format("%@完成，共 %@ 项", String(describing: (label)), String(describing: (records.count))),outputs:records.map(\.destination))
             } catch {
                 if let partial=error as? FileToolsPartialFailure,!partial.receipts.isEmpty {
                     do {let next=partial.receipts+receipts;try data.save(ReceiptDocument(records:next),name:"receipts.json");receipts=next}
-                    catch {self.error="文件任务未完整回滚，恢复记录也未能保存：\(error.localizedDescription)\n请核验：\(partial.receipts.map{$0.destination.path}.joined(separator:"、"))"}
+                    catch {self.error=L10n.format("文件任务未完整回滚，恢复记录也未能保存：%@\n请核验：%@", String(describing: (error.localizedDescription)), String(describing: (partial.receipts.map{$0.destination.path}.joined(separator:"、"))))}
                 }
                 if self.error == nil {self.error=error.localizedDescription}
             }
@@ -390,10 +400,10 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             defer { workflowRunning = false; drainQuickJobs() }
             do {
                 for (i, step) in workflow.steps.enumerated() {
-                    try Task.checkCancellation(); message = "\(workflow.name)：第 \(i+1)/\(workflow.steps.count) 步"
+                    try Task.checkCancellation(); message = L10n.format("%@：第 %@/%@ 步", String(describing: (workflow.name)), String(describing: (i+1)), String(describing: (workflow.steps.count)))
                     try await executeWorkflowStep(step)
                 }
-                notify("组合操作完成：\(workflow.name)")
+                notify(L10n.format("组合操作完成：%@", String(describing: (workflow.name))))
             } catch { notify("组合操作已停止；已完成的步骤保留："+error.localizedDescription,failed:true) }
         }
     }

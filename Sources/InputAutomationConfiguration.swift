@@ -50,7 +50,7 @@ public struct AutoInputConfiguration: Codable, Equatable {
 
 public enum InputAutomationError: LocalizedError {
     case invalid(String)
-    public var errorDescription: String? { if case .invalid(let message) = self { return message }; return nil }
+    public var errorDescription: String? { if case .invalid(let message) = self { return L10n.text(message) }; return nil }
 }
 
 enum InputSourceRulePolicy {

@@ -42,7 +42,7 @@ struct FileToolsPartialFailure: LocalizedError {
     let underlyingMessage: String
     let receipts: [FileOperationReceipt]
     var errorDescription: String? {
-        "操作未完成，部分项目无法安全自动恢复，资料已保留。\(underlyingMessage)\n" +
+        L10n.format("操作未完成，部分项目无法安全自动恢复，资料已保留。%@\n", String(describing: (underlyingMessage))) +
         receipts.map { $0.destination.path }.joined(separator: "\n")
     }
 }

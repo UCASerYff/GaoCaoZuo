@@ -11,10 +11,10 @@ enum ArchiveQuickLookPreflight {
         case malformed, budget, unsupported, encrypted
         var errorDescription: String? {
             switch self {
-            case .malformed: return "压缩包目录不完整或格式异常，请用搞操作打开。"
-            case .budget: return "压缩包目录超出空格预览预算，请用搞操作打开。"
-            case .unsupported: return "此 7Z 目录结构暂不支持空格预览，请用搞操作打开。"
-            case .encrypted: return "此压缩包目录已加密，请用搞操作打开并输入密码。"
+            case .malformed: return L10n.text("压缩包目录不完整或格式异常，请用搞操作打开。")
+            case .budget: return L10n.text("压缩包目录超出空格预览预算，请用搞操作打开。")
+            case .unsupported: return L10n.text("此 7Z 目录结构暂不支持空格预览，请用搞操作打开。")
+            case .encrypted: return L10n.text("此压缩包目录已加密，请点击“读取加密目录”并输入密码。")
             }
         }
     }

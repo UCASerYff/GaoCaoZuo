@@ -64,7 +64,7 @@ struct InputMenuEvidence: Codable, Equatable {
 
 enum InputMenuEvidenceError: LocalizedError {
     case invalid(String)
-    var errorDescription: String? { if case .invalid(let text) = self { return text }; return nil }
+    var errorDescription: String? { if case .invalid(let text) = self { return L10n.text(text) }; return nil }
 }
 
 enum InputMenuEvidenceResolver {

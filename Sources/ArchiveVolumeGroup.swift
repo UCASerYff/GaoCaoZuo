@@ -1,33 +1,30 @@
 import Foundation
 import Darwin
 
-/// Captures originals eligible for automatic disposal. Numeric split streams have
-/// no trusted provenance manifest yet: a decoder can accept unused neighboring
-/// volumes or trailing bytes, so naming and successful extraction never authorize
-/// moving those neighboring files. Split archives remain readable with originals kept.
+/// Numeric neighbors are eligible only with matching private creation evidence.
+/// Successful decoding or matching filenames alone never authorize disposal.
 struct ArchiveVolumeGroup {
     let first: URL
     let members: [URL]
     let fingerprints: [(URL,String)]
-    private struct Identity: Equatable {
-        var device: dev_t; var inode: ino_t; var bytes: off_t; var seconds: Int; var nanoseconds: Int
-        init(_ s: stat) { device=s.st_dev;inode=s.st_ino;bytes=s.st_size;seconds=s.st_mtimespec.tv_sec;nanoseconds=s.st_mtimespec.tv_nsec }
-    }
+    private typealias Identity=ArchiveVolumeEvidenceStore.Identity
     private let identities: [String:Identity]
     func verifyUnchanged() throws {
-        for member in members {
-            let info = try EnhancedFileTools.checked(member)
-            guard info.st_uid == getuid(), info.st_nlink == 1, identities[member.path] == Identity(info) else { throw FileToolsError.changed(member) }
-        }
+        for member in members {try verifyUnchanged(member)}
     }
-    static func capture(_ archive: URL) throws -> Self {
+    func verifyUnchanged(_ member:URL)throws {
+        let info=try EnhancedFileTools.checked(member)
+        guard info.st_uid==getuid(),info.st_nlink==1,identities[member.path]==Identity(info) else {throw FileToolsError.changed(member)}
+    }
+    static func capture(_ archive: URL,evidence:ArchiveVolumeEvidenceStore? = nil) throws -> Self {
         let name = archive.lastPathComponent
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)
         let members: [URL]
         if parts.count >= 3, parts.last!.count == 3, parts.last!.allSatisfy(\.isNumber),
            ["zip", "7z"].contains(String(parts[parts.count-2]).lowercased()) {
             guard parts.last! == "001" else { throw ArchiveError.invalid("分卷后处理必须从 .001 首卷开始，未移动任何原卷。") }
-            throw ArchiveError.invalid("无法证明各分卷的来源归属，已保留全部原卷。请使用保留原件的解压方式，逐卷核验后再自行处理。")
+            guard let evidence else {throw ArchiveError.invalid("无法证明各分卷的来源归属，已保留全部原卷。请使用保留原件的解压方式，逐卷核验后再自行处理。")}
+            members=try evidence.verifiedMembers(first:archive)
         } else {
             // RAR, old ZIP/RAR multipart conventions and raw numeric splits are not
             // proven groups. Keeping them is safer than deleting only one member.

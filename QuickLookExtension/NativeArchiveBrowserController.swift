@@ -15,8 +15,10 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     private let outline = NSOutlineView(), search = NSSearchField(), preview = NativeArchivePreview()
     private let heading = NSTextField(labelWithString: ""), status = NSTextField(wrappingLabelWithString: "")
     private let extractName = NSTextField(string: ""), copyName = NSTextField(string: "")
+    private let archivePassword=NSSecureTextField(string:"")
     private let cleanHidden = NSButton(checkboxWithTitle: L10n.text("清理隐藏项目"), target: nil, action: nil)
     private var actionButtons: [NSButton] = [], selectedButtons: [NSButton] = [], editButtons: [NSButton] = []
+    private var copyButton:NSButton?,originalButton:NSButton?,unlockButton:NSButton?
     private var roots: [Node] = [], allNodes: [String: Node] = [:]
     private var document: NativeArchive.Document?, archiveURL: URL?
     private var access: ArchiveQuickLookResourceAccess?, additions: [ArchiveQuickLookResourceAccess] = [], deletions = Set<String>()
@@ -40,28 +42,35 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         let expand = button("展开全部", #selector(expandAll)), collapse = button("折叠全部", #selector(collapseAll))
         let content = button("预览内容", #selector(previewSelected)), extract = button("提取所选…", #selector(extractSelected)), all = button("全部提取…", #selector(extractAll))
         selectedButtons = [content, extract]; actionButtons = [content, extract, all]
+        let unlock=button("读取加密目录…",#selector(unlockArchive));unlockButton=unlock
         let browse = row([search, expand, collapse, content, extract, all])
+        archivePassword.placeholderString=L10n.text("输入此压缩包密码")
+        archivePassword.setAccessibilityLabel(L10n.text("输入此压缩包密码"))
+        archivePassword.toolTip=L10n.text("密码仅用于本次读取或保存，不会保存密码。不支持的加密格式会明确失败。")
+        archivePassword.widthAnchor.constraint(greaterThanOrEqualToConstant:200).isActive=true
+        let passwordRow=row([NSTextField(labelWithString:L10n.text("输入此压缩包密码")),archivePassword,unlock])
         let remove = button("计划删除所选", #selector(deleteSelected)), add = button("添加文件…", #selector(addFiles)), clear = button("撤销编辑计划", #selector(clearPlan)), save = button("保存编辑副本…", #selector(saveEditedCopy))
         cleanHidden.target = self; cleanHidden.action = #selector(planChanged)
-        editButtons = [remove, add, clear, save]; selectedButtons.append(remove)
-        let edit = row([remove, add, cleanHidden, clear, save])
+        let original=button("保存到原压缩包…",#selector(saveOriginal));originalButton=original;copyButton=save
+        editButtons = [remove, add, clear, save,original]; selectedButtons.append(remove)
+        let edit = row([remove, add, cleanHidden, clear, save,original])
         extractName.setAccessibilityLabel(L10n.text("提取目录名称")); copyName.setAccessibilityLabel(L10n.text("编辑副本名称"))
         extractName.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         copyName.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         let names = row([NSTextField(labelWithString: L10n.text("提取目录名称")), extractName, NSTextField(labelWithString: L10n.text("编辑副本名称")), copyName])
-        let explanation = NSTextField(wrappingLabelWithString: L10n.text("内容预览与提取在此窗口完成。增删和隐藏项目清理仅写入新的编辑副本，原压缩包保持不变；加密 7Z、ACE 及不受支持内容仍需主应用。"))
+        let explanation = NSTextField(wrappingLabelWithString: L10n.text("ZIP/7Z 可在此输入密码读取目录并保存到原包；原位保存先核验重建结果并保留安全备份。也可另存未加密编辑副本。其他格式按实际支持提供预览或提取。"))
         explanation.font = .systemFont(ofSize: 11); explanation.textColor = .secondaryLabelColor
         let cancel = button("取消操作", #selector(cancelArchiveOperation)), main = button("用搞操作打开", #selector(openInMainApp))
         let bottom = row([explanation, cancel, main]); heading.font = .boldSystemFont(ofSize: 14)
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor; status.maximumNumberOfLines = 3
         heading.maximumNumberOfLines = 1; heading.lineBreakMode = .byTruncatingMiddle
-        let stack = NSStackView(views: [heading, browse, split, edit, names, status, bottom])
+        let stack = NSStackView(views: [heading,passwordRow,browse,split,edit,names,status,bottom])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        for child in [browse, split, edit, names, status, bottom] {
+        for child in [passwordRow,browse,split,edit,names,status,bottom] {
             child.translatesAutoresizingMaskIntoConstraints = false; child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
         }
-        view = stack; preferredContentSize = NSSize(width: 1_020, height: 660); updateButtons()
+        view = stack; preferredContentSize = NSSize(width:1_100,height:700);updateButtons()
     }
     private func button(_ key: String, _ action: Selector) -> NSButton {
         let result = NSButton(title: L10n.text(key), target: self, action: action); result.bezelStyle = .rounded; result.controlSize = .small
@@ -73,12 +82,12 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     }
     override func viewDidDisappear() {
         super.viewDidDisappear(); generation = UUID(); selectionPanel?.cancel(nil); selectionPanel = nil
-        cancellation?.cancel(); access = nil; additions = []; document = nil; roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
+        cancellation?.cancel();archivePassword.stringValue="";access = nil; additions = []; document = nil; roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
     }
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         _ = view
         generation = UUID(); selectionPanel?.cancel(nil); selectionPanel = nil
-        document = nil; archiveURL = url; access = nil
+        document = nil;archivePassword.stringValue="";archiveURL = url; access = nil
         roots = []; allNodes = [:]; outline.reloadData(); updateButtons()
         startPreview(url, request: NativeArchivePreviewRequest(token: generation, completion: handler))
     }
@@ -171,18 +180,22 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     private var selectedNodes: [Node] { outline.selectedRowIndexes.compactMap { outline.item(atRow: $0) as? Node } }
     private func updateButtons() {
         let ready = !working && selectionPanel == nil && document != nil
-        actionButtons.forEach { $0.isEnabled = ready }; editButtons.forEach { $0.isEnabled = ready && document?.canEditCopy == true }
-        cleanHidden.isEnabled = ready && document?.canEditCopy == true
+        actionButtons.forEach { $0.isEnabled = ready }; editButtons.forEach { $0.isEnabled = ready && canEditOriginal }
+        cleanHidden.isEnabled = ready && canEditOriginal
+        copyButton?.isEnabled=ready && document?.canEditCopy == true
+        unlockButton?.isEnabled = !working && selectionPanel == nil && archiveURL.map{["zip","7z"].contains($0.pathExtension.lowercased())} == true
         let reason = document?.editCopyUnavailableReason.map { L10n.text($0) }
-        editButtons.forEach { $0.toolTip = reason }; cleanHidden.toolTip = reason; copyName.toolTip = reason
+        editButtons.forEach { $0.toolTip = canEditOriginal ? nil:reason }; cleanHidden.toolTip = canEditOriginal ? nil:reason; copyName.toolTip = reason;copyButton?.toolTip=reason
         selectedButtons.forEach { $0.isEnabled = $0.isEnabled && !selectedNodes.isEmpty }
         extractName.isEnabled = !working && selectionPanel == nil; copyName.isEnabled = !working && selectionPanel == nil
+        archivePassword.isEnabled = !working && selectionPanel == nil
     }
+    private var canEditOriginal:Bool {document.map{["zip","7z"].contains($0.format) && !$0.items.contains{$0.kind == .unsupported}} ?? false}
     @objc private func expandAll() { outline.expandItem(nil, expandChildren: true) }
     @objc private func collapseAll() { outline.collapseItem(nil, collapseChildren: true) }
     @objc private func cancelArchiveOperation() {
         if let selectionPanel { selectionPanel.cancel(nil); return }
-        cancellation?.cancel(); if working { status.stringValue = L10n.text("正在停止；等待后台操作结束，原压缩包保持不变。") }
+        cancellation?.cancel(); if working { status.stringValue = L10n.text("正在停止；请等待后台操作结束后核对结果。") }
     }
     @objc private func previewSelected() {
         guard !working, let document, selectedNodes.count == 1, let item = selectedNodes.first?.item, item.kind == .file else { return }
@@ -215,12 +228,12 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
             }) { [weak self] result in guard let self, self.isCurrent(context) else { return }; self.showOutput(result) }
         }
     }
-    @objc private func deleteSelected() { guard !working, document?.canEditCopy == true else { return }; deletions.formUnion(selectedNodes.map(\.path)); outline.reloadData(); planChanged() }
+    @objc private func deleteSelected() { guard !working,canEditOriginal else { return }; deletions.formUnion(selectedNodes.map(\.path)); outline.reloadData(); planChanged() }
     @objc private func addFiles() {
-        guard !working, document?.canEditCopy == true else { return }
+        guard !working,canEditOriginal else { return }
         let context = currentContext()
-        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
-        panel.prompt = L10n.text("加入编辑计划"); panel.message = L10n.text("文件只加入编辑计划；保存新副本前不会写入原压缩包。")
+        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.prompt = L10n.text("加入编辑计划"); panel.message = L10n.text("文件只加入编辑计划；确认保存前不会写入原压缩包。")
         presentSelectionPanel(panel, context: context) { [weak self] urls in
             guard let self else { return }
             self.additions += urls.map { ArchiveQuickLookResourceAccess(url: $0) }; self.planChanged()
@@ -238,6 +251,54 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
             self.perform("正在生成并完整核验编辑副本…", retaining: (self.access.map { [$0] } ?? []) + added + [scope], work: { stop in
                 try NativeArchive.editedCopy(document, deleting: deleted, adding: added.map(\.url), cleanHidden: hidden, directory: directory, name: name, cancellation: stop)
             }) { [weak self] result in guard let self, self.isCurrent(context) else { return }; self.showOutput(result) }
+        }
+    }
+    @objc private func unlockArchive() {
+        guard !working,let archiveURL else{return}
+        let context=currentContext()
+        guard let password=requestedPassword(for:true,context:context),isCurrent(context) else{return}
+        perform("正在读取加密目录…",retaining:access.map{[$0]} ?? [],work:{stop in
+            let request=try QuickLookEditEngine.request(kind:.inspect,url:archiveURL,password:password,cancellation:stop)
+            let response=try QuickLookEditEngine.run(request,cancellation:stop)
+            return try Self.document(archiveURL,response:response,digest:request.sha256,stop:stop)
+        }){[weak self] result in
+            guard let self,self.isCurrent(context) else{return}
+            switch result {
+            case .success(let value):
+                do {try self.buildTree(value.items);self.document=value;self.preview.showMessage(L10n.text("选择一个普通文件以预览内容。"));self.status.stringValue=L10n.format("已读取 %ld 项；原压缩包保持不变。",value.items.count)}catch{self.status.stringValue=error.localizedDescription}
+            case .failure(let error):self.status.stringValue=error.localizedDescription
+            };self.updateButtons()
+        }
+    }
+    private static func document(_ url:URL,response:QuickLookArchiveEditResponse,digest:String,stop:NativeArchive.Cancellation)throws->NativeArchive.Document {
+        let items=response.members.map{NativeArchive.Item(path:$0.path,size:Int64(clamping:$0.size),kind:$0.directory ? .directory:.file,mode:$0.permissions ?? ($0.directory ? 0o700:0o600),modified:0,encrypted:$0.encrypted)}
+        return try NativeArchive.documentFromVerifiedManifest(url,items:items,digest:digest,cancellation:stop)
+    }
+    @objc private func saveOriginal() {
+        guard !working,canEditOriginal,let document else{return}
+        let context=currentContext(),deleted=deletions,added=additions,hidden=cleanHidden.state == .on
+        guard !deleted.isEmpty || !added.isEmpty || hidden else {status.stringValue=L10n.text("请先选择增删或隐藏项目清理计划。");return}
+        guard let password=requestedPassword(for:document.items.contains(where:\.encrypted),context:context),isCurrent(context) else{return}
+        let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.canCreateDirectories=false
+        panel.directoryURL=document.url.deletingLastPathComponent();panel.prompt=L10n.text("授权并保存到原包")
+        panel.message=L10n.text("请选择原压缩包所在文件夹。保存前会保留原件备份；不会覆盖编辑期间被其他程序更改的文件。")
+        presentSelectionPanel(panel,context:context){[weak self] urls in
+            guard let self,let directory=urls.first,self.isCurrent(context),directory.resolvingSymlinksInPath()==document.url.deletingLastPathComponent().resolvingSymlinksInPath() else {self?.status.stringValue=L10n.text("所选文件夹不是原压缩包目录，未执行保存。");return}
+            let scope=ArchiveQuickLookResourceAccess(url:directory)
+            self.perform("正在核验并保存原压缩包…",retaining:(self.access.map{[$0]} ?? [])+added+[scope],originalMayChange:true,work:{stop in
+                let request=try QuickLookEditEngine.request(kind:.saveOriginal,url:document.url,password:password.isEmpty ? nil:password,adding:added.map(\.url),removing:Array(deleted),removeHidden:hidden,cancellation:stop)
+                guard request.sha256==document.digest else {throw NativeArchive.Failure(message:L10n.text("压缩包在编辑期间发生变化，未保存到原包。"))}
+                let response=try QuickLookEditEngine.run(request,directory:directory,cancellation:stop)
+                guard let digest=response.resultSHA256 else {throw CocoaError(.fileReadCorruptFile)}
+                return (try Self.document(document.url,response:response,digest:digest,stop:NativeArchive.Cancellation()),response.backup)
+            }){[weak self] result in
+                guard let self,self.isCurrent(context) else{return}
+                switch result {
+                case .success(let (value,backup)):
+                    do {self.deletions=[];self.additions=[];self.cleanHidden.state = .off;try self.buildTree(value.items);self.document=value;self.preview.showMessage(L10n.text("选择一个普通文件以预览内容。"));self.status.stringValue=L10n.text("已核验并保存到原压缩包。")+(backup.map{"\n"+L10n.text("安全备份：")+$0.path} ?? "")}catch{self.status.stringValue=error.localizedDescription}
+                case .failure(let error):self.status.stringValue=error.localizedDescription
+                };self.updateButtons()
+            }
         }
     }
     private func chooseDirectory(context: NativeArchiveRequestContext, _ completion: @escaping (URL, ArchiveQuickLookResourceAccess) -> Void) {
@@ -278,12 +339,12 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     private func requestedPassword(for encrypted: Bool, context: NativeArchiveRequestContext) -> String? {
         guard isCurrent(context), !working else { return nil }
         guard encrypted else { return "" }
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        let alert = NSAlert(); alert.messageText = L10n.text("输入此压缩包密码")
-        alert.informativeText = L10n.text("密码仅用于本次原生读取，不保存。系统不支持的加密格式会明确失败。")
-        alert.accessoryView = field; alert.addButton(withTitle: L10n.text("读取")); alert.addButton(withTitle: L10n.text("取消"))
-        guard alert.runModal() == .alertFirstButtonReturn, isCurrent(context), !working else { return nil }
-        return field.stringValue
+        guard !archivePassword.stringValue.isEmpty else {
+            status.stringValue=L10n.text("输入此压缩包密码")
+            view.window?.makeFirstResponder(archivePassword)
+            return nil
+        }
+        return archivePassword.stringValue
     }
     private func showOutput(_ result: Result<URL, Error>) {
         switch result {
@@ -291,9 +352,9 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         case .failure(let error): status.stringValue = error.localizedDescription
         }
     }
-    private func perform<T>(_ title: String, retaining resources: [ArchiveQuickLookResourceAccess], work: @escaping (NativeArchive.Cancellation) throws -> T, completion: @escaping (Result<T, Error>) -> Void) {
+    private func perform<T>(_ title: String, retaining resources: [ArchiveQuickLookResourceAccess],originalMayChange:Bool=false, work: @escaping (NativeArchive.Cancellation) throws -> T, completion: @escaping (Result<T, Error>) -> Void) {
         guard !working else { completion(.failure(NativeArchive.Failure(message: "正在停止；等待后台操作结束，原压缩包保持不变。"))); return }
-        working = true; let stop = NativeArchive.Cancellation(), job = UUID()
+        working = true; let stop = NativeArchive.Cancellation(seconds:120,originalMayChange:originalMayChange), job = UUID()
         cancellation = stop; activeJob = job; status.stringValue = L10n.text(title); updateButtons(); group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [self, resources] in
             let result: Result<T, Error> = withExtendedLifetime(resources) {

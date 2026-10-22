@@ -137,7 +137,7 @@ private final class RawTouchRelay:@unchecked Sendable {
             else {unregister?(device,Self.callback);relay.lock.lock();relay.devices[UInt(bitPattern:device)]=nil;relay.lock.unlock()}
         }
         isRunning = !handles.isEmpty
-        status=isRunning ? "实验触控已监听 \(handles.count) 个设备（macOS \(version)）；需实际手势验收，私有接口无兼容保证。压力值和系统手势独占不受支持。":"设备未接受触控监听；请检查输入监控权限和设备连接。"
+        status=isRunning ? L10n.format("实验触控已监听 %@ 个设备（macOS %@）；需实际手势验收，私有接口无兼容保证。压力值和系统手势独占不受支持。", String(describing: (handles.count)), String(describing: (version))):"设备未接受触控监听；请检查输入监控权限和设备连接。"
         if !isRunning {stop()}
     }
     func stop() {

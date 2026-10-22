@@ -33,7 +33,7 @@ enum FileEnhancementImages {
     }
     static func encode(_ image:CGImage,type:String) throws -> Data {
         let bytes=NSMutableData()
-        guard let dest=CGImageDestinationCreateWithData(bytes,type as CFString,1,nil) else {throw FileToolsError.invalid("系统没有 \(type) 编码器。")}
+        guard let dest=CGImageDestinationCreateWithData(bytes,type as CFString,1,nil) else {throw FileToolsError.invalid(L10n.format("系统没有 %@ 编码器。", String(describing: (type))))}
         CGImageDestinationAddImage(dest,image,[kCGImageDestinationLossyCompressionQuality:0.9] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else {throw FileToolsError.invalid("图片编码失败。")};return bytes as Data
     }

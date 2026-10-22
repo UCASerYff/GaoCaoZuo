@@ -2,9 +2,24 @@ import AppKit
 import Combine
 import SwiftUI
 import UniformTypeIdentifiers
+import Darwin
 
 @main enum GaoOperationMain {
     @MainActor static func main() {
+        if let index=CommandLine.arguments.firstIndex(of:"--hid-tracking-preflight"),CommandLine.arguments.count>index+1 {
+            do {
+                let output=URL(fileURLWithPath:CommandLine.arguments[index+1]),parent=output.deletingLastPathComponent()
+                var info=stat()
+                let allowedParents=[FileManager.default.temporaryDirectory.resolvingSymlinksInPath(),URL(fileURLWithPath:"/private/tmp",isDirectory:true)]
+                guard output.lastPathComponent=="hid-tracking-preflight.json",parent.lastPathComponent.hasPrefix("gaocaozuo-acceptance-"),parent.lastPathComponent.hasSuffix(".noindex"),allowedParents.contains(parent.resolvingSymlinksInPath().deletingLastPathComponent()),lstat(parent.path,&info)==0,info.st_mode&S_IFMT==S_IFDIR,info.st_uid==getuid(),info.st_mode&0o077==0 else {throw CocoaError(.fileWriteNoPermission)}
+                NSApplication.shared.setActivationPolicy(.prohibited)
+                let report=HIDTrackingServiceBackend.readOnlyPreflightReport()
+                let encoder=JSONEncoder();encoder.outputFormatting=[.prettyPrinted,.sortedKeys]
+                try encoder.encode(report).write(to:output,options:.withoutOverwriting)
+                try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:output.path)
+            }catch {FileHandle.standardError.write(Data((error.localizedDescription+"\n").utf8));exit(1)}
+            return
+        }
         let app=NSApplication.shared
         app.setActivationPolicy(.regular)
         let delegate=OperationAppDelegate()
@@ -283,7 +298,7 @@ final class OperationPanel: NSPanel {
                 store.prepare(request.action,files:request.paths.map{URL(fileURLWithPath:$0)})
             } else if url.host == "perform",let components=URLComponents(url:url,resolvingAgainstBaseURL:false),let value=components.queryItems?.first(where:{$0.name == "payload"})?.value,value.utf8.count <= 512_000,let bytes=Data(base64Encoded:value),let paths=try? JSONDecoder().decode([String].self,from:bytes),!paths.isEmpty,paths.count <= 1000,paths.allSatisfy({$0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 16_384}) {
                 // Legacy/external URLs only select inputs. An explicit panel click authorizes an action.
-                store.selection=paths.map{URL(fileURLWithPath:$0)};store.message="已接收文件，请选择要执行的操作";showPanel()
+                store.selection=paths.map{URL(fileURLWithPath:$0)};store.message=L10n.text("已接收文件，请选择要执行的操作");showPanel()
             }
         }
     }
@@ -293,9 +308,9 @@ final class OperationPanel: NSPanel {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{showMain();return true}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
-        if store.clipboard.hasActivePasteTransaction {store.notify("请先处理待确认粘贴，再退出，以保留原剪贴板恢复选择。",failed:true);showPasteReview();return .terminateCancel}
+        if store.clipboard.hasActivePasteTransaction {store.notify("请先处理剪贴板的恢复或粘贴确认，再退出，以保留原内容。",failed:true);showPasteReview();return .terminateCancel}
         if store.busy || store.archive.isRunning || store.workflowRunning || store.crossApplicationBusy || GaoActionActivity.shared.isBusy {
-            let alert=NSAlert();alert.messageText="任务仍在运行";alert.informativeText="请等待文件任务完成，或在任务界面取消压缩/组合操作后退出。";alert.addButton(withTitle:"返回任务");alert.runModal();showMain();return .terminateCancel
+            let alert=NSAlert();alert.messageText=L10n.text("任务仍在运行");alert.informativeText=L10n.text("请等待文件任务完成，或在任务界面取消压缩/组合操作后退出。");alert.addButton(withTitle:L10n.text("返回任务"));alert.runModal();showMain();return .terminateCancel
         }
         CleanerController.shared.emergencyRelease();InputSourceCoordinator.shared.stop();FlyKeyController.shared.stop();SelectionActionBar.shared.dismiss()
         store.input.stop();SystemActions.releasePreventSleep();return .terminateNow
@@ -310,10 +325,10 @@ final class OperationPanel: NSPanel {
         let target=translate ? "com.gaoseries.GaoJieTu" : "com.gaoseries.GaoWenJian"
         var parameters:[String:Any]=translate ? ["targetLanguage":"zh-Hans","sourceLanguage":"auto"] : ["suggestedTitle":"选中文字.txt"]
         if translate {
-            let alert=NSAlert();alert.messageText="翻译选中文字";alert.informativeText="选择目标语言；文本将交给搞截图的翻译界面。"
+            let alert=NSAlert();alert.messageText=L10n.text("翻译选中文字");alert.informativeText=L10n.text("选择目标语言；文本将交给搞截图的翻译界面。")
             let picker=NSPopUpButton(frame:NSRect(x:0,y:0,width:260,height:28))
             let languages=[("简体中文","zh-Hans"),("English","en"),("日本語","ja"),("Deutsch","de"),("Français","fr"),("Español","es"),("한국어","ko"),("Português","pt")]
-            picker.addItems(withTitles:languages.map(\.0));alert.accessoryView=picker;alert.addButton(withTitle:"继续");alert.addButton(withTitle:"取消")
+            picker.addItems(withTitles:languages.map(\.0));alert.accessoryView=picker;alert.addButton(withTitle:L10n.text("继续"));alert.addButton(withTitle:L10n.text("取消"))
             guard alert.runModal() == .alertFirstButtonReturn else {return}
             parameters["targetLanguage"]=languages[picker.indexOfSelectedItem].1
         }

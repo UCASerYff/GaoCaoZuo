@@ -116,7 +116,8 @@ private struct ArchivePasswordExport: Codable {
                         // Capture refuses unproven split-stream groups before any
                         // decoder work or original-file side effect can begin.
                         let shouldTrash = options.trashOriginals
-                        let group = shouldTrash ? try await store.archive.performFileIO { _ in try ArchiveVolumeGroup.capture(source) } : nil
+                        let evidence=store.archive.volumeEvidence
+                        let group = shouldTrash ? try await store.archive.performFileIO { _ in try ArchiveVolumeGroup.capture(source,evidence:evidence) } : nil
                         let originals = group?.fingerprints ?? []
                         if store.quickCancellationRequested || Task.isCancelled { return outputs }
                         let result = try await withPassword(archive: source, store: store) { password in
@@ -132,7 +133,7 @@ private struct ArchivePasswordExport: Codable {
                         if options.trashOriginals && !store.quickCancellationRequested && !Task.isCancelled {
                             try await store.archive.performFileIO { cancellation in
                                 try group!.verifyUnchanged()
-                                try Self.trashUnchanged(originals, checkCancellation: { try cancellation.check() })
+                                try Self.trashUnchanged(originals, checkCancellation: { try cancellation.check() },validateOriginal:{try group!.verifyUnchanged($0)})
                             }
                         }
                     }
@@ -171,7 +172,7 @@ private struct ArchivePasswordExport: Codable {
         passwords = records
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.gaoseries.GaoCaoZuo.archives", kSecAttrAccount as String: record.account]
         let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw DataFailure.message("密码索引已删除，钥匙串删除失败（\(status)）。") }
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw DataFailure.message(L10n.format("密码索引已删除，钥匙串删除失败（%@）。", String(describing: (status)))) }
     }
 
     func importPasswords(from url: URL) throws {
@@ -185,7 +186,7 @@ private struct ArchivePasswordExport: Codable {
             guard let text = String(data: bytes, encoding: .utf8) else { throw DataFailure.message("密码本应为 UTF-8 文本或搞操作 JSON 格式。") }
             let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
             guard lines.count <= 10_000, lines.allSatisfy({ $0.utf8.count <= 1024 && !$0.contains("\0") }) else { throw DataFailure.message("密码本数量或长度无效。") }
-            for (index, line) in lines.enumerated() { try addPassword(line, label: "导入密码 \(index + 1)", kind: .extraction) }
+            for (index, line) in lines.enumerated() { try addPassword(line, label: L10n.format("导入密码 %@", String(describing: (index + 1))), kind: .extraction) }
         }
     }
 
@@ -251,9 +252,9 @@ private struct ArchivePasswordExport: Codable {
     func clearPreviews() { previewURL = nil; previewFiles = []; previewRoots.forEach { try? FileManager.default.removeItem(at: $0) }; previewRoots = [] }
     func setDefaultAssociation(extensions: [String]) throws {
         for ext in extensions {
-            guard let type = UTType(filenameExtension: ext) else { throw DataFailure.message("无法识别格式：\(ext)") }
+            guard let type = UTType(filenameExtension: ext) else { throw DataFailure.message(L10n.format("无法识别格式：%@", String(describing: (ext)))) }
             let status = LSSetDefaultRoleHandlerForContentType(type.identifier as CFString, .all, "com.gaoseries.GaoCaoZuo" as CFString)
-            guard status == noErr else { throw DataFailure.message("设置默认解压应用失败（\(status)）。") }
+            guard status == noErr else { throw DataFailure.message(L10n.format("设置默认解压应用失败（%@）。", String(describing: (status)))) }
         }
     }
     private func showWindow<V: View>(title: String, view: V) {
@@ -262,11 +263,12 @@ private struct ArchivePasswordExport: Codable {
         let controller = NSWindowController(window: window); windows.append(controller); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private static func dateSuffix() -> String { let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; return f.string(from: Date()) }
-    nonisolated static func trashUnchanged(_ originals: [(URL, String)], checkCancellation: () throws -> Void = {}, moveToTrash: ((URL) throws -> URL)? = nil) throws {
+    nonisolated static func trashUnchanged(_ originals: [(URL, String)], checkCancellation: () throws -> Void = {},validateOriginal:((URL)throws->Void)?=nil, moveToTrash: ((URL) throws -> URL)? = nil) throws {
         for (url, hash) in originals {
             try checkCancellation()
             let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
             guard current == hash else { throw FileToolsError.changed(url) }
+            try validateOriginal?(url)
         }
         var moved: [(URL,URL,String)] = []
         do {
@@ -275,6 +277,7 @@ private struct ArchivePasswordExport: Codable {
                 let current = hash.hasPrefix("archive-tree-v1:") ? try FileTools.archiveFingerprint(url) : try FileTools.fingerprint(url)
                 guard current == hash else { throw FileToolsError.changed(url) }
                 try checkCancellation()
+                try validateOriginal?(url)
                 let trashURL: URL
                 if let moveToTrash { trashURL = try moveToTrash(url) }
                 else {

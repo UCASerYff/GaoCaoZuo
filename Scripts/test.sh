@@ -6,15 +6,16 @@ if [[ "${1:-}" == '--swift-only' ]]; then
   TEST_SWIFT_ONLY=true
   shift
 fi
-STAGING=$(mktemp -d /private/tmp/gaocaozuo-tests.XXXXXX)
-trap 'rm -rf "$STAGING"' EXIT
+TEST_ROOT=$(mktemp -d /private/tmp/gaocaozuo-tests.XXXXXX)
+STAGING="$TEST_ROOT/Build.noindex"
+trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$STAGING/Tests.app/Contents/MacOS"
 python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$STAGING/Tests.app/Contents/Resources"
 ditto "$PROJECT_DIR/Resources/DocumentTemplates" "$STAGING/Tests.app/Contents/Resources/DocumentTemplates"
 python3 - "$STAGING/Tests.app/Contents/Info.plist" <<'PY'
 import plistlib,sys
 from pathlib import Path
-Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoseries.GaoCaoZuo.Tests','CFBundleExecutable':'tests','CFBundlePackageType':'APPL','CFBundleDevelopmentRegion':'zh-Hans','CFBundleLocalizations':['zh-Hans','en','ja','de','fr','es','ko','pt']}))
+Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoseries.GaoCaoZuo.Tests','CFBundleExecutable':'tests','CFBundlePackageType':'APPL','LSUIElement':True,'CFBundleDevelopmentRegion':'zh-Hans','CFBundleLocalizations':['zh-Hans','en','ja','de','fr','es','ko','pt']}))
 PY
 if [[ "$TEST_SWIFT_ONLY" == false ]]; then
 python3 -B "$PROJECT_DIR/Tests/InstallTests.py"

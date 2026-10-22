@@ -156,14 +156,14 @@ final class LocalData {
             guard fstat(descriptor, &info) == 0 else { throw posixFailure("读取资料目录") }
             directoryIdentity = Identity(info)
             if createIfMissing, fchmod(descriptor, 0o700) != 0 { throw posixFailure("保护资料目录权限") }
-        } catch { failure = "资料目录无法读取或创建：\(error.localizedDescription)" }
+        } catch { failure = L10n.format("资料目录无法读取或创建：%@", String(describing: (error.localizedDescription))) }
     }
 
     func load<T: Decodable>(_ name: String, as type: T.Type) throws -> T? {
         try guarded(name) {
             let descriptor = try checkedDirectory(); defer { close(descriptor) }
             guard let (data, fingerprint) = try read(name, at: descriptor, maximumSize: 32_000_000) else {
-                guard fingerprints[name] == nil else { throw DataFailure.message("\(name) 在运行期间被移除。") }
+                guard fingerprints[name] == nil else { throw DataFailure.message(L10n.format("%@ 在运行期间被移除。", String(describing: (name)))) }
                 knownMissing.insert(name); return nil
             }
             try verifyKnown(name, fingerprint: fingerprint)
@@ -189,7 +189,7 @@ final class LocalData {
         try guarded(name) {
             let descriptor = try checkedDirectory(); defer { close(descriptor) }
             guard let (data, fingerprint) = try read(name, at: descriptor, maximumSize: maximumSize) else {
-                throw DataFailure.message("资料附件缺失：\(name)")
+                throw DataFailure.message(L10n.format("资料附件缺失：%@", String(describing: (name))))
             }
             try verifyKnown(name, fingerprint: fingerprint)
             fingerprints[name] = fingerprint
@@ -206,7 +206,7 @@ final class LocalData {
             let descriptor = try checkedDirectory(); defer { close(descriptor) }
             guard let expected = fingerprints[name],
                   let (_, actual) = try read(name, at: descriptor, maximumSize: 32_000_000), actual == expected else {
-                throw DataFailure.message("附件已变化或缺失，未删除：\(name)")
+                throw DataFailure.message(L10n.format("附件已变化或缺失，未删除：%@", String(describing: (name))))
             }
             let held = ".preserved-\(UUID().uuidString)"
             guard renameatx_np(descriptor, name, descriptor, held, UInt32(RENAME_EXCL)) == 0 else {
@@ -227,14 +227,14 @@ final class LocalData {
     }
 
     private func write(_ data: Data, name: String, mustBeNew: Bool) throws {
-        guard data.count <= 32_000_000 else { throw DataFailure.message("资料文件过大：\(name)") }
+        guard data.count <= 32_000_000 else { throw DataFailure.message(L10n.format("资料文件过大：%@", String(describing: (name)))) }
         let descriptor = try checkedDirectory(); defer { close(descriptor) }
         let existing = try read(name, at: descriptor, maximumSize: 32_000_000)
         if let (_, actual) = existing {
             guard !mustBeNew, let expected = fingerprints[name], expected == actual else {
-                throw DataFailure.message("\(name) 已存在或已被其他程序修改，拒绝覆盖。")
+                throw DataFailure.message(L10n.format("%@ 已存在或已被其他程序修改，拒绝覆盖。", String(describing: (name))))
             }
-        } else if fingerprints[name] != nil { throw DataFailure.message("\(name) 在运行期间被移除，拒绝重新创建。") }
+        } else if fingerprints[name] != nil { throw DataFailure.message(L10n.format("%@ 在运行期间被移除，拒绝重新创建。", String(describing: (name)))) }
         let staged = ".writing-\(UUID().uuidString)"
         let stagedFD = openat(descriptor, staged, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
         guard stagedFD >= 0 else { throw posixFailure("创建资料临时文件") }
@@ -254,7 +254,7 @@ final class LocalData {
         let rechecked = try checkedDirectory(); close(rechecked)
         if let (_, expected) = existing {
             guard let (_, latest) = try read(name, at: descriptor, maximumSize: 32_000_000), latest == expected else {
-                throw DataFailure.message("\(name) 在保存前被修改，拒绝覆盖。")
+                throw DataFailure.message(L10n.format("%@ 在保存前被修改，拒绝覆盖。", String(describing: (name))))
             }
             // Swap preserves the displaced file, including a concurrent external update, until checked.
             guard renameatx_np(descriptor, staged, descriptor, name, UInt32(RENAME_SWAP)) == 0 else {
@@ -264,22 +264,22 @@ final class LocalData {
             do {
                 guard let (_, displaced) = try read(staged, at: descriptor, maximumSize: 32_000_000),
                       displaced.matchesAfterRename(expected) else {
-                    throw DataFailure.message("\(name) 在提交期间被其他程序替换。")
+                    throw DataFailure.message(L10n.format("%@ 在提交期间被其他程序替换。", String(describing: (name))))
                 }
                 canRemoveStaged = true
             } catch {
                 // Never discard the displaced file. Swap back, retaining the uncommitted version as well.
                 _ = renameatx_np(descriptor, staged, descriptor, name, UInt32(RENAME_SWAP))
-                throw DataFailure.message("\(error.localizedDescription) 原文件和临时版本均已保留，已停止写入。")
+                throw DataFailure.message(L10n.format("%@ 原文件和临时版本均已保留，已停止写入。", String(describing: (error.localizedDescription))))
             }
         } else {
             guard renameatx_np(descriptor, staged, descriptor, name, UInt32(RENAME_EXCL)) == 0 else {
-                throw posixFailure("排他创建 \(name)；若已出现同名文件则不会覆盖")
+                throw posixFailure(L10n.format("排他创建 %@；若已出现同名文件则不会覆盖", String(describing: (name))))
             }
         }
         guard let (_, saved) = try read(name, at: descriptor, maximumSize: 32_000_000), saved.hash == Data(SHA256.hash(data: data)) else {
             canRemoveStaged = false
-            throw DataFailure.message("\(name) 在写入后被修改，旧文件已保留，已停止写入。")
+            throw DataFailure.message(L10n.format("%@ 在写入后被修改，旧文件已保留，已停止写入。", String(describing: (name))))
         }
         fingerprints[name] = saved; knownMissing.remove(name)
         _ = fsync(descriptor)
@@ -289,13 +289,13 @@ final class LocalData {
         let json = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         if let dictionary = json as? [String: Any], let raw = dictionary["schema"] {
             guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.intValue == 1,
-                  number.doubleValue == 1 else { throw DataFailure.message("\(name) 的资料格式版本不受支持，请保留原文件。") }
+                  number.doubleValue == 1 else { throw DataFailure.message(L10n.format("%@ 的资料格式版本不受支持，请保留原文件。", String(describing: (name)))) }
         }
     }
 
     private func verifyKnown(_ name: String, fingerprint: Fingerprint) throws {
-        if knownMissing.contains(name) { throw DataFailure.message("\(name) 在运行期间由外部新增，拒绝覆盖或接管。") }
-        if let expected = fingerprints[name], expected != fingerprint { throw DataFailure.message("\(name) 已被其他程序修改，已停止写入。") }
+        if knownMissing.contains(name) { throw DataFailure.message(L10n.format("%@ 在运行期间由外部新增，拒绝覆盖或接管。", String(describing: (name)))) }
+        if let expected = fingerprints[name], expected != fingerprint { throw DataFailure.message(L10n.format("%@ 已被其他程序修改，已停止写入。", String(describing: (name)))) }
     }
 
     private func checkedDirectory() throws -> Int32 {
@@ -315,11 +315,11 @@ final class LocalData {
                 var info = stat()
                 if fstatat(descriptor, component, &info, AT_SYMLINK_NOFOLLOW) != 0 {
                     let code = errno
-                    guard code == ENOENT, create else { throw posixFailure("读取资料父目录 \(component)", code: code) }
-                    guard mkdirat(descriptor, component, mode_t(0o700)) == 0 || errno == EEXIST else { throw posixFailure("创建资料目录 \(component)") }
-                } else if info.st_mode & S_IFMT != S_IFDIR { throw DataFailure.message("资料父路径不是常规目录或包含符号链接：\(component)") }
+                    guard code == ENOENT, create else { throw posixFailure(L10n.format("读取资料父目录 %@", String(describing: (component))), code: code) }
+                    guard mkdirat(descriptor, component, mode_t(0o700)) == 0 || errno == EEXIST else { throw posixFailure(L10n.format("创建资料目录 %@", String(describing: (component)))) }
+                } else if info.st_mode & S_IFMT != S_IFDIR { throw DataFailure.message(L10n.format("资料父路径不是常规目录或包含符号链接：%@", String(describing: (component)))) }
                 let next = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                guard next >= 0 else { throw posixFailure("安全打开资料目录 \(component)") }
+                guard next >= 0 else { throw posixFailure(L10n.format("安全打开资料目录 %@", String(describing: (component)))) }
                 close(descriptor); descriptor = next
             }
             return descriptor
@@ -331,32 +331,32 @@ final class LocalData {
         if fstatat(descriptor, name, &pathInfo, AT_SYMLINK_NOFOLLOW) != 0 {
             let code = errno
             if code == ENOENT { return nil }
-            throw posixFailure("检查资料 \(name)", code: code)
+            throw posixFailure(L10n.format("检查资料 %@", String(describing: (name))), code: code)
         }
         guard pathInfo.st_mode & S_IFMT == S_IFREG, pathInfo.st_nlink == 1,
               pathInfo.st_size >= 0, pathInfo.st_size <= maximumSize else {
-            throw DataFailure.message("资料不是常规独立文件、含符号链接或大小异常：\(name)")
+            throw DataFailure.message(L10n.format("资料不是常规独立文件、含符号链接或大小异常：%@", String(describing: (name))))
         }
         let file = openat(descriptor, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard file >= 0 else { throw posixFailure("读取资料 \(name)") }
+        guard file >= 0 else { throw posixFailure(L10n.format("读取资料 %@", String(describing: (name)))) }
         defer { close(file) }
         var before = stat()
         guard fstat(file, &before) == 0, Identity(before) == Identity(pathInfo), before.st_mode & S_IFMT == S_IFREG,
-              before.st_nlink == 1, before.st_size <= maximumSize else { throw DataFailure.message("资料在打开期间被替换：\(name)") }
+              before.st_nlink == 1, before.st_size <= maximumSize else { throw DataFailure.message(L10n.format("资料在打开期间被替换：%@", String(describing: (name)))) }
         var result = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             let amount = Darwin.read(file, &buffer, buffer.count)
             if amount < 0, errno == EINTR { continue }
-            guard amount >= 0 else { throw posixFailure("读取资料内容 \(name)") }
+            guard amount >= 0 else { throw posixFailure(L10n.format("读取资料内容 %@", String(describing: (name)))) }
             if amount == 0 { break }
-            guard result.count + amount <= maximumSize else { throw DataFailure.message("资料超过读取预算：\(name)") }
+            guard result.count + amount <= maximumSize else { throw DataFailure.message(L10n.format("资料超过读取预算：%@", String(describing: (name)))) }
             result.append(contentsOf: buffer.prefix(amount))
         }
         var after = stat(), latestPath = stat()
         guard fstat(file, &after) == 0, fstatat(descriptor, name, &latestPath, AT_SYMLINK_NOFOLLOW) == 0,
               Identity(after) == Identity(latestPath), Fingerprint(before, data: result) == Fingerprint(after, data: result),
-              result.count == after.st_size else { throw DataFailure.message("资料在读取期间发生变化：\(name)") }
+              result.count == after.st_size else { throw DataFailure.message(L10n.format("资料在读取期间发生变化：%@", String(describing: (name)))) }
         return (result, Fingerprint(after, data: result))
     }
 
@@ -368,12 +368,12 @@ final class LocalData {
             }
             return try action()
         } catch {
-            failure = "无法处理 \(name)，原资料已保留，已停止写入：\(error.localizedDescription)"
+            failure = L10n.format("无法处理 %@，原资料已保留，已停止写入：%@", String(describing: (name)), String(describing: (error.localizedDescription)))
             throw DataFailure.message(failure!)
         }
     }
     private func posixFailure(_ operation: String, code: Int32 = errno) -> DataFailure {
-        .message("\(operation)失败：\(String(cString: strerror(code)))（\(code)）")
+        .message(L10n.format("%@失败：%@（%@）", String(describing: (operation)), String(describing: (String(cString: strerror(code)))), String(describing: (code))))
     }
     func block(_ text: String) { failure = text }
 }
@@ -389,15 +389,15 @@ enum PasswordVault {
             var attributes = base; attributes[kSecValueData as String] = data
             attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let result = SecItemAdd(attributes as CFDictionary, nil)
-            guard result == errSecSuccess else { throw DataFailure.message("钥匙串保存失败（\(result)）。") }
-        } else if status != errSecSuccess { throw DataFailure.message("钥匙串更新失败（\(status)）。") }
+            guard result == errSecSuccess else { throw DataFailure.message(L10n.format("钥匙串保存失败（%@）。", String(describing: (result)))) }
+        } else if status != errSecSuccess { throw DataFailure.message(L10n.format("钥匙串更新失败（%@）。", String(describing: (status)))) }
     }
     static func read(account: String) throws -> String? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data, let text = String(data: data, encoding: .utf8) else { throw DataFailure.message("钥匙串读取失败（\(status)）。") }
+        guard status == errSecSuccess, let data = result as? Data, let text = String(data: data, encoding: .utf8) else { throw DataFailure.message(L10n.format("钥匙串读取失败（%@）。", String(describing: (status)))) }
         return text
     }
 }

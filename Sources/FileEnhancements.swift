@@ -19,7 +19,7 @@ enum EnhancedFileTools {
     static func checked(_ url: URL) throws -> stat {
         guard url.isFileURL, url.path != "/" else { throw FileToolsError.invalid("请选择具体文件或目录。") }
         var value = stat()
-        guard lstat(url.path, &value) == 0 else { throw FileToolsError.invalid("无法读取：\(url.path)") }
+        guard lstat(url.path, &value) == 0 else { throw FileToolsError.invalid(L10n.format("无法读取：%@", String(describing: (url.path)))) }
         guard value.st_mode & S_IFMT == S_IFREG || value.st_mode & S_IFMT == S_IFDIR else { throw FileToolsError.unsupported(url) }
         let parent = url.deletingLastPathComponent().standardizedFileURL
         guard parent.resolvingSymlinksInPath().path == parent.path else { throw FileToolsError.invalid("父目录包含符号链接，请从实际目录操作。") }
@@ -82,13 +82,13 @@ enum EnhancedFileTools {
                 let parent = open(c.url.deletingLastPathComponent().path,O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 guard parent >= 0 else { throw FileToolsError.invalid("无法访问文件所在目录。") };defer{close(parent)}
                 try verify(c,expected:expected)
-                guard fchmodat(parent,c.url.lastPathComponent,mode_t(value),AT_SYMLINK_NOFOLLOW) == 0 else { throw FileToolsError.invalid("系统拒绝修改权限：\(c.url.path)（\(String(cString:strerror(errno)))）") }
+                guard fchmodat(parent,c.url.lastPathComponent,mode_t(value),AT_SYMLINK_NOFOLLOW) == 0 else { throw FileToolsError.invalid(L10n.format("系统拒绝修改权限：%@（%@）", String(describing: (c.url.path)), String(describing: (String(cString:strerror(errno)))))) }
                 try verify(c,expected:value);return
             }
-            guard fd >= 0 else { throw FileToolsError.invalid("无法修改属性：\(c.url.path)（\(String(cString:strerror(errno)))）") }; defer { close(fd) }
+            guard fd >= 0 else { throw FileToolsError.invalid(L10n.format("无法修改属性：%@（%@）", String(describing: (c.url.path)), String(describing: (String(cString:strerror(errno)))))) }; defer { close(fd) }
             var s = stat(); guard fstat(fd, &s) == 0, s.st_dev == c.device, s.st_ino == c.inode else { throw FileToolsError.changed(c.url) }
             let result = c.kind == "hidden" ? fchflags(fd, value) : fchmod(fd, mode_t(value))
-            guard result == 0 else { throw FileToolsError.invalid("系统拒绝修改：\(c.url.path)（\(String(cString: strerror(errno)))）") }
+            guard result == 0 else { throw FileToolsError.invalid(L10n.format("系统拒绝修改：%@（%@）", String(describing: (c.url.path)), String(describing: (String(cString: strerror(errno)))))) }
         }
         try verify(c, expected: value)
     }
@@ -108,7 +108,7 @@ enum EnhancedFileTools {
         while let bytes = try h.read(upToCount: 1_048_576), !bytes.isEmpty { md5.update(data: bytes); sha1.update(data: bytes); sha256.update(data: bytes); sha512.update(data: bytes) }
         var after = stat(); guard fstat(fd, &after) == 0, after.st_size == identity.st_size, after.st_mtimespec.tv_sec == identity.st_mtimespec.tv_sec, after.st_mtimespec.tv_nsec == identity.st_mtimespec.tv_nsec else { throw FileToolsError.changed(url) }
         func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 { digest.map { String(format: "%02x", $0) }.joined() }
-        return "\(url.lastPathComponent)\n大小：\(identity.st_size) 字节\n权限：\(String(identity.st_mode & 0o777, radix: 8))\nMD5: \(hex(md5.finalize()))\nSHA1: \(hex(sha1.finalize()))\nSHA256: \(hex(sha256.finalize()))\nSHA512: \(hex(sha512.finalize()))"
+        return L10n.format("%@\n大小：%@ 字节\n权限：%@\nMD5: %@\nSHA1: %@\nSHA256: %@\nSHA512: %@", String(describing: (url.lastPathComponent)), String(describing: (identity.st_size)), String(describing: (String(identity.st_mode & 0o777, radix: 8))), String(describing: (hex(md5.finalize()))), String(describing: (hex(sha1.finalize()))), String(describing: (hex(sha256.finalize()))), String(describing: (hex(sha512.finalize()))))
     }
     static func foldersUsingNames(_ urls: [URL]) throws -> [FileOperationReceipt] {
         var records: [FileOperationReceipt] = []
@@ -168,7 +168,7 @@ enum EnhancedFileTools {
             guard try FileTools.fingerprint(url) == fingerprints[i] else { throw FileToolsError.changed(url) }
             // Quarantine by exclusive rename, then re-verify before irreversible deletion.
             let held = url.deletingLastPathComponent().appendingPathComponent(".gaocaozuo-delete-" + UUID().uuidString)
-            guard renamex_np(url.path, held.path, UInt32(RENAME_EXCL)) == 0 else { throw FileToolsError.invalid("未能暂存待删除项目：\(url.path)") }
+            guard renamex_np(url.path, held.path, UInt32(RENAME_EXCL)) == 0 else { throw FileToolsError.invalid(L10n.format("未能暂存待删除项目：%@", String(describing: (url.path)))) }
             do { guard try FileTools.fingerprint(held) == fingerprints[i] else { throw FileToolsError.changed(held) }; try fm.removeItem(at: held) }
             catch { _ = renamex_np(held.path, url.path, UInt32(RENAME_EXCL)); throw FileToolsError.invalid("删除未全部完成，已经删除的项目无法恢复。" + error.localizedDescription) }
         }
@@ -180,7 +180,7 @@ enum EnhancedFileTools {
             _ = try checked(url)
             guard let bytes = url.lastPathComponent.data(using: byteEncoding, allowLossyConversion: false),
                   let name = String(data: bytes, encoding: textEncoding), !name.isEmpty,
-                  name != ".", name != "..", !name.contains("/"), !name.contains("\0"), name.utf8.count <= 255 else { throw FileToolsError.invalid("当前编码无法无损修复：\(url.lastPathComponent)") }
+                  name != ".", name != "..", !name.contains("/"), !name.contains("\0"), name.utf8.count <= 255 else { throw FileToolsError.invalid(L10n.format("当前编码无法无损修复：%@", String(describing: (url.lastPathComponent)))) }
             let target = url.deletingLastPathComponent().appendingPathComponent(name)
             if target != url, (try? fm.attributesOfItem(atPath: target.path)) != nil { throw FileToolsError.conflict(target) }
             return RenamePlan(source: url, destination: target)
@@ -434,7 +434,7 @@ enum FileEnhancements {
         guard let batch=dissolved,!batch.shells.isEmpty else {throw FileToolsError.invalid("没有可恢复的解散操作。")}
         for shell in batch.shells {guard try FileTools.fingerprint(shell.held)==shell.fingerprint,!FileManager.default.fileExists(atPath:shell.original.path) else {throw FileToolsError.changed(shell.original)}}
         for record in batch.records {guard try FileTools.fingerprint(record.destination)==record.fingerprint else {throw FileToolsError.changed(record.destination)}}
-        for shell in batch.shells {guard renamex_np(shell.held.path,shell.original.path,UInt32(RENAME_EXCL))==0 else {throw FileToolsError.invalid("恢复目录失败：\(shell.original.path)")}}
+        for shell in batch.shells {guard renamex_np(shell.held.path,shell.original.path,UInt32(RENAME_EXCL))==0 else {throw FileToolsError.invalid(L10n.format("恢复目录失败：%@", String(describing: (shell.original.path))))}}
         try FileTools.undo(batch.records,trashCreated:false)
         let empty=DissolvedFolderBatch(shells:[],records:[]);try data.save(empty,name:"dissolved.json");dissolved=empty
     }

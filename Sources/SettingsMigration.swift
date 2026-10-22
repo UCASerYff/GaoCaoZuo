@@ -119,7 +119,7 @@ private struct ReplacementMigrationEvidence: Codable {
         journal!.state="complete"
         try data.save(journal!,name:"replacement-migration.json")
         finderPreferences.publish(store:self)
-        notify("配置已迁移：\(folders)个目录、\(imported.configuration.rules.count)条暂停规则；详情保存在本地资料。")
+        notify(L10n.format("配置已迁移：%@个目录、%@条暂停规则；详情保存在本地资料。", String(describing: (folders)), String(describing: (imported.configuration.rules.count))))
     }
     func recoverInterruptedMigration() throws {
         try recoverInterruptedReplacementV2()

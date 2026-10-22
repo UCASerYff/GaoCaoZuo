@@ -101,9 +101,149 @@ enum FileAppAdapter {
 /// is ever typed or sent to an existing tab; only window IDs and TTYs are read.
 @MainActor enum TerminalFolderService {
     struct Window: Equatable { var id:Int; var ttys:Set<String> }
-    struct Snapshot: Equatable { var frontID:Int; var windows:[Window] }
+    struct DescriptorID:Equatable,Encodable {
+        var descriptorType:UInt32;var numericID:Int64?;var int32Value:Int32
+    }
+    struct Snapshot: Equatable {
+        var frontID:Int;var windows:[Window]
+        var frontDescriptor:DescriptorID?=nil
+        var windowDescriptors:[DescriptorID]?=nil
+    }
+    /// Opt-in, one-file-per-button-operation diagnostics for this isolated
+    /// acceptance round. Never enabled by ordinary preferences or app launch.
+    @MainActor private final class AcceptanceDiagnostic {
+        struct LoggedWindow:Encodable {var id:Int;var sortedTTYs:[String];var descriptor:DescriptorID?}
+        struct LoggedSnapshot:Encodable {var frontID:Int;var frontDescriptor:DescriptorID?;var windows:[LoggedWindow]}
+        struct Event:Encodable {
+            var phase:String;var before:LoggedSnapshot?;var after:LoggedSnapshot?
+            var serviceCalled:Bool;var serviceReturned:Bool?
+        }
+        struct Report:Encodable {
+            var schema=1;var kind="isolated-terminal-folder-service-stages"
+            var operationID:UUID;var outcome:String;var serviceCalled:Bool;var serviceReturned:Bool?
+            var events:[Event]
+        }
+        let directory:URL,descriptor:Int32,device:dev_t,inode:ino_t
+        let operationID=UUID()
+        var events:[Event]=[],before:LoggedSnapshot?,after:LoggedSnapshot?
+        var serviceCalled=false,serviceReturned:Bool?,outcome="unfinished"
+        private var firstDirectory=true,capturing=true,finished=false
+        private init(directory:URL,descriptor:Int32,identity:stat) {
+            self.directory=directory;self.descriptor=descriptor;device=identity.st_dev;inode=identity.st_ino
+        }
+        static func makeIfAllowed()->AcceptanceDiagnostic? {
+            let environment=ProcessInfo.processInfo.environment
+            guard let path=environment["GAO_TERMINAL_ACCEPTANCE_DIR"],path.hasPrefix("/"),!path.contains("\0") else{return nil}
+            let requested=URL(fileURLWithPath:path,isDirectory:true).standardizedFileURL
+            let directory=requested.resolvingSymlinksInPath()
+            let arguments=CommandLine.arguments
+            guard arguments.filter({$0=="--data-dir"}).count==1,
+                  let index=arguments.firstIndex(of:"--data-dir"),index+1<arguments.count,
+                  arguments[index+1].hasPrefix("/"),
+                  URL(fileURLWithPath:arguments[index+1],isDirectory:true).standardizedFileURL.resolvingSymlinksInPath()==directory.appendingPathComponent("data",isDirectory:true) else{return nil}
+            var info=stat()
+            guard directory.lastPathComponent.hasPrefix("gaocaozuo-acceptance-"),directory.lastPathComponent.hasSuffix(".noindex"),
+                  directory.deletingLastPathComponent()==URL(fileURLWithPath:"/private/tmp",isDirectory:true).resolvingSymlinksInPath(),
+                  lstat(requested.path,&info)==0,info.st_mode&S_IFMT==S_IFDIR,info.st_uid==getuid(),info.st_mode&0o7777==0o700 else{return nil}
+            let fd=open(directory.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
+            guard fd>=0 else{return nil}
+            var opened=stat()
+            guard fstat(fd,&opened)==0,opened.st_dev==info.st_dev,opened.st_ino==info.st_ino,
+                  opened.st_uid==getuid(),opened.st_mode&0o7777==0o700 else{close(fd);return nil}
+            return AcceptanceDiagnostic(directory:directory,descriptor:fd,identity:opened)
+        }
+        private func summary(_ value:Snapshot)->LoggedSnapshot? {
+            guard value.windows.count<=256,value.windows.allSatisfy({$0.ttys.count<=256 && $0.ttys.allSatisfy{tty in
+                tty.hasPrefix("/dev/tty") && tty.utf8.count<=128 && tty.unicodeScalars.allSatisfy{CharacterSet(charactersIn:"/._-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ").contains($0)}
+            }}) else{return nil}
+            let windows=value.windows.enumerated().map{index,window in
+                LoggedWindow(id:window.id,sortedTTYs:window.ttys.sorted(),descriptor:value.windowDescriptors.flatMap{index<$0.count ? $0[index]:nil})
+            }.sorted{$0.id<$1.id}
+            return LoggedSnapshot(frontID:value.frontID,frontDescriptor:value.frontDescriptor,windows:windows)
+        }
+        func beginDirectory(_ snapshot:Snapshot) {
+            guard firstDirectory else{capturing=false;return};firstDirectory=false
+            before=summary(snapshot)
+            record("before-self-guard")
+        }
+        func willCallService(){if capturing {serviceCalled=true}}
+        func returnedFromService(_ accepted:Bool) {
+            guard capturing else{return};serviceReturned=accepted;record("service-returned")
+        }
+        func observedAfter(_ snapshot:Snapshot){if capturing {after=summary(snapshot)}}
+        func failedAfter(){if capturing,!events.contains(where:{$0.phase=="first-failing-after"}) {record("first-failing-after")}}
+        private func record(_ phase:String) {
+            guard capturing,events.count<3 else{return}
+            events.append(.init(phase:phase,before:before,after:after,serviceCalled:serviceCalled,serviceReturned:serviceReturned))
+        }
+        func finish() {
+            guard !finished else{return};finished=true;defer{close(descriptor)}
+            if after != nil,events.count<3 {record("final-after")}
+            var current=stat(),opened=stat()
+            guard lstat(directory.path,&current)==0,fstat(descriptor,&opened)==0,
+                  current.st_dev==device,current.st_ino==inode,opened.st_dev==device,opened.st_ino==inode,
+                  current.st_uid==getuid(),current.st_mode&0o7777==0o700,
+                  let data=try? JSONEncoder().encode(Report(operationID:operationID,outcome:outcome,serviceCalled:serviceCalled,serviceReturned:serviceReturned,events:events)),data.count<=131_072 else{return}
+            let name="terminal-snapshot-"+operationID.uuidString+".json",staged=".terminal-snapshot-"+operationID.uuidString+".writing"
+            let output=openat(descriptor,staged,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600)
+            guard output>=0 else{return};defer{close(output);_=unlinkat(descriptor,staged,0)}
+            var complete=true
+            data.withUnsafeBytes {bytes in
+                var offset=0
+                while offset<bytes.count {
+                    let written=Darwin.write(output,bytes.baseAddress!.advanced(by:offset),bytes.count-offset)
+                    if written<0,errno==EINTR {continue}
+                    guard written>0 else{complete=false;break};offset += written
+                }
+            }
+            guard complete,fsync(output)==0 else{return}
+            guard renameatx_np(descriptor,staged,descriptor,name,UInt32(RENAME_EXCL))==0 else{return}
+            _=fsync(descriptor)
+        }
+    }
     static var running = false
     static let serviceName = "New Terminal Tab at Folder"
+    static func prepareDirectoryPasteboard(_ directory:URL,board:NSPasteboard) throws {
+        // Terminal advertises directory file input as well as plain text.
+        // Keep the standard file URL representation and the literal path on
+        // this request-only board; never inspect the general clipboard.
+        let plain=NSPasteboard.PasteboardType("public.plain-text")
+        board.clearContents()
+        guard board.writeObjects([directory as NSURL]) else {
+            throw FileToolsError.invalid("无法准备 Terminal 文件夹服务参数。")
+        }
+        board.addTypes([plain,.string],owner:nil)
+        guard board.setString(directory.path,forType:plain),board.setString(directory.path,forType:.string) else {
+            throw FileToolsError.invalid("无法准备 Terminal 文件夹服务参数。")
+        }
+    }
+    static func terminalFocusScript(appURL:URL,windowID:Int) throws -> String {
+        guard appURL.isFileURL, Bundle(url:appURL)?.bundleIdentifier=="com.apple.Terminal",windowID>0 else {
+            throw FileToolsError.invalid("Terminal 目标窗口身份无效。")
+        }
+        // The public folder service chooses its own target. Prepare only the
+        // exact captured window; never create a tab or send text to a session.
+        return """
+        tell application \(FileAppAdapter.appleLiteral(appURL.path))
+            set candidates to every window whose id is \(windowID)
+            if (count of candidates) is not 1 then error "Terminal target changed" number -1728
+            set targetWindow to item 1 of candidates
+            if (visible of targetWindow) is false or (miniaturized of targetWindow) is true then error "Terminal target not visible" number -1728
+            activate
+            set frontmost of targetWindow to true
+        end tell
+        """
+    }
+    static func prepareCapturedWindow(appURL:URL,windowID:Int) throws {
+        var failure:NSDictionary?
+        guard let script=NSAppleScript(source:try terminalFocusScript(appURL:appURL,windowID:windowID)) else {
+            throw FileToolsError.invalid("无法准备 Terminal 目标窗口。")
+        }
+        script.executeAndReturnError(&failure)
+        guard failure==nil else {
+            throw FileToolsError.invalid("无法激活原 Terminal 窗口；请确认窗口可见且允许自动化，未发送标签页请求。")
+        }
+    }
     static func newTTY(before:Snapshot,after:Snapshot) throws -> String? {
         let oldIDs=before.windows.map(\.id), newIDs=after.windows.map(\.id)
         guard !oldIDs.isEmpty, Set(oldIDs).count == oldIDs.count, Set(newIDs).count == newIDs.count,
@@ -123,7 +263,7 @@ enum FileAppAdapter {
               added.count <= 1, added.allSatisfy({$0.hasPrefix("/dev/")}), allNew.count == allOld.count+added.count else { throw FileToolsError.invalid("Terminal 新标签页不唯一，无法证明本次结果。") }
         return added.first
     }
-    static func readSnapshot() throws -> Snapshot {
+    static func readSnapshot(captureDiagnosticIDs:Bool=false) throws -> Snapshot {
         let source="""
         tell application id "com.apple.Terminal"
             if (count of windows) is 0 then error "Terminal has no window" number -1728
@@ -140,6 +280,11 @@ enum FileAppAdapter {
         let result=script.executeAndReturnError(&failure)
         guard failure == nil, let front=result.atIndex(1), let rows=result.atIndex(2), rows.numberOfItems>0 else { throw FileToolsError.invalid("请先打开一个 Terminal 窗口并允许自动化，或选择新窗口方式；未向任何标签页发送命令。") }
         var windows:[Window]=[]
+        var diagnosticIDs:[DescriptorID]=[]
+        func descriptorID(_ value:NSAppleEventDescriptor)->DescriptorID {
+            let numeric=value.stringValue.flatMap{Int64($0.trimmingCharacters(in:.whitespacesAndNewlines))}
+            return DescriptorID(descriptorType:value.descriptorType,numericID:numeric,int32Value:value.int32Value)
+        }
         for index in 1...rows.numberOfItems {
             guard let row=rows.atIndex(index), let id=row.atIndex(1), let values=row.atIndex(2), values.numberOfItems>0 else { throw FileToolsError.invalid("Terminal 标签页身份不可读取。") }
             var ttys:Set<String>=[]
@@ -147,8 +292,11 @@ enum FileAppAdapter {
                 guard let tty=values.atIndex(position)?.stringValue, tty.hasPrefix("/dev/"), ttys.insert(tty).inserted else { throw FileToolsError.invalid("Terminal 标签页标识无效。") }
             }
             windows.append(.init(id:Int(id.int32Value),ttys:ttys))
+            if captureDiagnosticIDs {diagnosticIDs.append(descriptorID(id))}
         }
-        return .init(frontID:Int(front.int32Value),windows:windows)
+        return .init(frontID:Int(front.int32Value),windows:windows,
+                     frontDescriptor:captureDiagnosticIDs ? descriptorID(front):nil,
+                     windowDescriptors:captureDiagnosticIDs ? diagnosticIDs:nil)
     }
     static func start(directories:[URL],appURL:URL,completion:@escaping(Error?)->Void) throws {
         guard !running else { throw FileToolsError.invalid("请等待当前 Terminal 标签页请求完成。") }
@@ -156,8 +304,9 @@ enum FileAppAdapter {
               let services=bundle.object(forInfoDictionaryKey:"NSServices") as? [[String:Any]],
               services.contains(where:{ ($0["NSMenuItem"] as? [String:String])?["default"] == serviceName && $0["NSMessage"] as? String == "newTerminalAtFolder" && $0["NSUserData"] as? String == "New Tab" }) else { throw FileToolsError.invalid("当前 Terminal 未声明公开的新标签页目录服务。") }
         running=true
+        let diagnostic=AcceptanceDiagnostic.makeIfAllowed()
         Task { @MainActor in
-            defer { running=false }
+            defer { running=false;diagnostic?.finish() }
             do {
                 for directory in directories {
                     try Task.checkCancellation()
@@ -165,27 +314,38 @@ enum FileAppAdapter {
                     guard applications.count == 1, let app=applications.first,
                           app.bundleURL?.standardizedFileURL == appURL.standardizedFileURL,
                           let identity=WindowProcessIdentity.capture(pid:app.processIdentifier,launchDate:app.launchDate) else { throw FileToolsError.invalid("请先打开 Terminal 窗口，或选择安全的新窗口方式。") }
-                    let before=try readSnapshot()
+                    let before=try readSnapshot(captureDiagnosticIDs:diagnostic != nil)
+                    diagnostic?.beginDirectory(before)
                     _ = try newTTY(before:before,after:before)
                     let board=NSPasteboard.withUniqueName()
                     defer { board.releaseGlobally() }
-                    // Use a dedicated request board; never read or replace the
-                    // general clipboard. Paths are data for Apple's own service.
-                    guard board.writeObjects([directory as NSURL]), board.setString(directory.path,forType:.string) else { throw FileToolsError.invalid("无法准备 Terminal 文件夹服务参数。") }
+                    try prepareDirectoryPasteboard(directory,board:board)
                     guard WindowProcessIdentity.matches(captured:identity,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate), !app.isTerminated else { throw FileToolsError.invalid("Terminal 进程身份已变化。") }
                     try Task.checkCancellation()
-                    guard NSPerformService(serviceName,board) else { throw FileToolsError.invalid("系统 Terminal 新标签页服务不可用；未改用旧标签页或新窗口。") }
+                    try prepareCapturedWindow(appURL:appURL,windowID:before.frontID)
+                    guard WindowProcessIdentity.matches(captured:identity,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate), !app.isTerminated,app.isActive else { throw FileToolsError.invalid("Terminal 目标未保持活动，未发送标签页请求。") }
+                    let prepared=try readSnapshot(captureDiagnosticIDs:diagnostic != nil)
+                    guard try newTTY(before:before,after:prepared)==nil else { throw FileToolsError.invalid("Terminal 准备期间标签页已变化，未发送服务请求。") }
+                    try Task.checkCancellation()
+                    diagnostic?.willCallService()
+                    let serviceAccepted=NSPerformService(serviceName,board)
+                    diagnostic?.returnedFromService(serviceAccepted)
+                    guard serviceAccepted else { throw FileToolsError.invalid("系统 Terminal 新标签页服务不可用；未改用旧标签页或新窗口。") }
                     var proven=false
                     for _ in 0..<30 {
                         try Task.checkCancellation()
                         guard WindowProcessIdentity.matches(captured:identity,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate), !app.isTerminated else { throw FileToolsError.invalid("Terminal 进程身份已变化，结果未核验。") }
-                        if try newTTY(before:before,after:readSnapshot()) != nil { proven=true;break }
+                        do {
+                            let after=try readSnapshot(captureDiagnosticIDs:diagnostic != nil)
+                            diagnostic?.observedAfter(after)
+                            if try newTTY(before:before,after:after) != nil { proven=true;break }
+                        } catch {diagnostic?.failedAfter();throw error}
                         try await Task.sleep(nanoseconds:100_000_000)
                     }
                     guard proven else { throw FileToolsError.invalid("系统服务已发送，但未核验到同窗口内唯一新标签页；请检查 Terminal，未重复发送请求。") }
                 }
-                completion(nil)
-            } catch { completion(error) }
+                diagnostic?.outcome="completed";completion(nil)
+            } catch { diagnostic?.outcome="failed";completion(error) }
         }
     }
 }

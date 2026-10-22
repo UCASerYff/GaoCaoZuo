@@ -53,7 +53,7 @@ import SwiftUI
     }
     @ViewBuilder private var parameters:some View {
         let action=entry.action
-        if action.hasPrefix("capture.") {Stepper("延时 \(delay) 秒",value:$delay,in:0...60)}
+        if action.hasPrefix("capture.") {Stepper(L10n.format("延时 %@ 秒", String(describing: (delay))),value:$delay,in:0...60)}
         if action == "text.translate" {
             TextField("目标语言（BCP47）",text:$targetLanguage);TextField("来源语言（auto 或 BCP47）",text:$sourceLanguage)
         }

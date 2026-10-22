@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 @MainActor struct InputEnhancementSettingsView:View {
     @Binding var configuration:InputEnhancementConfiguration
+    @ObservedObject var cloudSync:InputCloudSync
+    @StateObject private var scrollDevices=HIDInputDevices()
     let actions:[InputActionChoice]
     var status:String=""
     var devices:[String]=[]
@@ -47,7 +49,7 @@ import UniformTypeIdentifiers
                             ForEach(source.rows) {row in
                                 VStack(alignment:.leading,spacing:4) {
                                     HStack {Text(row.module+" · "+String(row.groupIndex+1)+"/"+String(row.rowIndex+1)).font(.caption.monospaced());Spacer();Text(L10n.text(migrationTitle(row.disposition))).font(.caption).foregroundStyle(row.disposition == .exact ? Color.secondary : Color.orange)}
-                                    Text(row.reason).font(.caption).textSelection(.enabled)
+                                    Text(L10n.text(row.reason)).font(.caption).textSelection(.enabled)
                                 }.padding(.vertical,3)
                             }
                         }
@@ -55,10 +57,15 @@ import UniformTypeIdentifiers
                 }
             }
             Section("滚轮") {
+                Button("刷新滚动设备") {scrollDevices.start(recordButtons:false)}
                 ForEach($configuration.scrollProfiles) { $profile in
                     DisclosureGroup {
                         TextField("名称",text:$profile.name)
-                        Picker("输入类型",selection:$profile.deviceID) {Text("普通鼠标滚轮").tag("allWheel");Text("触控板连续滚动").tag("allPrecise")}
+                        Picker("输入类型或设备",selection:$profile.deviceID) {
+                            Text("全部普通鼠标滚轮").tag("allWheel");Text("全部触控板连续滚动").tag("allPrecise")
+                            ForEach(scrollDevices.devices) {device in Text(verbatim:device.name).tag(device.id)}
+                            if !["allWheel","allPrecise"].contains(profile.deviceID),!scrollDevices.devices.contains(where:{$0.id==profile.deviceID}) {Text("未连接或需要重新绑定").tag(profile.deviceID)}
+                        }
                         Toggle("水平反向",isOn:$profile.reverseX);Toggle("垂直反向",isOn:$profile.reverseY)
                         LabeledContent("速度") {Slider(value:$profile.speed,in:0.1...8);Text(profile.speed,format:.number.precision(.fractionLength(2))).monospacedDigit()}
                         LabeledContent("加速度") {Slider(value:$profile.acceleration,in:0...3);Text(profile.acceleration,format:.number.precision(.fractionLength(2))).monospacedDigit()}
@@ -66,7 +73,8 @@ import UniformTypeIdentifiers
                         if profile.smooth {LabeledContent("平滑时长") {Slider(value:$profile.smoothingDuration,in:0.04...0.8);Text("\(Int(profile.smoothingDuration*1000)) ms")}}
                         ModifierSelection(value:$profile.bypassModifiers,title:"按住时临时绕过")
                         AppExclusionEditor(values:$profile.excludedApps)
-                        Text("CGEvent 没有可靠的物理鼠标编号；这里按普通滚轮/连续滚动分类，不声称逐型号硬件驱动或跟踪速度适配。").font(.caption).foregroundStyle(.secondary)
+                        Text("逐设备配置只绑定本次连接。无法确认设备来源的滚动保持原样；断接或系统重启后请重新选择设备。").font(.caption).foregroundStyle(.secondary)
+                        if !HIDEventOwnership.available {Text("当前系统无法识别逐设备滚动来源；相关配置保留，不会改为作用于全部设备。").font(.caption).foregroundStyle(.secondary)}
                         Button("删除滚轮配置",role:.destructive){configuration.scrollProfiles.removeAll{$0.id==profile.id}}
                     } label:{Toggle(profile.name,isOn:$profile.enabled)}
                 }
@@ -83,6 +91,39 @@ import UniformTypeIdentifiers
                 Button("添加 AppleScript") {configuration.scriptLibrary.append(InputScript())}
                 Text("脚本按绑定运行，最长15秒；系统自动化授权由目标应用按需请求。导入的脚本默认不执行，请先审阅。").font(.caption).foregroundStyle(.secondary)
             }
+            Section("自动 iCloud 同步") {
+                Text("同步输入规则、滚轮和设备配置及脚本，可能包含路径和脚本内容；不上传剪贴板、短语、密码或业务文稿。远端新增、改变执行方式或重新启用的规则和设备调校须在本机复核后启用。").font(.caption)
+                Button("选择 iCloud Drive 同步文件夹") {
+                    let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false
+                    panel.directoryURL=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
+                    if panel.runModal() == .OK,let url=panel.url {
+                        do {
+                            guard try url.resourceValues(forKeys:[.isUbiquitousItemKey]).isUbiquitousItem==true else {throw DataFailure.message("请选择真实的 iCloud Drive 文件夹；普通交换文件夹不能开启自动同步。")}
+                            let bookmark=try url.bookmarkData(options:[.withSecurityScope],includingResourceValuesForKeys:nil,relativeTo:nil)
+                            configuration.iCloudSyncEnabled=false;configuration.iCloudSyncFolder=url.path;configuration.iCloudSyncBookmark=bookmark
+                        }catch {message=error.localizedDescription}
+                    }
+                }
+                if !configuration.iCloudSyncFolder.isEmpty {Text(configuration.iCloudSyncFolder).font(.caption).textSelection(.enabled)}
+                Toggle("自动同步输入配置",isOn:$configuration.iCloudSyncEnabled).disabled(configuration.iCloudSyncFolder.isEmpty)
+                Text(L10n.text(cloudSync.status)).font(.caption).textSelection(.enabled)
+                if !configuration.cloudPendingScriptRules.isEmpty || !configuration.cloudPendingHIDMappings.isEmpty || !configuration.cloudPendingHIDProfiles.isEmpty {
+                    Text("同步到本机的新增、变化或重新启用规则及设备调校已暂停。请检查触发方式、应用范围、动作或脚本及设备设置，再解除本机暂停；此选择不会关闭其他设备上的规则。").font(.caption)
+                    Button("已复核规则和设备，解除本机同步暂停") {configuration.cloudPendingScriptRules=[];configuration.cloudPendingHIDMappings=[];configuration.cloudPendingHIDProfiles=[]}
+                }
+                if !cloudSync.conflicts.isEmpty {
+                    if cloudSync.conflicts.contains("configuration") {Text("有多个不同的合并基础，请选择一个完整版本；所有分支仍保留。").font(.caption)}
+                    else {Text("同一项目的离线修改冲突，双方完整版本仍保留；请选择冲突值，其余不冲突修改会合并。").font(.caption)}
+                    DisclosureGroup("查看本机冲突版本") {Text(cloudSync.localConflictText).font(.caption.monospaced()).textSelection(.enabled)}
+                    Button("保留本机冲突值并合并") {cloudSync.resolve(.local)}
+                    ForEach(cloudSync.remoteChoices) {choice in
+                        DisclosureGroup(L10n.text("查看远端冲突版本")+" "+String(choice.id.prefix(8))) {
+                            Text(choice.text).font(.caption.monospaced()).textSelection(.enabled)
+                            Button("采用这个远端版本的冲突值") {cloudSync.resolve(.remote(choice.id))}
+                        }
+                    }
+                }
+            }
             Section("文件夹备份与交换") {
                 TextField("备份目录",text:$configuration.syncFolder)
                 HStack {
@@ -90,11 +131,11 @@ import UniformTypeIdentifiers
                     Button("写入备份") {writeSync()}.disabled(configuration.syncFolder.isEmpty)
                     Button("读取备份") {readSync()}.disabled(configuration.syncFolder.isEmpty)
                 }
-                Text("仅手动写入或读取备份。是否跨设备传输取决于所选文件夹的服务；本应用没有实时同步或多端冲突协议。读取时保留本机修改并暂停新规则；原有副本先备份。").font(.caption).foregroundStyle(.secondary)
+                Text("此处仅手动备份和读取；自动同步请使用上方 iCloud 功能。读取时保留本机修改并暂停新规则；原有副本先备份。").font(.caption).foregroundStyle(.secondary)
             }
             Section("HID 鼠标设备") {HIDDeviceConfigurationView(profiles:$configuration.hidProfiles,actions:actions)}
             Section("设备实测") {InputDeviceTestView()}
-        }.formStyle(.grouped)
+        }.formStyle(.grouped).onAppear{scrollDevices.start(recordButtons:false)}.onDisappear{scrollDevices.stop()}
     }
     private func importRules() {
         let panel=NSOpenPanel();panel.allowedContentTypes=[.json,.propertyList];panel.allowsMultipleSelection=false
@@ -132,7 +173,7 @@ import UniformTypeIdentifiers
             TextField("规则名称",text:$rule.name)
             if let origin=rule.migrationOrigin {
                 Text(origin.reason).font(.caption).foregroundStyle(.secondary)
-                if let reason=EnhancedInputValidation.migrationBlockReason(rule) {Text(reason).font(.caption).foregroundStyle(.orange)}
+                if let reason=EnhancedInputValidation.migrationBlockReason(rule) {Text(L10n.text(reason)).font(.caption).foregroundStyle(.orange)}
             }
             Picker("触发方式",selection:$rule.trigger) {ForEach(EnhancedInputTrigger.allCases) {Text(L10n.text($0.title)).tag($0)}}
             TextField("限定应用 Bundle ID（空白为所有应用）",text:$rule.appBundleID)
@@ -141,7 +182,7 @@ import UniformTypeIdentifiers
             if [.keyDown,.keyUp,.keyHold,.keyReplacement].contains(rule.trigger) {
                 HStack {InputKeyRecorder(code:$rule.keyCode,modifiers:$rule.modifiers);TextField("键码",value:$rule.keyCode,format:.number).frame(width:75);Button("Fn") {rule.keyCode=63;rule.modifiers=0}}
             }
-            if [.buttonDown,.buttonUp,.buttonHold,.drawing,.screenEdge].contains(rule.trigger) {Stepper("鼠标按钮：\(rule.button)（左0/右1/中2）",value:$rule.button,in:0...31)}
+            if [.buttonDown,.buttonUp,.buttonHold,.drawing,.screenEdge].contains(rule.trigger) {Stepper(L10n.format("鼠标按钮：%@（左0/右1/中2）", String(describing: (rule.button))),value:$rule.button,in:0...31)}
             if [.buttonDown,.buttonUp,.buttonHold,.scroll,.drawing].contains(rule.trigger) {
                 TextField("组合按住按钮（逗号分隔）",text:Binding(get:{rule.heldButtons.map(String.init).joined(separator:",")},set:{rule.heldButtons=$0.split(separator:",").compactMap{Int($0.trimmingCharacters(in:.whitespaces))}}))
             }
@@ -157,13 +198,13 @@ import UniformTypeIdentifiers
             if rule.trigger == .scroll || rule.trigger == .touch && rule.touchGesture == "swipe" {Picker("方向",selection:$rule.direction){Text("上").tag("up");Text("下").tag("down");Text("左").tag("left");Text("右").tag("right")}}
             if rule.trigger == .touch {
                 Picker("设备",selection:$rule.touchDevice) {Text("任意触控设备").tag("any");ForEach(devices,id:\.self) {name in Text(name).tag(name.components(separatedBy:" · ").last ?? name)};if rule.touchDevice != "any",!devices.contains(where:{$0.hasSuffix(rule.touchDevice)}) {Text("原设备："+rule.touchDevice).tag(rule.touchDevice)}}
-                Stepper("手指数：\(rule.fingers)",value:$rule.fingers,in:1...5)
+                Stepper(L10n.format("手指数：%@", String(describing: (rule.fingers))),value:$rule.fingers,in:1...5)
                 Picker("触控手势",selection:$rule.touchGesture) {Text("轻点").tag("tap");Text("双拍").tag("doubleTap");Text("点按").tag("click");Text("滑动").tag("swipe");Text("捏合").tag("pinchIn");Text("张开").tag("pinchOut");Text("左旋转").tag("rotateLeft");Text("右旋转").tag("rotateRight");Text("自由绘图").tag("drawing");Text("锚指＋其他指轻拍 TipTap").tag("tipTap");Text("模拟中键拖移").tag("middleDrag")}
-                Picker("起始区域",selection:$rule.touchRegion) {ForEach(["any","left","right","top","bottom","topLeft","topRight","bottomLeft","bottomRight"],id:\.self){Text(["any":"任意","left":"左侧","right":"右侧","top":"顶边","bottom":"底边","topLeft":"左上","topRight":"右上","bottomLeft":"左下","bottomRight":"右下"][$0]!).tag($0)}}
+                Picker("起始区域",selection:$rule.touchRegion) {ForEach(["any","left","right","top","bottom","topLeft","topRight","bottomLeft","bottomRight"],id:\.self){Text(L10n.text(["any":"任意","left":"左侧","right":"右侧","top":"顶边","bottom":"底边","topLeft":"左上","topRight":"右上","bottomLeft":"左下","bottomRight":"右下"][$0]!)).tag($0)}}
                 Toggle("需要另一个触点停留底边（拇指锚点）",isOn:$rule.thumbAtBottom)
                 Text("设备编号仅在当前监听会话内有效；断接后需重选。多指系统手势仍会同时生效。Magic Mouse 与其他外置设备需分别实测。").font(.caption).foregroundStyle(.secondary)
             }
-            if rule.trigger == .pressure {Stepper("压力阶段：\(rule.pressureStage)",value:$rule.pressureStage,in:1...2);LabeledContent("阶段内压力阈值") {Slider(value:$rule.pressureThreshold,in:0.05...1);Text(rule.pressureThreshold,format:.number.precision(.fractionLength(2)))};Text("压力事件由目标应用/系统决定是否投递，全局可用性须实际验收。").font(.caption).foregroundStyle(.secondary)}
+            if rule.trigger == .pressure {Stepper(L10n.format("压力阶段：%@", String(describing: (rule.pressureStage))),value:$rule.pressureStage,in:1...2);LabeledContent("阶段内压力阈值") {Slider(value:$rule.pressureThreshold,in:0.05...1);Text(rule.pressureThreshold,format:.number.precision(.fractionLength(2)))};Text("压力事件由目标应用/系统决定是否投递，全局可用性须实际验收。").font(.caption).foregroundStyle(.secondary)}
             if rule.trigger == .drawing || rule.trigger == .touch && rule.touchGesture == "drawing" {GestureDrawingPad(points:$rule.drawing).frame(height:160).background(.quaternary,in:RoundedRectangle(cornerRadius:8));Button("清空轨迹"){rule.drawing=[]};LabeledContent("识别容差") {Slider(value:$rule.recognitionThreshold,in:0.05...0.5)}}
             if ![.touch,.pressure,.hotCorner].contains(rule.trigger) {Toggle("阻止原始输入（需辅助功能权限）",isOn:$rule.consume)}
             if rule.trigger == .touch && rule.touchGesture == "middleDrag" {Text("这个触控手势直接发送中键按下、拖动和松开；需要辅助功能权限，建议设置Fn条件避免与系统滚动重叠。").font(.caption).foregroundStyle(.secondary)} else {
@@ -175,7 +216,7 @@ import UniformTypeIdentifiers
                     Picker("窗口目标",selection:$rule.effect.windowTargetMode) {Text("跟随窗口设置").tag(InputWindowTargetMode.inheritSettings);Text("前台窗口").tag(InputWindowTargetMode.frontmost);Text("鼠标指向窗口").tag(InputWindowTargetMode.underPointer)}
                 }
             case .shortcut:InputKeyRecorder(code:$rule.effect.keyCode,modifiers:$rule.effect.modifiers);ModifierSelection(value:$rule.effect.modifiers,title:"输出修饰键")
-            case .mouseClick:Stepper("输出鼠标按钮：\(rule.effect.mouseButton)",value:$rule.effect.mouseButton,in:0...31);ModifierSelection(value:$rule.effect.mouseModifiers,title:"输出修饰键")
+            case .mouseClick:Stepper(L10n.format("输出鼠标按钮：%@", String(describing: (rule.effect.mouseButton))),value:$rule.effect.mouseButton,in:0...31);ModifierSelection(value:$rule.effect.mouseModifiers,title:"输出修饰键")
             case .scroll:HStack {TextField("水平像素",value:$rule.effect.scrollX,format:.number);TextField("垂直像素",value:$rule.effect.scrollY,format:.number)}
             case .systemPreset:Picker("系统控制",selection:$rule.effect.systemPreset){ForEach(EnhancedSystemPreset.allCases){Text(L10n.text($0.title)).tag($0.rawValue)}};Text("媒体/亮度控制取决于硬件和前台播放器；系统桌面动作使用你的实际系统快捷键。").font(.caption).foregroundStyle(.secondary)
             case .menuItem:InputMenuSelectionView(bundleID:$rule.effect.menuBundleID,path:$rule.effect.menuPath,evidence:$rule.effect.menuEvidence)
@@ -211,7 +252,7 @@ private final class KeyRecorderView:NSView {
     override func mouseDown(with event:NSEvent){window?.makeFirstResponder(self);recording=true;needsDisplay=true}
     override func keyDown(with event:NSEvent){guard recording else{return};onChange?(event.keyCode,UInt64(event.modifierFlags.rawValue)&EnhancedInputValidation.modifiers);recording=false;needsDisplay=true}
     override func flagsChanged(with event:NSEvent){if recording,event.keyCode==63,event.modifierFlags.contains(.function){onChange?(63,0);recording=false;needsDisplay=true}}
-    override func draw(_ dirtyRect:NSRect){NSColor.controlBackgroundColor.setFill();NSBezierPath(roundedRect:bounds,xRadius:6,yRadius:6).fill();(recording ? "请按快捷键…":label+" · 点击录制").draw(in:bounds.insetBy(dx:8,dy:5),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:NSColor.labelColor])}
+    override func draw(_ dirtyRect:NSRect){NSColor.controlBackgroundColor.setFill();NSBezierPath(roundedRect:bounds,xRadius:6,yRadius:6).fill();(recording ? L10n.text("请按快捷键…"):label+L10n.text(" · 点击录制")).draw(in:bounds.insetBy(dx:8,dy:5),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:NSColor.labelColor])}
 }
 @MainActor private struct GestureDrawingPad:NSViewRepresentable {
     @Binding var points:[GesturePoint]
@@ -224,11 +265,11 @@ private final class DrawingPadView:NSView {
     override func mouseDown(with event:NSEvent){points=[convert(event.locationInWindow,from:nil)]}
     override func mouseDragged(with event:NSEvent){if points.count<2048 {points.append(convert(event.locationInWindow,from:nil))}}
     override func mouseUp(with event:NSEvent){points.append(convert(event.locationInWindow,from:nil));onChange?(points)}
-    override func draw(_ dirtyRect:NSRect){guard let first=points.first else {"按住鼠标或触控板绘制单笔轨迹".draw(at:CGPoint(x:12,y:12),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:NSColor.secondaryLabelColor]);return};let path=NSBezierPath();path.move(to:first);for p in points.dropFirst(){path.line(to:p)};NSColor.controlAccentColor.setStroke();path.lineWidth=3;path.stroke()}
+    override func draw(_ dirtyRect:NSRect){guard let first=points.first else {L10n.text("按住鼠标或触控板绘制单笔轨迹").draw(at:CGPoint(x:12,y:12),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:NSColor.secondaryLabelColor]);return};let path=NSBezierPath();path.move(to:first);for p in points.dropFirst(){path.line(to:p)};NSColor.controlAccentColor.setStroke();path.lineWidth=3;path.stroke()}
 }
 @MainActor struct InputDeviceTestView:View {
     @State private var observation="将光标移入下方，再轻点、滑动或按压触控板。这里只测量实际传感器输入，不代替其他应用中的全局触发验收。"
-    var body:some View {VStack(alignment:.leading){Text(observation).font(.caption.monospaced());TouchTestPad(onObservation:{observation=$0}).frame(height:150).background(.quaternary,in:RoundedRectangle(cornerRadius:8))}}
+    var body:some View {VStack(alignment:.leading){Text(L10n.text(observation)).font(.caption.monospaced());TouchTestPad(onObservation:{observation=$0}).frame(height:150).background(.quaternary,in:RoundedRectangle(cornerRadius:8))}}
 }
 @MainActor private struct TouchTestPad:NSViewRepresentable {
     let onObservation:(String)->Void
@@ -245,7 +286,7 @@ private final class TouchTestView:NSView {
     override func touchesMoved(with event:NSEvent){show(event)}
     override func touchesEnded(with event:NSEvent){show(event)}
     override func touchesCancelled(with event:NSEvent){show(event)}
-    private func show(_ event:NSEvent){let contacts=event.touches(matching:.touching,in:self);samples+=1;maxFingers=max(maxFingers,contacts.count);onObservation?("公开局部触控样本 \(samples) · 当前 \(contacts.count) 指 · 最多 \(maxFingers) 指\n"+contacts.map{String(format:"(%.2f, %.2f)",$0.normalizedPosition.x,$0.normalizedPosition.y)}.sorted().joined(separator:" "))}
-    override func pressureChange(with event:NSEvent){samples+=1;onObservation?(String(format:"真实压力样本 %d · stage %d · pressure %.3f · transition %.3f",samples,event.stage,event.pressure,event.stageTransition))}
-    override func draw(_ dirtyRect:NSRect){"触控板 / 压力实测区域".draw(at:CGPoint(x:12,y:12),withAttributes:[.font:NSFont.systemFont(ofSize:13),.foregroundColor:NSColor.secondaryLabelColor])}
+    private func show(_ event:NSEvent){let contacts=event.touches(matching:.touching,in:self);samples+=1;maxFingers=max(maxFingers,contacts.count);onObservation?(L10n.format("公开局部触控样本 %@ · 当前 %@ 指 · 最多 %@ 指\n", String(describing: (samples)), String(describing: (contacts.count)), String(describing: (maxFingers)))+contacts.map{String(format:"(%.2f, %.2f)",$0.normalizedPosition.x,$0.normalizedPosition.y)}.sorted().joined(separator:" "))}
+    override func pressureChange(with event:NSEvent){samples+=1;onObservation?(L10n.format("真实压力样本 %d · stage %d · pressure %.3f · transition %.3f",samples,event.stage,event.pressure,event.stageTransition))}
+    override func draw(_ dirtyRect:NSRect){L10n.text("触控板 / 压力实测区域").draw(at:CGPoint(x:12,y:12),withAttributes:[.font:NSFont.systemFont(ofSize:13),.foregroundColor:NSColor.secondaryLabelColor])}
 }

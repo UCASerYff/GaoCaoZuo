@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
     panel.allowedContentTypes = [.applicationBundle]
     panel.canChooseFiles = true; panel.canChooseDirectories = false
     panel.allowsMultipleSelection = false; panel.directoryURL = URL(fileURLWithPath: "/Applications")
-    panel.message = "选择要限定或排除的应用"
+    panel.message = L10n.text("选择要限定或排除的应用")
     guard panel.runModal() == .OK, let url = panel.url else { return nil }
     return Bundle(url: url)?.bundleIdentifier
 }
@@ -37,7 +37,7 @@ import UniformTypeIdentifiers
                         })).labelsHidden().toggleStyle(.switch).disabled(!store.dataHealthy)
                         VStack(alignment: .leading, spacing: 5) {
                             Text(store.actionChoices.first(where: { $0.id == binding.actionID })?.title ?? binding.actionID).fontWeight(.medium)
-                            Text(binding.triggerDescription + " · " + (binding.appBundleID.isEmpty ? "所有应用" : binding.appBundleID))
+                            Text(binding.triggerDescription + " · " + (binding.appBundleID.isEmpty ? L10n.text("所有应用") : binding.appBundleID))
                                 .font(.caption).foregroundStyle(.secondary)
                             if InputRules.conflictingIDs(in: store.settings.bindings).contains(binding.id) {
                                 Text("触发方式冲突，此规则暂不执行").font(.caption).foregroundStyle(.orange)
@@ -52,7 +52,7 @@ import UniformTypeIdentifiers
             Text("绘图手势使用 Option＋右键向一个方向拖动。事件只作监听，原应用可能同时显示右键菜单。高级规则与实验多点触控可在设置的“输入”页配置；实验功能默认关闭，需实机验证。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("已排除 \(store.settings.inputExcludedApps.count) 个应用；可在设置中管理。").font(.caption).foregroundStyle(.secondary)
+                Text(L10n.format("已排除 %@ 个应用；可在设置中管理。", String(describing: (store.settings.inputExcludedApps.count)))).font(.caption).foregroundStyle(.secondary)
                 Spacer();Button("打开设置") { store.showSettings?() }
             }
         }.padding(24)
@@ -70,7 +70,7 @@ import UniformTypeIdentifiers
                 if !input.permissionGranted { Button("设置权限") { input.requestPermission() } }
                 Button(input.isPaused ? "继续监听" : "暂停监听") { input.pause(!input.isPaused) }
             }
-            if let error = input.lastError { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error = input.lastError { Text(L10n.text(error)).font(.caption).foregroundStyle(.orange) }
         }.padding(14).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
     }
 }
@@ -116,7 +116,7 @@ import UniformTypeIdentifiers
                     if draft.trigger == .mouseButton {
                         Picker("鼠标按钮", selection: $draft.mouseButton) {
                             Text("中键（第 3 键）").tag(2)
-                            ForEach(3...31, id: \.self) { Text("第 \($0 + 1) 键").tag($0) }
+                            ForEach(3...31, id: \.self) { Text(L10n.format("第 %@ 键", String(describing: ($0 + 1)))).tag($0) }
                         }
                     } else {
                         Picker("拖动方向", selection: $draft.direction) {
@@ -185,7 +185,7 @@ import UniformTypeIdentifiers
             guard let self, self.recording else { return event }
             if event.keyCode == 53 { self.endRecording(); self.title = self.previousTitle; return nil }
             let flags = UInt64(event.modifierFlags.rawValue) & InputRules.modifierMask
-            guard flags != 0 else { self.title = "请同时按住 ⌘ / ⌥ / ⌃ / ⇧"; return nil }
+            guard flags != 0 else { self.title = L10n.text("请同时按住 ⌘ / ⌥ / ⌃ / ⇧"); return nil }
             self.endRecording(); self.record?(event.keyCode, flags)
             self.title = InputBinding(keyCode: event.keyCode, modifiers: flags).triggerDescription
             return nil
@@ -211,12 +211,12 @@ import UniformTypeIdentifiers
                 }.disabled(!store.dataHealthy)
                 Button { editing = .init(name: "新组合操作", steps: [.init(actionID: "text.copy", argument: "")]) } label: { Label("新建", systemImage: "plus") }.disabled(!store.dataHealthy)
             }
-            if store.workflowRunning { HStack { ProgressView().controlSize(.small); Text(store.message); Spacer(); Button("停止") { store.cancelWorkflow() } } }
+            if store.workflowRunning { HStack { ProgressView().controlSize(.small); Text(L10n.text(store.message)); Spacer(); Button("停止") { store.cancelWorkflow() } } }
             List {
                 ForEach(store.settings.workflows) { workflow in
                     HStack(spacing: 14) {
                         Image(systemName: "square.stack.3d.up").font(.title2).foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 4) { Text(workflow.name).fontWeight(.medium); Text("\(workflow.steps.count) 个步骤").font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 4) { Text(workflow.name).fontWeight(.medium); Text(L10n.format("%@ 个步骤", String(describing: (workflow.steps.count)))).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
                         Button("运行") { store.runWorkflow(workflow) }.disabled(store.workflowRunning || store.busy || !store.dataHealthy)
                         Button("编辑") { editing = workflow }.disabled(store.workflowRunning || !store.dataHealthy)
@@ -250,12 +250,12 @@ private struct WorkflowActionChoice: Identifiable {
         if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请填写组合操作名称。" }
         if draft.steps.isEmpty || draft.steps.count > 50 { return "组合操作须包含 1–50 个步骤。" }
         for (index,step) in draft.steps.enumerated() {
-            if !WorkflowActionChoice.all.contains(where:{$0.id==step.actionID}) { return "第 \(index+1) 步动作无效。" }
+            if !WorkflowActionChoice.all.contains(where:{$0.id==step.actionID}) { return L10n.format("第 %@ 步动作无效。", String(describing: (index+1))) }
             switch step.actionID {
-            case "open.path": if !step.argument.hasPrefix("/") { return "请为第 \(index+1) 步选择实际文件、目录或应用。" }
-            case "open.url": if let url=URL(string:step.argument), ["http","https"].contains(url.scheme ?? ""), url.host != nil {} else { return "第 \(index+1) 步需要完整 http/https 网址。" }
-            case "shortcut.run": if step.argument.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { return "请填写第 \(index+1) 步快捷指令名称。" }
-            case "delay": if let value=Double(step.argument), value.isFinite, (0...30).contains(value) {} else { return "第 \(index+1) 步等待时间应为 0–30 秒。" }
+            case "open.path": if !step.argument.hasPrefix("/") { return L10n.format("请为第 %@ 步选择实际文件、目录或应用。", String(describing: (index+1))) }
+            case "open.url": if let url=URL(string:step.argument), ["http","https"].contains(url.scheme ?? ""), url.host != nil {} else { return L10n.format("第 %@ 步需要完整 http/https 网址。", String(describing: (index+1))) }
+            case "shortcut.run": if step.argument.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { return L10n.format("请填写第 %@ 步快捷指令名称。", String(describing: (index+1))) }
+            case "delay": if let value=Double(step.argument), value.isFinite, (0...30).contains(value) {} else { return L10n.format("第 %@ 步等待时间应为 0–30 秒。", String(describing: (index+1))) }
             default: break
             }
         }
@@ -279,7 +279,7 @@ private struct WorkflowActionChoice: Identifiable {
             }
             HStack {
                 Button { draft.steps.append(.init(actionID:"delay",argument:"1")) } label: { Label("添加步骤",systemImage:"plus") }.disabled(draft.steps.count >= 50)
-                Spacer(); Text("\(draft.steps.count)/50 个步骤").foregroundStyle(.secondary)
+                Spacer(); Text(L10n.format("%@/50 个步骤", String(describing: (draft.steps.count)))).foregroundStyle(.secondary)
             }
             if let validation { Text(validation).font(.caption).foregroundStyle(.orange) }
             HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -400,6 +400,8 @@ private struct WorkflowActionChoice: Identifiable {
                 }
                 Text("部分界面尚未翻译，会显示英文或中文。Finder 菜单随此设置更新；Quick Look 跟随系统语言。")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("Quick Look 界面跟随 macOS 为扩展选择的语言；主应用语言设置不会修改扩展的系统语言。")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("显示菜单栏图标",isOn:setting(\.showMenuBarIcon))
                 Picker("菜单栏左键",selection:setting(\.statusBarLeftClick)){Text("操作面板").tag("panel");Text("主窗口").tag("main");Text("剪贴板").tag("clipboard")}
                 Toggle("新建文件提示音",isOn:setting(\.playNewFileSound))
@@ -409,8 +411,8 @@ private struct WorkflowActionChoice: Identifiable {
             Section("剪贴板历史") {
                 Toggle("记录剪贴板历史",isOn:setting(\.clipboardEnabled))
                 Text("关闭后停止采集，已有历史继续保留。启用后只在本机保存，系统标记为敏感或临时的内容会跳过。").font(.caption).foregroundStyle(.secondary)
-                Stepper("保留 \(store.settings.clipboardDays) 天",value:setting(\.clipboardDays),in:1...365)
-                Stepper("最多 \(store.settings.clipboardLimit) 条普通记录",value:setting(\.clipboardLimit),in:20...1000,step:20)
+                Stepper(L10n.format("保留 %@ 天", String(describing: (store.settings.clipboardDays))),value:setting(\.clipboardDays),in:1...365)
+                Stepper(L10n.format("最多 %@ 条普通记录", String(describing: (store.settings.clipboardLimit))),value:setting(\.clipboardLimit),in:20...1000,step:20)
                 Text("固定记录不参与到期清理。以下应用在前台时不记录剪贴板。").font(.caption).foregroundStyle(.secondary)
                 ForEach(store.settings.clipboardExcludedApps,id:\.self) { id in
                     HStack { Text(id).font(.caption).textSelection(.enabled);Spacer();Button(role:.destructive) { store.update {$0.clipboardExcludedApps.removeAll {$0==id}} } label:{Image(systemName:"minus.circle")} }
@@ -448,10 +450,10 @@ private struct WorkflowActionChoice: Identifiable {
                     do {
                         if previousStatus == .enabled || previousStatus == .requiresApproval { try SMAppService.mainApp.register() }
                         else { try await SMAppService.mainApp.unregister() }
-                    } catch { loginMessage="设置未保存，登录项状态也未能恢复，请在系统设置中核验：\(error.localizedDescription)" }
+                    } catch { loginMessage=L10n.format("设置未保存，登录项状态也未能恢复，请在系统设置中核验：%@", String(describing: (error.localizedDescription))) }
                 }
                 if store.settings.loginAtStartup != previous { store.update {$0.loginAtStartup=previous} }
-                if loginMessage == nil { loginMessage="登录启动设置未改变：\(originalError)" }
+                if loginMessage == nil { loginMessage=L10n.format("登录启动设置未改变：%@", String(describing: (originalError))) }
             }
         }
     }
@@ -474,18 +476,18 @@ private struct WorkflowActionChoice: Identifiable {
                 Text("本版不提供覆盖式导入或一键重置。保留资料与安全备份后，再处理读取错误。").font(.caption).foregroundStyle(.secondary)
             }
             ReplacementMigrationView(store:store)
-            if let failure=store.data.failure { Section("资料需要检查") { Text(failure).foregroundStyle(.orange).textSelection(.enabled) } }
+            if let failure=store.data.failure { Section("资料需要检查") { Text(L10n.text(failure)).foregroundStyle(.orange).textSelection(.enabled) } }
         }.formStyle(.grouped)
     }
     private var about: some View {
         VStack(spacing:14) {
             if let image=NSImage(named:NSImage.Name("AppIcon")) { Image(nsImage:image).resizable().interpolation(.high).frame(width:100,height:100) }
             Text("搞操作 V\(store.version)").font(.title.bold())
-            Text("构建 \(Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") as? String ?? "1") · 原生 macOS 工具").foregroundStyle(.secondary)
+            Text(L10n.format("构建 %@ · 原生 macOS 工具", String(describing: (Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") as? String ?? "1")))).foregroundStyle(.secondary)
             Text("让 Mac 上的操作更简单").font(.headline)
             Text("文件、窗口、压缩、剪贴板与常用动作，集中到一个入口。").foregroundStyle(.secondary)
             Divider().padding(.horizontal,60)
-            Text("Apple Silicon · macOS 14 或更高版本\n本地签名 · 未公证\n本机保存资料，不提供云同步或桌面小组件").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text([L10n.text("Apple Silicon · macOS 14 或更高版本"),L10n.text("本地签名 · 未公证"),L10n.text("业务资料保存在本机；输入配置可按需开启 iCloud 同步。")].joined(separator:"\n")).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             if let url=Bundle.main.url(forResource:"使用说明",withExtension:"txt") { Button("打开使用说明") { NSWorkspace.shared.open(url) } }
             Spacer()
         }.padding(28)
@@ -529,7 +531,7 @@ private struct WorkflowActionChoice: Identifiable {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(status.allReady ? "所需权限已就绪" : "完成授权，操作更顺手").font(.headline)
-                    Text("已完成 \(status.readyCount)/3 项 · 从系统设置返回后自动检查")
+                    Text(L10n.format("已完成 %@/3 项 · 从系统设置返回后自动检查", String(describing: (status.readyCount))))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -539,7 +541,7 @@ private struct WorkflowActionChoice: Identifiable {
                 }
             }.padding(.horizontal, 6)
             if let message = status.message {
-                Text(message).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 6)
+                Text(L10n.text(message)).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 6)
             }
             Form {
                 Section {
@@ -598,5 +600,5 @@ private struct WorkflowActionChoice: Identifiable {
     @ObservedObject var store:OperationStore
     @ObservedObject var input:InputController
     init(store:OperationStore){self.store=store;self.input=store.input}
-    var body:some View {InputEnhancementSettingsView(configuration:Binding(get:{store.settings.inputEnhancements},set:{next in store.update{$0.inputEnhancements=next}}),actions:store.actionChoices.map{InputActionChoice(id:$0.id,title:$0.title)},status:input.enhancementStatus,devices:input.touchDevices)}
+    var body:some View {InputEnhancementSettingsView(configuration:Binding(get:{store.settings.inputEnhancements},set:{next in store.update{$0.inputEnhancements=next}}),cloudSync:store.inputCloudSync,actions:store.actionChoices.map{InputActionChoice(id:$0.id,title:$0.title)},status:input.enhancementStatus,devices:input.touchDevices)}
 }

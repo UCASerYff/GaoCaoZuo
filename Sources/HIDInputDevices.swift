@@ -11,10 +11,8 @@ struct HIDDeviceProfile:Codable,Equatable,Identifiable {
     var id=UUID();var name="设备配置";var deviceID="";var enabled=false
     var buttons:[HIDButtonMapping]=[]
     var trackingSpeed:Double=1;var trackingAcceleration:Double=0
-    // These requested values are retained for migration; no undocumented/global setting is written.
-    // This app has not implemented/verified a per-event-service tracking backend.
-    // Public HID service properties exist; device/service identities and successful
-    // per-service readback must be proved before applying these migration values.
+    // Applied only through a uniquely bound IOHID service with readable real
+    // originals, durable backup, exact numeric readback, and owned-value restore.
     var requestsTrackingAdjustment=false
 }
 struct HIDDeviceDescriptor:Identifiable,Equatable {
@@ -28,6 +26,7 @@ struct HIDDeviceDescriptor:Identifiable,Equatable {
     var hasPressureElement=false
     var interfacePath:String = ""
     var bindingScope:String = "当前接口连接；断接或系统重启后须重新绑定"
+    var eventServiceRegistryIDs:[UInt64]=[]
     var isTrackpad:Bool {usagePairs.contains("13:5")}
 }
 struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;var generation:Int = 0}
@@ -37,16 +36,18 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;
     @Published private(set) var status="尚未监听设备"
     @Published private(set) var lastButton:String=""
     var onButton:((HIDButtonObservation)->Void)?
+    var onDevicesChanged:(()->Void)?
     private var manager:IOHIDManager?
     private var identifiers:[UInt64:String]=[:]
     private var pressed:Set<String>=[]
-    private static let bootSession:String = {
+    static let verifiedBootSession:String? = {
         var size=0
-        guard sysctlbyname("kern.bootsessionuuid",nil,&size,nil,0)==0,size>1,size<1024 else {return UUID().uuidString}
+        guard sysctlbyname("kern.bootsessionuuid",nil,&size,nil,0)==0,size>1,size<1024 else {return nil}
         var bytes=[CChar](repeating:0,count:size)
-        guard sysctlbyname("kern.bootsessionuuid",&bytes,&size,nil,0)==0 else{return UUID().uuidString}
+        guard sysctlbyname("kern.bootsessionuuid",&bytes,&size,nil,0)==0 else{return nil}
         return String(cString:bytes)
     }()
+    private static let bootSession=verifiedBootSession ?? UUID().uuidString
     func isCurrent(_ observation:HIDButtonObservation)->Bool {
         observation.generation==connectionGeneration && devices.contains{$0.id==observation.deviceID}
     }
@@ -83,7 +84,7 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;
             return
         }
         let result=IOHIDManagerOpen(manager,IOOptionBits(kIOHIDOptionsTypeNone))
-        guard result==kIOReturnSuccess else{status="无法打开鼠标HID输入（系统错误\(result)）；请检查输入监控权限。";stop(keepStatus:true);return}
+        guard result==kIOReturnSuccess else{status=L10n.format("无法打开鼠标HID输入（系统错误%@）；请检查输入监控权限。", String(describing: (result)));stop(keepStatus:true);return}
         if let devices=IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> {for device in devices {add(device)}}
         status="HID监听已开启；只记录鼠标按钮，保留系统原输入。"
     }
@@ -96,6 +97,7 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;
             IOHIDManagerClose(manager,IOOptionBits(kIOHIDOptionsTypeNone))
         }
         manager=nil;identifiers.removeAll();pressed.removeAll();devices=[];connectionGeneration += 1
+        onDevicesChanged?()
         if !keepStatus {status="设备监听已停止"}
     }
     private static let matching:[[String:Int]] = [[kIOHIDDeviceUsagePageKey:1,kIOHIDDeviceUsageKey:2],[kIOHIDDeviceUsagePageKey:1,kIOHIDDeviceUsageKey:1],[kIOHIDDeviceUsagePageKey:13,kIOHIDDeviceUsageKey:5]]
@@ -124,12 +126,14 @@ struct HIDButtonObservation {let deviceID:String;let usage:Int;let pressed:Bool;
         if !devices.contains(where:{$0.id==id}) {devices.append(.init(id:id,name:name,vendor:vendor,product:product,location:location,buttonUsages:usages,
             transport:transport,isBuiltIn:number(kIOHIDBuiltInKey) != 0,registryID:registry,usagePairs:usagePairs,
             hasWheelElement:elements.contains{IOHIDElementGetUsagePage($0)==1 && IOHIDElementGetUsage($0)==0x38},
-            hasPressureElement:elements.contains{IOHIDElementGetUsagePage($0)==13 && IOHIDElementGetUsage($0)==0x30},interfacePath:interfacePath))
-            connectionGeneration += 1}
+            hasPressureElement:elements.contains{IOHIDElementGetUsagePage($0)==13 && IOHIDElementGetUsage($0)==0x30},interfacePath:interfacePath,
+            eventServiceRegistryIDs:HIDEventOwnership.relatedEventServiceIDs(deviceRegistryID:registry)))
+            connectionGeneration += 1;onDevicesChanged?()}
     }
     private func remove(_ device:IOHIDDevice) {
         guard let registry=registryID(device),let id=identifiers.removeValue(forKey:registry) else{return}
         devices.removeAll{$0.id==id};connectionGeneration += 1;pressed=pressed.filter{!$0.hasPrefix(id+"|")}
+        onDevicesChanged?()
     }
     private func receive(_ value:IOHIDValue) {
         let element=IOHIDValueGetElement(value)

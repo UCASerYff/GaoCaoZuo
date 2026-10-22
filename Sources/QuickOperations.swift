@@ -26,7 +26,7 @@ struct QueuedQuickOperation {
         guard dataHealthy else {notify(data.failure ?? "资料暂时不可写入",failed:true);return}
         guard quickJobs.count < 32 else {notify("等待任务已满，请稍后再试",failed:true);return}
         quickJobs.append(.init(title:title,run:run));queuedCount=quickJobs.count
-        if busy || archive.isRunning {message="任务已加入队列，等待 \(queuedCount) 项";showFeedback?()}
+        if busy || archive.isRunning {message=L10n.format("任务已加入队列，等待 %@ 项", String(describing: (queuedCount)));showFeedback?()}
         drainQuickJobs()
     }
     func drainQuickJobs() {
@@ -69,7 +69,7 @@ struct QueuedQuickOperation {
             };return true
         }
         if id.hasPrefix("template."),let uuid=UUID(uuidString:String(id.dropFirst(9))),let template=settings.templates.first(where:{$0.id == uuid}) {
-            enqueueQuick("从\(template.name)新建") {
+            enqueueQuick(L10n.format("从%@新建", String(describing: (template.name)))) {
                 let receipt=try await Task.detached{try QuickFileActions.createTemplate(in:directory,filename:template.filename,content:template.content)}.value
                 try self.record([receipt]);self.completeNewFile(receipt.destination);return [receipt.destination]
             };return true
@@ -98,7 +98,7 @@ struct QueuedQuickOperation {
             activateForDialog?()
             let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;panel.canCreateDirectories=true
             panel.directoryURL=directory;panel.prompt=id == "files.move" ? "移动到这里" : "复制到这里"
-            panel.message="选择目标目录，选定后立即执行"
+            panel.message=L10n.text("选择目标目录，选定后立即执行")
             if panel.runModal() == .OK,let url=panel.url {transfer(files,to:url,move:id == "files.move")}
             return true
         }
@@ -142,7 +142,7 @@ struct QueuedQuickOperation {
         var batch=try QuickFileActions.makeExtractionBatch(archives:files)
         var recorded=Set<URL>(), password:String?
         while !batch.isComplete {
-            guard !quickCancellationRequested else{throw DataFailure.message("已取消解压；已完成的 \(recorded.count) 项保留。") }
+            guard !quickCancellationRequested else{throw DataFailure.message(L10n.format("已取消解压；已完成的 %@ 项保留。", String(describing: (recorded.count)))) }
             batch=await QuickFileActions.continueExtraction(batch,service:archive,password:password,stopAfterFirstSuccess:true);password=nil
             let newRecords=batch.items.compactMap(\.receipt).filter{!recorded.contains($0.destination)}
             if !newRecords.isEmpty {try record(newRecords);recorded.formUnion(newRecords.map(\.destination));lastOutputs=Array(recorded)}
@@ -155,11 +155,11 @@ struct QueuedQuickOperation {
                 let answer=await requestArchivePassword?(item.archive,incorrect)
                 awaitingArchivePassword=false
                 guard !quickCancellationRequested,let provided=answer,!provided.isEmpty else {
-                    throw DataFailure.message("已取消解压；已完成的 \(recorded.count) 项保留。")
+                    throw DataFailure.message(L10n.format("已取消解压；已完成的 %@ 项保留。", String(describing: (recorded.count))))
                 }
                 password=provided
-            case .failed(let reason):throw DataFailure.message(reason + (recorded.isEmpty ? "" : "\n已完成的 \(recorded.count) 项保留。"))
-            case .cancelled:throw DataFailure.message("已取消解压；已完成的 \(recorded.count) 项保留。")
+            case .failed(let reason):throw DataFailure.message(reason + (recorded.isEmpty ? "" : L10n.format("\n已完成的 %@ 项保留。", String(describing: (recorded.count)))))
+            case .cancelled:throw DataFailure.message(L10n.format("已取消解压；已完成的 %@ 项保留。", String(describing: (recorded.count))))
             case .pending:continue
             case .completed:throw DataFailure.message("解压任务状态异常。")
             }

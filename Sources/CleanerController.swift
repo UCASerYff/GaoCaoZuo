@@ -19,7 +19,7 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
     var needsInputEvents: Bool { state == .verifyingRescue || state == .active }
     private var overlays: [NSWindow] = []
     private var timer: Timer?
-    private var watchdog: DispatchSourceTimer?
+    private lazy var watchdogSession = CleanerWatchdogSession(safety: inputSafety)
     private var observers: [NSObjectProtocol] = []
     private var verifiedUntil: TimeInterval = 0
     private var verificationDeadline: TimeInterval = 0
@@ -32,7 +32,7 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
     public func startCleaning(durationSeconds: Int = 180) {
         if let reason=canBegin?() {errorMessage=reason;return}
         desiredDuration = min(180, max(30, durationSeconds))
-        guard state != .active else { return }
+        guard state != .active, !watchdogSession.isRunning else { return }
         guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else {
             errorMessage = "清洁输入拦截需要辅助功能权限，且不能在安全输入期间开启。"; return
         }
@@ -41,12 +41,25 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
             rescueVerified = false
             errorMessage = "请在本页按 ⌘⌥Q 验证退出键；只有活动事件通道实际收到该组合后才能开始。"; return
         }
-        guard inputSafety.begin(now: now, duration: TimeInterval(desiredDuration)) else {
+        let started = now
+        deadline = started + TimeInterval(desiredDuration); remainingSeconds = desiredDuration
+        errorMessage = nil
+        guard watchdogSession.start(now: started, duration: TimeInterval(desiredDuration), canPresent: { [weak self] in
+            guard let self else { return false }
+            return self.state == .verifyingRescue && self.rescueVerified && self.now < self.verifiedUntil
+                && AXIsProcessTrusted() && !IsSecureEventInputEnabled() && self.canBegin?() == nil
+        }, present: { [weak self] in
+            guard let self else { return }
+            self.state = .active; self.rescueVerified = false
+            self.createOverlays()
+        }, failed: { [weak self] in
+            guard let self else { return }
+            let wasActive = self.state == .active
+            self.emergencyRelease()
+            self.errorMessage = wasActive ? "权限或事件通道失效，已释放清洁拦截。" : "全局事件通道不可用，未进入清洁模式。"
+        }) else {
             emergencyRelease(); errorMessage = "全局事件通道不可用，未进入清洁模式。"; return
         }
-        deadline = now + TimeInterval(desiredDuration); remainingSeconds = desiredDuration
-        state = .active; rescueVerified = false; errorMessage = nil
-        createOverlays(); startWatchdog()
     }
     public func beginRescueVerification() {
         if let reason=canBegin?() {errorMessage=reason;return}
@@ -118,8 +131,7 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
     }
     public func stopCleaning() {
         guard state != .idle else { return }
-        state = .exiting; inputSafety.finish(); timer?.invalidate(); timer = nil
-        watchdog?.cancel(); watchdog = nil
+        state = .exiting; watchdogSession.cancel(); timer?.invalidate(); timer = nil
         for window in overlays { window.orderOut(nil) }; overlays = []
         for token in observers { NSWorkspace.shared.notificationCenter.removeObserver(token); NotificationCenter.default.removeObserver(token) }; observers = []
         escapeStart = nil; escHoldProgress = 0; rescueVerified = false; state = .idle
@@ -130,11 +142,12 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
         rescueVerified = false
         verifiedUntil = 0
         if state == .active {
+            let invalidatedSession = watchdogSession.currentToken
             inputSafety.finish()
             // InputController may be in the middle of rebuilding its sole tap.
             // Release overlays after that stack unwinds, without recursive rebuilds.
             DispatchQueue.main.async { [weak self] in
-                guard self?.state == .active else { return }
+                guard self?.state == .active, self?.watchdogSession.currentToken == invalidatedSession else { return }
                 self?.emergencyRelease()
                 self?.errorMessage = "输入通道已重建，请重新验证退出键。"
             }
@@ -149,18 +162,6 @@ public enum CleanSessionState: String, Codable { case idle, verifyingRescue, act
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.emergencyRelease() }
         })
-    }
-    private func startWatchdog() {
-        watchdog?.cancel()
-        let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInteractive))
-        let safety = inputSafety
-        source.schedule(deadline: .now() + 0.2, repeating: 0.2)
-        source.setEventHandler { [weak self] in
-            if !safety.permitsInterception(now: ProcessInfo.processInfo.systemUptime) {
-                DispatchQueue.main.async { self?.emergencyRelease() }
-            }
-        }
-        watchdog = source; source.resume()
     }
     private func createOverlays() {
         for screen in NSScreen.screens {

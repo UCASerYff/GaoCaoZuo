@@ -50,10 +50,19 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private(set) var observedPressureEvents=0
     private let touch = RawTouchInput()
     private let hid = HIDInputDevices()
+    private let trackingServices = HIDTrackingServiceBackend()
+    private var trackingTuning: HIDTrackingTuning?
+    private var trackingTimer: Timer?
+    private let trackingDataDirectory: URL
+    private var checkedTrackingRecovery = false
+    private var trackingRefusalStatus: String?
     private var touchDrag:(device:String,pid:pid_t,origin:CGPoint,pointer:CGPoint,ruleID:UUID)?
     private var lastTouchTap:(device:String,fingers:Int,time:Double)?
     private var touchSession:[String:TouchSequence] = [:]
-    init(pressureBackend:InputPressureMonitorBackend?=nil) {self.pressureBackend=pressureBackend ?? .system}
+    init(pressureBackend:InputPressureMonitorBackend?=nil,trackingDataDirectory:URL?=nil) {
+        self.pressureBackend=pressureBackend ?? .system
+        self.trackingDataDirectory=trackingDataDirectory ?? HIDTrackingServiceBackend.defaultDataDirectory
+    }
     var needsActiveTap:Bool {
         configuration.enabled && (configuration.rules.contains { $0.enabled && ($0.consume || $0.trigger == .keyReplacement) } || configuration.scrollProfiles.contains(where: \.enabled))
     }
@@ -62,6 +71,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         guard configuration.enabled else{return L10n.text("高级输入未启用")}
         var details=["高级输入已配置：\(configuration.rules.filter(\.enabled).count)条规则"]
         if configuration.hidProfiles.contains(where: \.enabled) {details.append(hid.status)}
+        if let trackingTuning {details.append(trackingTuning.status)}
+        if let trackingRefusalStatus {details.append(trackingRefusalStatus)}
         if configuration.experimentalRawTouch {details.append(touch.status+"；实际触点帧：\(touch.observedFrames)")}
         if configuration.rules.contains(where:{$0.enabled && $0.trigger == .pressure}) {details.append("压力监听：全局\(pressureMonitor == nil ? "未安装":"已安装")、局部\(localPressureMonitor == nil ? "未安装":"已安装")；实际压力事件：\(observedPressureEvents)；需要在目标应用中验收")}
         return details.joined(separator:"\n")
@@ -70,11 +81,18 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
 
     func configure(_ configuration:InputEnhancementConfiguration,excludedApps:Set<String>,handler:@escaping(String)->Void,report reportCallback:@escaping(String?)->Void) {
         stop();self.invocationHandler=nil;self.configuration=configuration;self.excludedApps=excludedApps;self.handler=handler;self.report=reportCallback
-        guard configuration.enabled else {return}
+        recoverTrackingAtStartup()
+        guard configuration.enabled else {trackingTuning?.reconcile([]);return}
         do {try EnhancedInputValidation.validate(configuration)} catch {self.configuration.enabled=false;report?(error.localizedDescription);return}
+        for index in self.configuration.rules.indices where configuration.cloudPendingScriptRules.contains(self.configuration.rules[index].id) {self.configuration.rules[index].enabled=false}
+        for index in self.configuration.hidProfiles.indices {
+            if configuration.cloudPendingHIDProfiles.contains(self.configuration.hidProfiles[index].id) {self.configuration.hidProfiles[index].enabled=false}
+            for button in self.configuration.hidProfiles[index].buttons.indices where configuration.cloudPendingHIDMappings.contains(self.configuration.hidProfiles[index].buttons[button].id) {self.configuration.hidProfiles[index].buttons[button].enabled=false}
+        }
+        if !self.configuration.hidProfiles.contains(where:{$0.enabled && $0.requestsTrackingAdjustment}) {trackingTuning?.reconcile([])}
         let conflicts=EnhancedInputValidation.conflictingIDs(configuration.rules)
         if !conflicts.isEmpty {self.configuration.rules.removeAll {conflicts.contains($0.id)};report?("高级输入存在相同触发冲突，相关规则已暂停。")}
-        if configuration.scrollProfiles.contains(where:{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}) {report?("逐个物理鼠标滚轮规则尚不可用：公开 CGEvent 不提供可靠设备标识。该配置不会退化为修改所有鼠标。")}
+        if configuration.scrollProfiles.contains(where:{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}),!HIDEventOwnership.available {report?("当前系统无法识别逐设备滚动来源；相关配置保留，不会改为作用于全部设备。")}
         let pending=self.configuration.rules.indices.filter {self.configuration.rules[$0].enabled && EnhancedInputValidation.migrationBlockReason(self.configuration.rules[$0]) != nil}
         for i in pending {self.configuration.rules[i].enabled=false}
         if !pending.isEmpty {report?("输入迁移仍有待复核的语义或设备，相关规则保持暂停。")}
@@ -88,7 +106,21 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         // The permission poll may call this repeatedly; device sessions must stay intact.
         guard !deviceMonitoringStarted else{return}
         deviceMonitoringStarted=true
-        if configuration.enabled,configuration.hidProfiles.contains(where: \.enabled) {hid.onButton={ [weak self] observation in self?.receiveHIDButton(observation) };hid.start()}
+        let physicalScroll=configuration.scrollProfiles.contains{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}
+        if configuration.hidProfiles.contains(where: \.enabled) || physicalScroll {
+            hid.onButton={ [weak self] observation in self?.receiveHIDButton(observation) }
+            hid.onDevicesChanged={ [weak self] in
+                guard let self else {return};self.cancelSmoothScroll()
+                if self.deviceMonitoringStarted {self.updateTrackingTuning()}
+            }
+            hid.start(recordButtons:configuration.hidProfiles.contains{$0.enabled && $0.buttons.contains(where:\.enabled)})
+            updateTrackingTuning()
+            if configuration.hidProfiles.contains(where:{$0.enabled && $0.requestsTrackingAdjustment}) {
+                trackingTimer=Timer.scheduledTimer(withTimeInterval:3,repeats:true) { [weak self] _ in
+                    MainActor.assumeIsolated {self?.updateTrackingTuning()}
+                }
+            }
+        }
         guard configuration.enabled,configuration.experimentalRawTouch,configuration.rules.contains(where:{$0.enabled && $0.trigger == .touch}) else {return}
         touch.start { [weak self] frame in self?.receiveTouch(frame) }
         if !touch.isRunning {report?(touch.status)}
@@ -96,6 +128,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     func stop() {
         lifecycleGeneration &+= 1
         deviceMonitoringStarted=false
+        trackingTimer?.invalidate();trackingTimer=nil
+        if let trackingTuning {trackingServices.refresh(hid.devices);trackingTuning.stop()}
         cancelSmoothScroll()
         finishTouchDrag();touch.stop();hid.stop();touchSession.removeAll()
         if let pressureMonitor {pressureBackend.remove(pressureMonitor)};pressureMonitor=nil
@@ -104,6 +138,35 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         for (_,value) in replacements {try? sendKey(value.0,down:false,pid:value.1)}
         replacements.removeAll();keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll();drawing=nil;corner=nil
         activeScript?.terminate();activeScript=nil;deliveryState=InputRuleDeliveryState()
+    }
+    private func makeTrackingTuning() -> HIDTrackingTuning {
+        if let trackingTuning {return trackingTuning}
+        let tuning=HIDTrackingTuning(backend:trackingServices.backend,persistence:HIDTrackingServiceBackend.persistence(in:trackingDataDirectory))
+        tuning.onStatus={ [weak self] message in self?.report?(L10n.text(message)) }
+        trackingTuning=tuning;return tuning
+    }
+    private func recoverTrackingAtStartup() {
+        guard !checkedTrackingRecovery else{return};checkedTrackingRecovery=true
+        guard FileManager.default.fileExists(atPath:HIDTrackingServiceBackend.journalURL(in:trackingDataDirectory).path) else{return}
+        // Recovery also runs when advanced input is disabled. Discovery is
+        // passive and does not open button queues or install an event tap.
+        hid.start(recordButtons:false);trackingServices.refresh(hid.devices)
+        makeTrackingTuning().recover();hid.stop()
+    }
+    private func updateTrackingTuning() {
+        let profiles=configuration.hidProfiles.filter{$0.enabled && $0.requestsTrackingAdjustment && !configuration.cloudPendingHIDProfiles.contains($0.id)}
+        guard trackingTuning != nil || !profiles.isEmpty else{return}
+        trackingServices.refresh(hid.devices)
+        let tuning=makeTrackingTuning()
+        let missing=profiles.filter{trackingServices.bindings[$0.deviceID] == nil}
+        let requests=profiles.compactMap {profile -> HIDTrackingTuning.Request? in
+            guard let binding=trackingServices.bindings[profile.deviceID] else{return nil}
+            return .init(profileID:profile.id,binding:binding,speed:profile.trackingSpeed,acceleration:profile.trackingAcceleration)
+        }
+        tuning.reconcile(requests)
+        let refusal=missing.map{profile in L10n.text(trackingServices.refusal[profile.deviceID] ?? "调校设备未连接或需要重新绑定；未修改其他设备。")}.joined(separator:"\n")
+        let nextRefusal=refusal.isEmpty ? nil:refusal
+        if trackingRefusalStatus != nextRefusal {trackingRefusalStatus=nextRefusal;if let nextRefusal {report?(nextRefusal)}}
     }
     private func matching(_ trigger:EnhancedInputTrigger,flags:UInt64,app:String)->[EnhancedInputRule] {
         configuration.rules.filter { $0.enabled && $0.trigger == trigger && $0.modifiers & EnhancedInputValidation.modifiers == flags & EnhancedInputValidation.modifiers && ($0.appBundleID.isEmpty || $0.appBundleID == app) && !$0.excludedApps.contains(app) }.sorted { !$0.appBundleID.isEmpty && $1.appBundleID.isEmpty }
@@ -249,7 +312,9 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func transformScroll(_ event:CGEvent,pid:pid_t,app:String,flags:UInt64)->Bool {
         guard AXIsProcessTrusted(),!IsSecureEventInputEnabled() else{cancelSmoothScroll();return false}
         let precise=event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-        guard let p=configuration.scrollProfiles.first(where:{$0.enabled && $0.deviceID == (precise ? "allPrecise":"allWheel") && !$0.excludedApps.contains(app) && ($0.bypassModifiers==0 || flags & $0.bypassModifiers == 0)}) else{cancelSmoothScroll();return false}
+        let physical=configuration.scrollProfiles.contains{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}
+        let owner=physical ? HIDEventOwnership.owner(of:event,devices:hid.devices):nil
+        guard let p=HIDEventOwnership.profile(configuration.scrollProfiles,owner:owner,precise:precise,app:app,flags:flags) else {cancelSmoothScroll();return false}
         if p.smooth && !precise {
             guard let front=NSWorkspace.shared.frontmostApplication,front.processIdentifier==pid,
                   let identity=WindowProcessIdentity.capture(pid:pid,launchDate:front.launchDate) else {cancelSmoothScroll();return false}

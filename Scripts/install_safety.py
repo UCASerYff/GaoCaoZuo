@@ -277,7 +277,9 @@ def load_manifest(path):
         fail("不是搞操作的安装记录。")
     target = Path(manifest["target_app"])
     stage = Path(manifest["stage_dir"])
-    if target.name != APP_NAME or stage.parent != target.parent or stage.name != ".gaocaozuo-install-" + manifest["nonce"]:
+    # Accept legacy receipts for rollback, but all new staging is non-indexed.
+    permitted_stage_names = {".gaocaozuo-install-" + manifest["nonce"], ".gaocaozuo-install-" + manifest["nonce"] + ".noindex"}
+    if target.name != APP_NAME or stage.parent != target.parent or stage.name not in permitted_stage_names:
         fail("安装记录中的路径校验失败。")
     if Path(manifest["manifest_path"]) != path.resolve():
         fail("安装记录已移位，禁止清理未核验路径。")
@@ -411,7 +413,7 @@ def install(args):
         transaction = backup_root / ("安装-" + stamp + "-" + nonce[:8])
         transaction.mkdir(mode=0o700)
         path = transaction / "manifest.json"
-        stage = target.parent / (".gaocaozuo-install-" + nonce)
+        stage = target.parent / (".gaocaozuo-install-" + nonce + ".noindex")
         stage.mkdir(mode=0o700)
         candidate = stage / "candidate.app"
         previous = stage / "previous.app"

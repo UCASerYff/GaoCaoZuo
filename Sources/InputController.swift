@@ -207,8 +207,8 @@ final class InputController: ObservableObject {
         self.windowSnapEnabled = windowSnapEnabled
         windowInputError = nil
         var messages: [String] = []
-        if !conflicting.isEmpty { messages.append("\(conflicting.count) 条输入规则存在同一应用内的触发冲突，已暂停这些规则。") }
-        if let first = invalid.first { messages.append("\(first.triggerDescription)：\(InputRules.validationError(first) ?? "规则无效")，已暂停该规则。") }
+        if !conflicting.isEmpty { messages.append(L10n.format("%@ 条输入规则存在同一应用内的触发冲突，已暂停这些规则。", String(describing: (conflicting.count)))) }
+        if let first = invalid.first { messages.append(L10n.format("%@：%@，已暂停该规则。", String(describing: (first.triggerDescription)), String(describing: (InputRules.validationError(first) ?? "规则无效")))) }
         if (windowDragEnabled || windowSnapEnabled), windows == nil { messages.append("窗口拖动或吸附尚未连接窗口管理器，功能未启动。") }
         configurationError = messages.isEmpty ? nil : messages.joined(separator: "\n")
         lastError = configurationError

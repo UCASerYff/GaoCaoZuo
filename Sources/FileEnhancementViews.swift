@@ -27,12 +27,12 @@ extension FileEnhancementController {
                 let all=id.hasSuffix("All"),hide=id=="file.hide" || id=="file.hideAll"
                 let targets=all ? try EnhancedFileTools.children(directory) : files
                 guard !targets.isEmpty else{throw FileToolsError.invalid("没有需要处理的项目。")}
-                try changeMetadata(targets,kind:"hidden",value:hide ? 1 : 0);store.notify("已修改 \(targets.count) 项的隐藏属性")
+                try changeMetadata(targets,kind:"hidden",value:hide ? 1 : 0);store.notify(L10n.format("已修改 %@ 项的隐藏属性", String(describing: (targets.count))))
             case "file.extension.hide","file.extension.show": try changeMetadata(files,kind:"extension",value:id.hasSuffix("hide") ? 1 : 0);store.notify("已更新扩展名显示属性")
             case "file.write": try changeMetadata(files,kind:"write",value:0);store.notify("已授予所有者写权限")
             case "file.metadata.undo": try undoMetadata();store.notify("已恢复上次文件属性")
-            case "file.cut":try beginCut(files);store.notify("已剪切 \(files.count) 项，前往目标目录后选择“粘贴剪切的文件”")
-            case "file.paste":let records=try pasteCut(to:directory);try store.record(records);store.notify("已移动 \(records.count) 项",outputs:records.map(\.destination))
+            case "file.cut":try beginCut(files);store.notify(L10n.format("已剪切 %@ 项，前往目标目录后选择“粘贴剪切的文件”", String(describing: (files.count))))
+            case "file.paste":let records=try pasteCut(to:directory);try store.record(records);store.notify(L10n.format("已移动 %@ 项", String(describing: (records.count))),outputs:records.map(\.destination))
             case "file.folderNames":store.work("按文件名建目录"){try EnhancedFileTools.foldersUsingNames(files)}
             case "file.delete":store.work("彻底删除"){try EnhancedFileTools.permanentlyDelete(files,confirmation:"彻底删除");return []}
             case "file.alias":let desktop=FileManager.default.urls(for:.desktopDirectory,in:.userDomainMask).first!;store.work("创建桌面替身"){try EnhancedFileTools.aliases(files,to:desktop)}
@@ -40,8 +40,8 @@ extension FileEnhancementController {
             case "file.path.custom":let prefix=settings.customPathPrefix,sources=files.isEmpty ? [directory] : files;store.clipboard.copyText(sources.map{prefix+$0.path}.joined(separator:"\n"));store.notify("已复制自定义前缀路径")
             case "file.icon":
                 let p=NSOpenPanel();p.allowedContentTypes=[.image];p.message=L10n.text("选择用作图标的图片")
-                if p.runModal() == .OK,let url=p.url,let image=NSImage(contentsOf:url) {for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(image,forFile:file.path,options:[]) else{throw FileToolsError.invalid("无法设置图标：\(file.path)")}};store.notify("已设置图标")}
-            case "file.icon.clear":for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(nil,forFile:file.path,options:[]) else{throw FileToolsError.invalid("无法清除图标：\(file.path)")}};store.notify("已恢复默认图标")
+                if p.runModal() == .OK,let url=p.url,let image=NSImage(contentsOf:url) {for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(image,forFile:file.path,options:[]) else{throw FileToolsError.invalid(L10n.format("无法设置图标：%@", String(describing: (file.path))))}};store.notify("已设置图标")}
+            case "file.icon.clear":for file in files {_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(nil,forFile:file.path,options:[]) else{throw FileToolsError.invalid(L10n.format("无法清除图标：%@", String(describing: (file.path))))}};store.notify("已恢复默认图标")
             case "file.wallpaper":guard let first=files.first else{throw FileToolsError.invalid("请选择图片。")};_ = try FileEnhancementImages.source(first);guard let screen=NSScreen.main else{throw FileToolsError.invalid("屏幕不可用。")};try NSWorkspace.shared.setDesktopImageURL(first,for:screen,options:[:]);store.notify("已设置桌面墙纸")
             case "file.airdrop","file.mail":
                 let name:NSSharingService.Name=id=="file.airdrop" ? .sendViaAirDrop : .composeEmail
@@ -81,7 +81,7 @@ extension FileEnhancementController {
         guard app.isEnabled else {throw FileToolsError.invalid("此应用条目已停用，请先在文件设置复核启用。")}
         let saved=URL(fileURLWithPath:app.path)
         let url=(Bundle(url:saved)?.bundleIdentifier==app.bundleID ? saved : nil) ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier:app.bundleID)
-        guard let url else{throw FileToolsError.invalid("未找到应用：\(app.name)")}
+        guard let url else{throw FileToolsError.invalid(L10n.format("未找到应用：%@", String(describing: (app.name))))}
         let newWindow=app.newWindow ?? (FileAppAdapter.terminalIDs.contains(app.bundleID) && settings.terminalNewWindow)
         let disposition:FileAppAdapter.Disposition = newWindow ? .newWindow : .reuseWindow
         try FileAppAdapter.open(files:files,bundleID:app.bundleID,appURL:url,disposition:disposition) { [weak self] failure in
@@ -118,11 +118,11 @@ extension FileEnhancementController {
                 let client=GaoActionClient(dataDirectory:store.data.directory)
                 do {
                     _ = try await client.sendRequest(action:action,targetBundleID:target,parameters:parameters,inputFiles:inputs,references:references)
-                    store.notify("已递交 \(action)，等待提供方确认与实际结果。")
+                    store.notify(L10n.format("已递交 %@，等待提供方确认与实际结果。", String(describing: (action))))
                 } catch GaoActionError.providerNotReady(let reason) {
                     store.activateForDialog?()
-                    let alert=NSAlert();alert.messageText="提供方动作尚不可用";alert.informativeText=reason+"\n本次动作未执行。可导出仅含本次所选副本/引用的私有交接包；交接包有效期为120秒，重新发送时需重新生成。"
-                    alert.addButton(withTitle:"返回");alert.addButton(withTitle:"导出私有交接包")
+                    let alert=NSAlert();alert.messageText=L10n.text("提供方动作尚不可用");alert.informativeText=L10n.text(reason)+"\n"+L10n.text("本次动作未执行。可导出仅含本次所选副本/引用的私有交接包；交接包有效期为120秒，重新发送时需重新生成。")
+                    alert.addButton(withTitle:L10n.text("返回"));alert.addButton(withTitle:L10n.text("导出私有交接包"))
                     if alert.runModal() == .alertSecondButtonReturn {
                         let package=try await client.exportRequest(action:action,targetBundleID:target,parameters:parameters,inputFiles:inputs,references:references)
                         NSWorkspace.shared.activateFileViewerSelecting([package]);store.notify("交接包已保存在本App私有资料目录；动作尚未执行。")
@@ -166,7 +166,7 @@ extension FileEnhancementController {
                             Spacer();Text(template.filename).foregroundStyle(.secondary)
                             Button("移除"){change{$0.templates.removeAll{$0.id==template.id}}}
                         }
-                        if let reason=template.unavailableReason {Text(reason).font(.caption).foregroundStyle(.secondary)}
+                        if let reason=template.unavailableReason {Text(L10n.text(reason)).font(.caption).foregroundStyle(.secondary)}
                     }
                 }
                 Button("导入模板…"){let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=true;if panel.runModal() == .OK,let url=panel.url{do{try controller.importTemplate(url)}catch{message=error.localizedDescription}}}
@@ -180,8 +180,8 @@ extension FileEnhancementController {
                 Button("恢复上次解散文件夹"){do{try controller.undoDissolve();message="已恢复"}catch{message=error.localizedDescription}}
                 Text("解散时保留隐藏的空目录外壳供恢复；不清理用户文件。永久删除不进入恢复记录。").font(.caption).foregroundStyle(.secondary)
             }
-            if !message.isEmpty{Text(message).foregroundStyle(.orange).textSelection(.enabled)}
-            if let error=controller.error{Text(error).foregroundStyle(.red)}
+            if !message.isEmpty{Text(L10n.text(message)).foregroundStyle(.orange).textSelection(.enabled)}
+            if let error=controller.error{Text(L10n.text(error)).foregroundStyle(.red)}
         }.formStyle(.grouped).disabled(!controller.healthy)
     }
 }
@@ -203,15 +203,15 @@ extension FileEnhancementController {
     var body:some View {
         VStack(alignment:.leading,spacing:14){
             if let request=controller.request {
-                Text(FileEnhancements.actions.first(where:{$0.id==request.action})?.title ?? "文件增强").font(.title2.bold())
-                Text("\(request.files.count) 个项目").foregroundStyle(.secondary)
+                Text(L10n.text(FileEnhancements.actions.first(where:{$0.id==request.action})?.title ?? "文件增强")).font(.title2.bold())
+                Text(L10n.format("%@ 个项目", String(describing: (request.files.count)))).foregroundStyle(.secondary)
                 ScrollView{Text(request.files.map(\.lastPathComponent).joined(separator:"\n")).frame(maxWidth:.infinity,alignment:.leading)}.frame(maxHeight:100)
                 switch request.action {
                 case "file.permissions":TextField("三位八进制权限，例如 644 或 755",text:$text);Text("仅修改选中项，不递归。属性可从文件增强设置恢复。").font(.caption)
                 case "file.delete":Text("永久删除无法撤销。请核对上方项目并输入：彻底删除").foregroundStyle(.red);TextField("确认文字",text:$text)
                 case "file.dissolve":Text("将文件夹内容移到上一级。重名即停止；目录外壳作为隐藏恢复记录保留。")
                 case "file.new.office":Picker("文档格式",selection:$format){ForEach(FileEnhancements.documentFormats,id:\.self){Text($0.uppercased()).tag($0)}}
-                case let action where action.hasPrefix("file.new."):Text("将创建有效的 \(String(action.dropFirst(9)).uppercased()) 空白文档；重名自动编号。")
+                case let action where action.hasPrefix("file.new."):Text(L10n.format("将创建有效的 %@ 空白文档；重名自动编号。", String(describing: (String(action.dropFirst(9)).uppercased()))))
                 case "file.fixNames":
                     Picker("错误名称的字节编码",selection:$nameByteEncoding){Text("Latin-1").tag("Latin1");Text("Windows-1252").tag("Windows1252")}
                     Picker("原名称编码",selection:$nameTextEncoding){Text("UTF-8").tag("UTF-8");Text("GB18030 / GBK").tag("GB18030");Text("Shift-JIS（日文）").tag("Shift-JIS")}
@@ -242,7 +242,7 @@ extension FileEnhancementController {
                 case "file.new.office":let receipt=try controller.createOffice(format,in:directory);try store.record([receipt]);store.completeNewFile(receipt.destination);store.notify("已创建文档",outputs:[receipt.destination])
                 case let action where action.hasPrefix("file.new."):let receipt=try controller.createOffice(String(action.dropFirst(9)),in:directory);try store.record([receipt]);store.completeNewFile(receipt.destination);store.notify("已创建文档",outputs:[receipt.destination])
                 case "file.fixNames":let records=try FileTools.applyRenames(renamePlans);try store.record(records);store.notify("已修复文件名称",outputs:records.map(\.destination))
-                case "file.icon.builtin":let image=try FileEnhancementImages.builtinIcon(builtinIcon);for file in files{_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(image,forFile:file.path,options:[]) else{throw FileToolsError.invalid("未能设置图标：\(file.lastPathComponent)")}};store.notify("已设置内置图标")
+                case "file.icon.builtin":let image=try FileEnhancementImages.builtinIcon(builtinIcon);for file in files{_ = try EnhancedFileTools.checked(file);guard NSWorkspace.shared.setIcon(image,forFile:file.path,options:[]) else{throw FileToolsError.invalid(L10n.format("未能设置图标：%@", String(describing: (file.lastPathComponent))))}};store.notify("已设置内置图标")
                 case "file.template.create":guard let template=controller.settings.templates.first(where:{$0.id==templateID}) else{throw FileToolsError.invalid("请选择模板。")};let receipt=try controller.createTemplate(template,in:directory);try store.record([receipt]);store.completeNewFile(receipt.destination);store.notify("已按模板创建",outputs:[receipt.destination])
                 default:throw FileToolsError.invalid("未识别的操作。")
                 }

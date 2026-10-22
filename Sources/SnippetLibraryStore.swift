@@ -354,7 +354,7 @@ public struct SnippetImportPreview {
                 case .keepBoth:
                     copy.id = UUID(); var suffix = 1
                     while candidate.snippets.contains(where: { $0.name == copy.name }) {
-                        copy.name = source.name + (suffix == 1 ? " (恢复副本)" : " (恢复副本 \(suffix))"); suffix += 1
+                        copy.name = source.name + (suffix == 1 ? " (恢复副本)" : L10n.format(" (恢复副本 %@)", String(describing: (suffix)))); suffix += 1
                     }
                 }
             }

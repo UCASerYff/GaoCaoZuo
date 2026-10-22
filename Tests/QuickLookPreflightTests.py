@@ -134,7 +134,8 @@ with tempfile.TemporaryDirectory(prefix='gaocaozuo-ql-preflight-') as temporary:
     (root / 'truncated-number.7z').write_bytes(container(b'\x01\x05\xff'))
     main = root / 'main.swift'; main.write_text(HARNESS)
     binary = root / 'preflight-tests'
-    subprocess.run(['xcrun', 'swiftc', '-swift-version', '6', '-O', '-parse-as-library',
+    subprocess.run(['xcrun', 'swiftc', '-swift-version', '5', '-O', '-parse-as-library',
                     '-module-cache-path', str(root / 'module-cache'), str(SWIFT),
+                    str(ROOT / 'Shared/GaoLocalization.swift'),
                     str(main), '-o', str(binary)], check=True, timeout=90)
     subprocess.run([str(binary), str(root)], check=True, timeout=20)

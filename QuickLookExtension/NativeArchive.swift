@@ -28,12 +28,13 @@ enum NativeArchive {
         private let lock = NSLock()
         private var cancelled = false
         private let deadline: Double
-        init(seconds: Double = 30) { deadline = ProcessInfo.processInfo.systemUptime + max(0, seconds) }
+        private let originalMayChange:Bool
+        init(seconds: Double = 30,originalMayChange:Bool=false) { deadline = ProcessInfo.processInfo.systemUptime + max(0, seconds);self.originalMayChange=originalMayChange }
         func cancel() { lock.lock(); cancelled = true; lock.unlock() }
         func check() throws {
             lock.lock(); let stopped = cancelled; lock.unlock()
-            if stopped || Task.isCancelled { throw Failure(message: "已取消，原压缩包未改变。") }
-            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure(message: "原生压缩操作超过时间预算，原压缩包未改变。") }
+            if stopped || Task.isCancelled { throw Failure(message: originalMayChange ? "操作已停止；请重新打开预览核对保存状态，安全备份保留。":"已取消，原压缩包未改变。") }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw Failure(message: originalMayChange ? "操作已停止；请重新打开预览核对保存状态，安全备份保留。":"原生压缩操作超过时间预算，原压缩包未改变。") }
         }
     }
     enum Kind: String { case file, directory, unsupported }
@@ -61,7 +62,7 @@ enum NativeArchive {
         var editCopyUnavailableReason: String? {
             guard !canEditCopy else { return nil }
             if ["zip", "7z"].contains(format), items.contains(where: \.encrypted) {
-                return "加密 ZIP/7Z 的带密码编辑请用主应用；此预览不会将加密成员改存为未加密内容。"
+                return "加密 ZIP/7Z 可输入密码读取目录，再保存到原压缩包；编辑副本入口仅支持未加密包。"
             }
             if !["zip", "7z"].contains(format) { return "此格式可在主应用中提取后新建 ZIP/7Z；此预览不提供重新保存。" }
             return "原生编辑副本仅支持未加密且不含链接的 ZIP/7Z；原压缩包保留。"
@@ -257,6 +258,22 @@ enum NativeArchive {
 
     static func inspect(_ url: URL, budget: Budget = Budget(), cancellation: Cancellation? = nil) throws -> Document {
         return try inspect(url, bound: nil, budget: budget, cancellation: cancellation ?? Cancellation(seconds: budget.seconds))
+    }
+    static func originalDigest(_ url:URL,cancellation:Cancellation)throws->String {
+        let input=try Input(url:url,bound:nil,budget:Budget(),cancellation:cancellation)
+        let value=try fileDigest(input.fd,cancellation:cancellation);try input.verify(url);return value
+    }
+    static func documentFromVerifiedManifest(_ url:URL,items:[Item],digest:String,cancellation:Cancellation)throws->Document {
+        let budget=Budget(),input=try Input(url:url,bound:nil,budget:Budget(),cancellation:cancellation)
+        var accounting=PathBudget(budget),total:Int64=0
+        for item in items {
+            try accounting.accept(item.path)
+            guard item.kind != .unsupported,item.size>=0,item.size<=budget.maxMemberBytes,item.size<=budget.maxExpandedBytes-total else {throw Failure(message:"预览编辑超过保护预算，或包含不支持的链接；原压缩包保留。")}
+            total += item.size
+        }
+        guard try fileDigest(input.fd,cancellation:cancellation)==digest,["zip","7z"].contains(url.pathExtension.lowercased()) else {throw Failure(message:"压缩包在读取期间发生变化，请重新打开。")}
+        try input.verify(url)
+        return Document(url:url,identity:input.identity,digest:digest,format:url.pathExtension.lowercased(),items:items,bound:nil)
     }
     private static func inspect(_ url: URL, bound: BoundItem?, budget: Budget, cancellation stop: Cancellation) throws -> Document {
         let reader = try Reader(url: url, bound: bound, budget: budget, cancellation: stop)

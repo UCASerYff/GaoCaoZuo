@@ -27,7 +27,7 @@ struct ArchiveBrowserView: View {
             HStack {
                 Label(archiveURL.lastPathComponent, systemImage: "archivebox").font(.headline)
                 Spacer()
-                Text("\(entries.count) 项").foregroundStyle(.secondary)
+                Text(L10n.format("%@ 项", String(describing: (entries.count)))).foregroundStyle(.secondary)
                 Button("刷新", action: load).disabled(working || store.busy)
                 Button("显示压缩包") { NSWorkspace.shared.activateFileViewerSelecting([archiveURL]) }
             }.padding()
@@ -52,7 +52,7 @@ struct ArchiveBrowserView: View {
                         Button("全选") { selected = Set(entries.map(\.path)) }
                         Button("清空") { selected = [] }
                         Spacer()
-                        Text("勾选 \(selected.count) 项").font(.caption)
+                        Text(L10n.format("勾选 %@ 项", String(describing: (selected.count)))).font(.caption)
                     }.padding(10)
                 }
                 VStack {
@@ -81,7 +81,7 @@ struct ArchiveBrowserView: View {
             if working || service.isRunning {
                 HStack { if let progress = service.progress { ProgressView(value: progress) } else { ProgressView().controlSize(.small) }; Button("取消", action: service.cancel) }.padding(.horizontal).padding(.bottom, 8)
             }
-            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal).padding(.bottom, 8) }
+            if let error { Text(L10n.text(error)).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal).padding(.bottom, 8) }
             if let result { HStack { Label("已保存：" + result.lastPathComponent, systemImage: "checkmark.circle"); Spacer(); Button("显示结果") { NSWorkspace.shared.activateFileViewerSelecting([result]) } }.padding(.horizontal).padding(.bottom, 8) }
             if let backup { HStack { Text("编辑前原包已核验备份").font(.caption).foregroundStyle(.secondary); Button("显示原包备份") { NSWorkspace.shared.activateFileViewerSelecting([backup]) } }.padding(.bottom, 8) }
         }.onAppear { load() }.onDisappear { controller.clearPreviews() }
@@ -108,7 +108,7 @@ struct ArchiveBrowserView: View {
         }
     }
     private func extract(selection: [String]?) {
-        let panel = NSOpenPanel(); panel.title = "选择解压目标目录"; panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        let panel = NSOpenPanel(); panel.title = L10n.text("选择解压目标目录"); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let directory = panel.url else { return }
         run {
             let outputs = try await controller.withPassword(archive: archiveURL, store: store, preferredPassword: password) { pw in
@@ -121,13 +121,13 @@ struct ArchiveBrowserView: View {
         }
     }
     private func addFiles() {
-        let panel = NSOpenPanel(); panel.title = "选择添加到压缩包的文件"; panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
+        let panel = NSOpenPanel(); panel.title = L10n.text("选择添加到压缩包的文件"); panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         if panel.runModal() == .OK { additions = panel.urls }
     }
     private func edit(removing: [String], cleanHidden: Bool) {
-        let alert = NSAlert(); alert.messageText = "保存压缩包修改？"
-        alert.informativeText = "将添加 \(additions.count) 项、删除 \(removing.count) 项" + (cleanHidden ? "，并清理包内隐藏文件" : "") + "。完整性验证通过后保存，编辑前原包会保留在搞操作资料备份中。"
-        alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
+        let alert = NSAlert(); alert.messageText = L10n.text("保存压缩包修改？")
+        alert.informativeText = L10n.format("将添加 %@ 项、删除 %@ 项", String(describing: (additions.count)), String(describing: (removing.count))) + (cleanHidden ? L10n.text("，并清理包内隐藏文件") : "") + L10n.text("。完整性验证通过后保存，编辑前原包会保留在搞操作资料备份中。")
+        alert.addButton(withTitle: L10n.text("保存")); alert.addButton(withTitle: L10n.text("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         run {
             let changed = try await controller.withPassword(archive: archiveURL, store: store, preferredPassword: password) { pw in
@@ -162,8 +162,8 @@ struct ArchivePreferencesView: View {
     var body: some View {
         Form {
             Section("压缩") {
-                Picker("压缩等级", selection: $controller.preferences.creation.level) { ForEach(ArchiveCompressionLevel.allCases) { Text($0.title).tag($0) } }
-                Stepper("CPU 线程：\(controller.preferences.creation.threads == 0 ? "自动" : String(controller.preferences.creation.threads))", value: $controller.preferences.creation.threads, in: 0...256)
+                Picker("压缩等级", selection: $controller.preferences.creation.level) { ForEach(ArchiveCompressionLevel.allCases) { Text(L10n.text($0.title)).tag($0) } }
+                Stepper(L10n.format("CPU 线程：%@", String(describing: (controller.preferences.creation.threads == 0 ? L10n.text("自动") : String(controller.preferences.creation.threads)))), value: $controller.preferences.creation.threads, in: 0...256)
                 Toggle("7Z 加密文件名", isOn: $controller.preferences.creation.encryptFileNames)
                 Toggle("每个所选项目分别压缩", isOn: $controller.preferences.creation.separateItems)
                 Toggle("压缩包名称附加日期", isOn: $controller.preferences.creation.appendDate)
@@ -175,10 +175,10 @@ struct ArchivePreferencesView: View {
             Section("解压") {
                 Toggle("自动展开 TAR.GZ / TGZ / TAR.XZ / TAR.LZ 等外层容器", isOn: $controller.preferences.extraction.recursiveContainers)
                 Toggle("允许指向包内合法目标的链接", isOn: $controller.preferences.extraction.allowSafeLinks)
-                Stepper("展开容量预算：\(controller.preferences.extraction.maximumExpandedGiB) GiB", value: $controller.preferences.extraction.maximumExpandedGiB, in: 1...16_384)
-                Stepper("项目数预算：\(controller.preferences.extraction.maximumEntries)", value: $controller.preferences.extraction.maximumEntries, in: 1...5_000_000, step: 10_000)
-                Stepper("时间预算：\(controller.preferences.extraction.maximumMinutes) 分钟", value: $controller.preferences.extraction.maximumMinutes, in: 1...1_440, step: 10)
-                Picker("旧压缩包文件名编码", selection: $controller.preferences.extraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? "自动" : $0).tag($0) } }
+                Stepper(L10n.format("展开容量预算：%@ GiB", String(describing: (controller.preferences.extraction.maximumExpandedGiB))), value: $controller.preferences.extraction.maximumExpandedGiB, in: 1...16_384)
+                Stepper(L10n.format("项目数预算：%@", String(describing: (controller.preferences.extraction.maximumEntries))), value: $controller.preferences.extraction.maximumEntries, in: 1...5_000_000, step: 10_000)
+                Stepper(L10n.format("时间预算：%@ 分钟", String(describing: (controller.preferences.extraction.maximumMinutes))), value: $controller.preferences.extraction.maximumMinutes, in: 1...1_440, step: 10)
+                Picker("旧压缩包文件名编码", selection: $controller.preferences.extraction.filenameEncoding) { ForEach(ArchiveExtractionOptions.encodings, id: \.self) { Text($0 == "auto" ? L10n.text("自动") : $0).tag($0) } }
                 Toggle("解压完成后显示结果目录", isOn: $controller.preferences.extraction.revealResults)
                 Toggle("解压完成并核验后将原包移到废纸篓", isOn: $controller.preferences.extraction.trashOriginals)
                 Text("ZIP/7Z 分卷只支持保留原件解压；自动原件后处理尚未支持。").font(.caption).foregroundStyle(.secondary)
@@ -188,15 +188,15 @@ struct ArchivePreferencesView: View {
                 Toggle("保存正确的压缩密码到密码本", isOn: $controller.preferences.saveCompressionPasswords)
                 Toggle("保存正确的解压密码到密码本", isOn: $controller.preferences.saveExtractionPasswords)
                 Toggle("需要密码时先尝试解压密码本", isOn: $controller.preferences.tryPasswordBook)
-                Picker("双击压缩包", selection: $controller.preferences.openBehavior) { ForEach(ArchiveOpenBehavior.allCases) { Text($0.title).tag($0) } }
+                Picker("双击压缩包", selection: $controller.preferences.openBehavior) { ForEach(ArchiveOpenBehavior.allCases) { Text(L10n.text($0.title)).tag($0) } }
                 Button("将 ZIP / 7Z / RAR / TAR / TGZ 设为使用搞操作打开") {
                     do { try controller.setDefaultAssociation(extensions: ["zip", "7z", "rar", "tar", "tgz", "gz", "bz2", "xz", "lz", "ace"]); status = "已设置默认打开方式" } catch { self.error = error.localizedDescription }
                 }
                 Button("管理密码本") { controller.handle(id: "archive.passwords", files: [], store: store) }
             }
-            if let failure = controller.failure { Text(failure).foregroundStyle(.red) }
-            if let error { Text(error).foregroundStyle(.red) }
-            if !status.isEmpty { Text(status).foregroundStyle(.green) }
+            if let failure = controller.failure { Text(L10n.text(failure)).foregroundStyle(.red) }
+            if let error { Text(L10n.text(error)).foregroundStyle(.red) }
+            if !status.isEmpty { Text(L10n.text(status)).foregroundStyle(.green) }
             Button("保存设置") { do { controller.preferences.creation.ignoredPatterns = ignoreText.components(separatedBy: .newlines).filter { !$0.isEmpty }; try controller.save(); error = nil; status = "已保存" } catch { self.error = error.localizedDescription } }.buttonStyle(.borderedProminent)
         }.formStyle(.grouped).onAppear { ignoreText = controller.preferences.creation.ignoredPatterns.joined(separator: "\n") }
     }
@@ -215,7 +215,7 @@ struct ArchivePasswordBookView: View {
             Text("密码只保存在本应用的系统钥匙串中；列表只显示标签。导入、导出不会读取其他软件的钥匙串密码。").font(.callout).foregroundStyle(.secondary)
             HStack { TextField("标签", text: $label); SecureField("密码", text: $password); Picker("用途", selection: $kind) { Text("解压").tag(ArchivePasswordRecord.Kind.extraction); Text("压缩").tag(ArchivePasswordRecord.Kind.compression) }.frame(width: 150); Button("添加") { perform { try controller.addPassword(password, label: label.isEmpty ? "常用密码" : label, kind: kind); password = ""; label = "" } }.disabled(password.isEmpty) }.textFieldStyle(.roundedBorder)
             List(controller.passwords) { record in
-                HStack { Label(record.label, systemImage: "key"); Spacer(); Text(record.kind == .compression ? "压缩" : "解压").foregroundStyle(.secondary); Button("删除") { perform { try controller.deletePassword(record) } } }
+                HStack { Label(record.label, systemImage: "key"); Spacer(); Text(L10n.text(record.kind == .compression ? "压缩" : "解压")).foregroundStyle(.secondary); Button("删除") { perform { try controller.deletePassword(record) } } }
             }
             HStack {
                 Button("导入 UTF-8 / JSON 密码本…") {
@@ -223,16 +223,16 @@ struct ArchivePasswordBookView: View {
                     if panel.runModal() == .OK, let url = panel.url { perform { try controller.importPasswords(from: url); status = "导入完成" } }
                 }
                 Button("导出密码本…") {
-                    let alert = NSAlert(); alert.messageText = "导出包含明文密码"; alert.informativeText = "导出文件可被其他应用读取。请选择安全位置，使用后妥善保存或删除。"; alert.addButton(withTitle: "选择保存位置"); alert.addButton(withTitle: "取消")
+                    let alert = NSAlert(); alert.messageText = L10n.text("导出包含明文密码"); alert.informativeText = L10n.text("导出文件可被其他应用读取。请选择安全位置，使用后妥善保存或删除。"); alert.addButton(withTitle: L10n.text("选择保存位置")); alert.addButton(withTitle: L10n.text("取消"))
                     guard alert.runModal() == .alertFirstButtonReturn else { return }
                     let panel = NSSavePanel(); panel.nameFieldStringValue = "搞操作密码本.json"
                     if panel.runModal() == .OK, let url = panel.url { perform { try controller.exportPasswords(to: url); status = "密码本已导出" } }
                 }.disabled(controller.passwords.isEmpty)
-                Spacer(); Text("\(controller.passwords.count) 个密码").foregroundStyle(.secondary)
+                Spacer(); Text(L10n.format("%@ 个密码", String(describing: (controller.passwords.count)))).foregroundStyle(.secondary)
             }
-            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-            if let failure = controller.failure { Text(failure).foregroundStyle(.red) }
-            if !status.isEmpty { Text(status).foregroundStyle(.green) }
+            if let error { Text(L10n.text(error)).foregroundStyle(.red).textSelection(.enabled) }
+            if let failure = controller.failure { Text(L10n.text(failure)).foregroundStyle(.red) }
+            if !status.isEmpty { Text(L10n.text(status)).foregroundStyle(.green) }
         }.padding(20)
     }
     private func perform(_ operation: () throws -> Void) { do { try operation(); error = nil } catch { self.error = error.localizedDescription } }
