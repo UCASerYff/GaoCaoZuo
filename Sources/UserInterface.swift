@@ -188,7 +188,6 @@ struct OperationPanelView: View {
     var close: () -> Void
     @State private var query = ""
     @State private var selected = 0
-    @FocusState private var focused: Bool
     var actions: [OperationAction] {
         if query.hasPrefix(":") {
             let code=String(query.dropFirst())
@@ -210,7 +209,12 @@ struct OperationPanelView: View {
     }
     var body: some View {
         VStack(spacing:0) {
-            HStack { Image(systemName:"magnifyingglass").foregroundStyle(.secondary); TextField("搜索操作，或输入 :短语码",text:$query).textFieldStyle(.plain).font(.title3).focused($focused).onSubmit(runSelected); Text("esc").font(.caption).foregroundStyle(.secondary) }.padding(18)
+            HStack {
+                Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
+                OperationPanelSearchField(text:$query,onSubmit:runSelected,onCancel:close,onMoveSelection:moveSelection)
+                    .frame(maxWidth:.infinity)
+                Text("esc").font(.caption).foregroundStyle(.secondary)
+            }.padding(18)
             Divider()
             if !store.selection.isEmpty { HStack { Label(L10n.format("%@ 个已选项目", String(describing: (store.selection.count))),systemImage:"doc.on.doc"); Text(store.selection.first?.lastPathComponent ?? "").lineLimit(1); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(10) }
             ScrollViewReader { proxy in
@@ -230,11 +234,11 @@ struct OperationPanelView: View {
             Divider()
             HStack { Text("↑↓ 选择 · 回车执行"); Spacer(); Button("选择文件…",action:store.chooseFiles).buttonStyle(.plain); Button("打开主窗口"){close();store.showMain?()}.buttonStyle(.plain) }.font(.caption).foregroundStyle(.secondary).padding(12)
         }.frame(width:600,height:480)
-        .onAppear { selected = 0; focused = true }
+        .onAppear { selected = 0 }
         .onChange(of:query) { _,_ in selected = 0 }
         .onChange(of: actions.map(\.id)) { _, _ in selected = min(selected, max(0, actions.count - 1)) }
         .onExitCommand(perform:close)
-        .onMoveCommand { direction in if direction == .down { selected = min(selected+1,max(0,actions.count-1)) }; if direction == .up { selected = max(0,selected-1) } }
+        .onMoveCommand { direction in if direction == .down {moveSelection(1)}; if direction == .up {moveSelection(-1)} }
         .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { acceptDrop($0,store:store) }
     }
     private func run(_ id:String) {
@@ -244,6 +248,7 @@ struct OperationPanelView: View {
         close();store.prepare(id)
     }
     private func runSelected() {if actions.indices.contains(selected) {run(actions[selected].id)}}
+    private func moveSelection(_ offset:Int) {selected=min(max(0,selected+offset),max(0,actions.count-1))}
 }
 
 @MainActor func acceptDrop(_ providers: [NSItemProvider], store: OperationStore) -> Bool {

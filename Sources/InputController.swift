@@ -342,6 +342,7 @@ final class InputController: ObservableObject {
         tap = created; source = createdSource
         CleanerController.shared.inputSafety.bind(created, active:active)
         installedAuthorization=authorization;installedActiveTap=active
+        enhanced.scrollAcceptanceTapActive=active
         CFRunLoopAddSource(CFRunLoopGetMain(), createdSource, .commonModes)
         CGEvent.tapEnable(tap: created, enable: true)
         lastError = configurationError
@@ -358,6 +359,7 @@ final class InputController: ObservableObject {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         source = nil; tap = nil
         installedAuthorization=nil;installedActiveTap=false;tapModeError=nil
+        enhanced.scrollAcceptanceTapActive=false
         enhancementStatus=enhanced.capabilityStatus;touchDevices=enhanced.touchDeviceNames
     }
 

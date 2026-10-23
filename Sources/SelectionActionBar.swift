@@ -152,8 +152,11 @@ public final class SelectionActionBar: NSObject {
         case .speak:
             if speechSynthesizer.isSpeaking {
                 speechSynthesizer.stopSpeaking()
+                onStatus?("已请求停止朗读。", false)
+            } else if speechSynthesizer.startSpeaking(text) {
+                onStatus?("系统已接受朗读请求。", false)
             } else {
-                speechSynthesizer.startSpeaking(text)
+                onStatus?("系统未接受朗读请求，无法启动朗读。", true)
             }
 
         case .qrcode:

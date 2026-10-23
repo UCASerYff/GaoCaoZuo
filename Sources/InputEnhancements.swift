@@ -31,6 +31,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var drawing:(points:[CGPoint],rules:[EnhancedInputRule],pid:pid_t,flags:UInt64,button:Int)?
     private var corner:String?
     private var lastScrollFire:TimeInterval = 0
+    var scrollAcceptanceTapActive: Bool?
+    private let scrollAcceptance = ScrollAcceptanceDiagnostic.makeIfAllowed()
     private var deliveryState=InputRuleDeliveryState()
     private var smoothTimer:Timer?
     private var scrollRemaining = CGPoint.zero
@@ -310,11 +312,20 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         if let found,let r=matching(.hotCorner,flags:flags,app:app).first(where:{$0.corner==found}) {scheduleHold(r,key:"corner",pid:pid)}
     }
     private func transformScroll(_ event:CGEvent,pid:pid_t,app:String,flags:UInt64)->Bool {
+        let capture=scrollAcceptance?.begin(event:event,devices:hid.devices,profiles:configuration.scrollProfiles,
+                                            app:app,maskedFlags:flags,tapActive:scrollAcceptanceTapActive)
+        var observedOwner:String?,observedProfile:UUID?,decision="permission-or-secure-input",consumed=false
+        defer {
+            if let capture {scrollAcceptance?.end(capture,event:event,owner:observedOwner,
+                selectedProfileID:observedProfile,decision:decision,consumed:consumed)}
+        }
         guard AXIsProcessTrusted(),!IsSecureEventInputEnabled() else{cancelSmoothScroll();return false}
         let precise=event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
         let physical=configuration.scrollProfiles.contains{$0.enabled && !["allWheel","allPrecise"].contains($0.deviceID)}
         let owner=physical ? HIDEventOwnership.owner(of:event,devices:hid.devices):nil
+        observedOwner=owner;decision="no-selected-profile"
         guard let p=HIDEventOwnership.profile(configuration.scrollProfiles,owner:owner,precise:precise,app:app,flags:flags) else {cancelSmoothScroll();return false}
+        observedProfile=p.id;decision="smooth-target-not-verified"
         if p.smooth && !precise {
             guard let front=NSWorkspace.shared.frontmostApplication,front.processIdentifier==pid,
                   let identity=WindowProcessIdentity.capture(pid:pid,launchDate:front.launchDate) else {cancelSmoothScroll();return false}
@@ -328,7 +339,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             if smoothTimer==nil {
                 smoothTimer=Timer.scheduledTimer(withTimeInterval:1/60,repeats:true) { [weak self] _ in MainActor.assumeIsolated{self?.smoothTick()} }
             }
-            return true
+            decision="smooth-queued";consumed=true;return true
         }
         cancelSmoothScroll()
         // Copy-in-place transformation preserves the actual source's continuous,
@@ -336,7 +347,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         for (field,horizontal) in [(CGEventField.scrollWheelEventDeltaAxis1,false),(.scrollWheelEventDeltaAxis2,true),(.scrollWheelEventFixedPtDeltaAxis1,false),(.scrollWheelEventFixedPtDeltaAxis2,true),(.scrollWheelEventPointDeltaAxis1,false),(.scrollWheelEventPointDeltaAxis2,true)] {
             event.setDoubleValueField(field,value:ScrollTransformation.delta(event.getDoubleValueField(field),profile:p,horizontal:horizontal))
         }
-        return false
+        decision="transformed-in-place";return false
     }
     private func currentScrollPID()->pid_t? {
         guard let target=scrollTarget,let front=NSWorkspace.shared.frontmostApplication,

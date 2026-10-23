@@ -148,6 +148,7 @@ final class OperationPanel: NSPanel {
     }
     func showMain(){store.windows.captureTarget();store.captureSelectionForActions();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func showPanel(){
+        pendingInitialPresentation=false
         store.windows.captureTarget()
         store.captureSelectionForActions()
         if panel?.isVisible == true {panel?.orderOut(nil);return}
@@ -158,7 +159,10 @@ final class OperationPanel: NSPanel {
         let point=NSEvent.mouseLocation
         let screen=NSScreen.screens.first(where:{$0.frame.contains(point)}) ?? NSScreen.main
         if let frame=screen?.visibleFrame {panel.setFrameOrigin(NSPoint(x:frame.midX-300,y:frame.midY-240))}else{panel.center()}
-        self.panel=panel;panel.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
+        self.panel=panel
+        NSApp.activate(ignoringOtherApps:true)
+        panel.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name:OperationPanelSearchField.focusReadyNotification,object:panel)
     }
     func showSettings(tab:Int=0){
         store.windows.captureTarget()
