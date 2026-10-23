@@ -5,6 +5,10 @@ import Darwin
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
         setbuf(stdout,nil)
+        if CommandLine.arguments.contains("--device-service-refresh-only") {
+            try runHIDEventServiceRefreshTests()
+            return
+        }
         if CommandLine.arguments.contains("--cleaner-safety-only") {
             GaoLocale.shared.setLanguage(.zhHans)
             try runCleanerSafetyTests()
