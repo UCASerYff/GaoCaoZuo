@@ -239,15 +239,13 @@ public enum GaoActionV1 {
     public static let defaultMaxPayloadBytes: UInt64 = 2 * 1024 * 1024 * 1024
     public static let requestTTLSeconds: TimeInterval = 120
     public static let owners: [String:String] = Dictionary(uniqueKeysWithValues: [
-        ("GaoJieTu", ["capture.region","capture.window","capture.display","ocr.files","images.annotate","images.pin","text.translate"]),
+        ("GaoCaoZuo", ["capture.region","capture.window","capture.display","ocr.files","images.annotate","images.pin","text.translate"]),
         ("GaoJiLing", ["storage.inspect","cleanup.review","apps.uninstall.review"]),
-        ("GaoZhengLi", ["files.search","files.choose","files.reveal","associations.manage"]),
-        ("GaoWenJian", ["documents.open","documents.newText"]),
-        ("GaoZhuoMian", ["windows.overview","desktop.openSettings"]),
-        ("GaoXiaZai", ["downloads.prepare"])
+        ("GaoWenJian", ["documents.open","documents.newText","files.search","files.choose","files.reveal","associations.manage"]),
+        ("GaoCaoZuo", ["windows.overview","desktop.openSettings"])
     ].flatMap { name, actions in actions.map { ($0, "com.gaoseries." + name) } } + [
-        "portal.openSite","portal.openWorkspace","portal.focusSearch","portal.proposeSite","portal.prepareDownload"
-    ].map { ($0, "cn.mendao.launcher") })
+        "portal.openSite","portal.openWorkspace","portal.focusSearch","portal.proposeSite","portal.prepareDownload","downloads.prepare"
+    ].map { ($0, "cn.mendao.launcher") } + [("research.importDocuments", "com.academic-achievement.manager")])
     public static let knownActions = Set(owners.keys).union(["research.importDocuments"])
     public static let parameterKeys: [String:Set<String>] = [
         "capture.region":["delaySeconds"], "capture.window":["delaySeconds"], "capture.display":["delaySeconds"],
@@ -288,6 +286,17 @@ public enum GaoActionV1 {
         guard !s.isEmpty,s.utf8.count<=4096,!s.hasPrefix("/"),!s.contains("\\"),!s.contains("\0"),parts.count<=64,
               parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count<=255 }) else { throw GaoActionError.pathTraversal(s) }
     }
+    /// V1 paths are payload-relative. Portal's download results include the package's
+    /// leading payload/ component; interpret that dialect once without rewriting the manifest.
+    static func physicalPayloadRelativePath(_ relativePath:String,manifest:GaoActionManifest) throws -> String {
+        try safeRelativePath(relativePath)
+        let physical:String
+        if manifest.kind == .result,manifest.action == "downloads.prepare",manifest.sourceBundleID == "cn.mendao.launcher",relativePath.hasPrefix("payload/") {
+            physical=String(relativePath.dropFirst("payload/".count))
+        } else { physical=relativePath }
+        try safeRelativePath(physical)
+        return physical
+    }
     public static func validateManifest(_ m:GaoActionManifest, now:Date=Date(), knownIDs:inout Set<String>, expectedTarget:String?=nil) throws {
         try validateManifest(m,now:now,expectedTarget:expectedTarget)
         guard !knownIDs.contains(m.requestID.lowercased()) else { throw GaoActionError.duplicateRequest(m.requestID) }
@@ -308,9 +317,10 @@ public enum GaoActionV1 {
         guard let nonce=Data(base64Encoded:m.nonce),nonce.count==32,nonce.base64EncodedString()==m.nonce else { throw GaoActionError.invalidPackage("nonce 必须为 32 字节标准 Base64") }
         guard m.items.count<=maximumItems,m.references.count<=maximumItems,Set(m.items.map(\.id)).count==m.items.count,
               Set(m.references.map(\.id)).count==m.references.count,Set(m.items.map(\.relativePath)).count==m.items.count else { throw GaoActionError.sizeExceeded("条目超限或标识/路径重复") }
-        var total:UInt64=0
+        var total:UInt64=0,physicalPaths=Set<String>()
         for i in m.items {
-            try safeRelativePath(i.relativePath)
+            let physical=try physicalPayloadRelativePath(i.relativePath,manifest:m)
+            guard physicalPaths.insert(physical).inserted else {throw GaoActionError.invalidPackage("多条附件路径指向同一 payload 实物")}
             guard identifier(i.id),identifier(i.uti),UTType(i.uti) != nil,validHash(i.sha256),i.byteCount<=defaultMaxPayloadBytes-total else { throw GaoActionError.invalidPackage("附件类型、摘要、标识或预算无效") }
             total += i.byteCount
         }
@@ -543,13 +553,14 @@ public enum GaoActionV1 {
         }
         var files:[URL]=[],total:UInt64=0
         for item in m.items {
-            let input=try GaoActionFiles.openRelative(item.relativePath,at:payload);defer{close(input)}
+            let relative=try physicalPayloadRelativePath(item.relativePath,manifest:m)
+            let input=try GaoActionFiles.openRelative(relative,at:payload);defer{close(input)}
             let before=try GaoActionFiles.info(input);try GaoActionFiles.check(before,directory:false,owned:true)
             guard UInt64(before.st_size)==item.byteCount,item.byteCount<=defaultMaxPayloadBytes-total else {throw GaoActionError.sizeExceeded("附件尺寸不符或总载荷超过 2 GiB")};total += item.byteCount
             var output:Int32 = -1
             if let staging {
-                let dest=staging.appendingPathComponent("payload").appendingPathComponent(item.relativePath)
-                output=try GaoActionFiles.createRelative("payload/"+item.relativePath,at:stageFD);files.append(dest)
+                let dest=staging.appendingPathComponent("payload").appendingPathComponent(relative)
+                output=try GaoActionFiles.createRelative("payload/"+relative,at:stageFD);files.append(dest)
             }
             defer {if output>=0 {close(output)}}
             let copied=try GaoActionFiles.copy(fd:input,to:output>=0 ? output : nil,limit:item.byteCount,validateUTF8:m.kind == .request && ["documents.newText","text.translate"].contains(m.action))

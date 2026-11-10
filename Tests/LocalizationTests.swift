@@ -45,7 +45,7 @@ import AppKit
     }
     try data.save(legacy,name:"finder-menu.json")
     let migrated=FinderPreferenceController(directory:migrationRoot).preferences
-    try check(migrated.items.first(where:{$0.id == "file.ishot"})?.title == "用搞截图截取区域","old default capture title")
+    try check(migrated.items.first(where:{$0.id == "file.ishot"})?.title == "截取区域","old default capture title")
     try check(migrated.items.first(where:{$0.id == "file.diskmap"})?.title == "用搞机灵分析所选目录","old default storage title")
     try check(migrated.items.first(where:{$0.id == "file.ishot.markup"})?.title == "我的标注工具","migration changed user title")
     print("Localization resources: runtime language, all window titles, errors, actions, Finder refresh and custom names passed")

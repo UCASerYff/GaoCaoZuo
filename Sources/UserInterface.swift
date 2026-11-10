@@ -38,6 +38,9 @@ struct OperationRootView: View {
     }
     @ViewBuilder private var sectionContent: some View {
         switch store.section {
+        case .overview: DesktopOverviewView(controller: store.desktopOverview)
+        case .lockPolicy: IntegratedLockSettingsView(store: store)
+        case .screenshots: store.screenshots.workspaceView
         case .clipboard: ClipboardWorkspace(store:store,clipboard:store.clipboard)
         case .input: InputRulesView(store:store)
         case .workflows: WorkflowListView(store:store)

@@ -1,6 +1,159 @@
 {
   "schemaVersion": 1,
   "bundleID": "com.gaoseries.GaoCaoZuo",
-  "appVersion": "1.14",
-  "actions": []
+  "appVersion": "1.15",
+  "actions": [
+    {
+      "action": "windows.overview",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "desktop.openSettings",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "capture.region",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "delaySeconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "capture.window",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "delaySeconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "capture.display",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "delaySeconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": false,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "ocr.files",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "text",
+                "markdown",
+                "json",
+                "searchablePDF"
+              ]
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": true,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "images.annotate",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": true,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "images.pin",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "supportsItems": true,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    },
+    {
+      "action": "text.translate",
+      "parametersSchema": {
+        "type": "object",
+        "properties": {
+          "sourceLanguage": {
+            "type": "string"
+          },
+          "targetLanguage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "targetLanguage"
+        ],
+        "additionalProperties": false
+      },
+      "supportsItems": true,
+      "supportsReferences": false,
+      "requiresUserConfirmation": true
+    }
+  ]
 }

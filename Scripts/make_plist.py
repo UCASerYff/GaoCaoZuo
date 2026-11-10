@@ -27,7 +27,9 @@ elif extension:
 else:
     info.update(NSAppleEventsUsageDescription='在您执行相关操作时，获取访达所选文件或调用指定应用。',
         NSInputMonitoringUsageDescription='您启用鼠标手势后，识别已配置的手势；不记录键盘输入。',
-        NSAccessibilityUsageDescription='您启用窗口控制或手势后，调整窗口或执行您配置的操作。',
+        NSAccessibilityUsageDescription='您启用窗口控制、手势或长截图后，调整或滚动明确选择的窗口。',
+        NSScreenCaptureUsageDescription='仅在您明确执行窗口预览、截图、长截图、录屏或系统录音时捕获选择的内容。',
+        NSMicrophoneUsageDescription='仅在您明确开始麦克风录音或带麦克风的录屏时采集声音。',
         NSDesktopFolderUsageDescription='处理您选择的桌面文件。',
         NSDocumentsFolderUsageDescription='处理您选择的文稿文件。',
         NSDownloadsFolderUsageDescription='处理您选择的下载文件。',
@@ -36,10 +38,12 @@ else:
     info['CFBundleURLTypes'] = [dict(CFBundleURLName='搞操作动作入口',CFBundleTypeRole='Viewer',CFBundleURLSchemes=['gaocaozuo'])]
     info['CFBundleDocumentTypes'] = [dict(CFBundleTypeName='文件和文件夹',CFBundleTypeRole='Viewer',
         LSHandlerRank='Alternate',LSItemContentTypes=['public.item']),dict(CFBundleTypeName='压缩包',CFBundleTypeRole='Viewer',LSHandlerRank='Alternate',LSItemContentTypes=archive_types),dict(CFBundleTypeName='GaoAction V1',CFBundleTypeRole='Viewer',LSHandlerRank='Alternate',LSItemContentTypes=['com.gaoseries.action-package'])]
+    info['CFBundleDocumentTypes'].append(dict(CFBundleTypeName='可编辑图像标注',CFBundleTypeRole='Editor',LSHandlerRank='Alternate',LSItemContentTypes=['com.gaoseries.annotation']))
+    info['UTExportedTypeDeclarations']=[dict(UTTypeIdentifier='com.gaoseries.annotation',UTTypeConformsTo=['com.apple.package'],UTTypeDescription='可编辑图像标注',UTTypeTagSpecification={'public.filename-extension':['gaoannotation']})]
     info['UTImportedTypeDeclarations']=[dict(UTTypeIdentifier=identifier,UTTypeConformsTo=['public.archive'],UTTypeDescription=label,UTTypeTagSpecification={'public.filename-extension':extensions}) for identifier,label,extensions in [('com.gaoseries.ace-archive','ACE Archive',['ace']),('com.gaoseries.lzip-archive','LZIP Archive',['lz','lzip'])]]
     info['UTImportedTypeDeclarations'].append(dict(UTTypeIdentifier='com.gaoseries.action-package',UTTypeConformsTo=['com.apple.package'],UTTypeDescription='GaoAction V1 Package',UTTypeTagSpecification={'public.filename-extension':['gaoaction']}))
     info['NSServices'] = [dict(NSMenuItem={'default':'搞操作…'},NSMessage='receiveFiles',
         NSPortName='搞操作',NSSendTypes=['public.file-url','NSFilenamesPboardType'],
-        NSRequiredContext={})] + [dict(NSMenuItem={'default':title},NSMessage='receiveText',NSUserData=action,NSPortName='搞操作',NSSendTypes=['public.utf8-plain-text'],NSRequiredContext={}) for title,action in [('用百度翻译','text.baidu'),('用谷歌翻译','text.google'),('文字转二维码','text.qrcode.clipboard')]]
+        NSRequiredContext={})] + [dict(NSMenuItem={'default':title},NSMessage='receiveText',NSUserData=action,NSPortName='搞操作',NSSendTypes=['public.utf8-plain-text'],NSRequiredContext={}) for title,action in [('用百度翻译','text.baidu'),('用谷歌翻译','text.google'),('文字转二维码','text.qrcode.clipboard'),('用搞操作本机翻译','text.translate')]]
 Path(destination).parent.mkdir(parents=True, exist_ok=True)
 Path(destination).write_bytes(plistlib.dumps(info, sort_keys=False))

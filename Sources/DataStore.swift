@@ -54,6 +54,9 @@ struct OperationSettings: Codable {
     var windowSnapEnabled = false
     var windowEnhancements = WindowEnhancementConfiguration()
     var inputEnhancements = InputEnhancementConfiguration()
+    var desktopOverview = DesktopOverviewPreferences()
+    var localLock = LocalLockConfiguration()
+    var desktopMigrationIDs: [String] = []
     var autoInput = AutoInputConfiguration()
     var flyKey = FlyKeyConfiguration()
     var cleanerDurationSeconds = 180
@@ -70,6 +73,7 @@ struct OperationSettings: Codable {
         case clipboardEnabled, clipboardDays, clipboardLimit, clipboardExcludedApps, loginAtStartup
         case windowDragEnabled, windowSnapEnabled
         case windowEnhancements, inputEnhancements, autoInput, flyKey, cleanerDurationSeconds
+        case desktopOverview, localLock, desktopMigrationIDs
         case showMenuBarIcon,playNewFileSound,statusBarLeftClick
     }
     init(from decoder: Decoder) throws {
@@ -92,6 +96,11 @@ struct OperationSettings: Codable {
         windowSnapEnabled = container.contains(.windowSnapEnabled) ? try container.decode(Bool.self, forKey: .windowSnapEnabled) : false
         windowEnhancements = try container.decodeIfPresent(WindowEnhancementConfiguration.self, forKey: .windowEnhancements) ?? .init()
         inputEnhancements = try container.decodeIfPresent(InputEnhancementConfiguration.self, forKey: .inputEnhancements) ?? .init()
+        desktopOverview = try container.decodeIfPresent(DesktopOverviewPreferences.self, forKey: .desktopOverview) ?? .init()
+        localLock = try container.decodeIfPresent(LocalLockConfiguration.self, forKey: .localLock) ?? .init()
+        _ = try desktopOverview.validated()
+        desktopMigrationIDs = try container.decodeIfPresent([String].self, forKey: .desktopMigrationIDs) ?? []
+        guard desktopMigrationIDs.count <= 128, Set(desktopMigrationIDs).count == desktopMigrationIDs.count else { throw DataFailure.message("桌面迁移依据无效，已停止写入。") }
         autoInput = try container.decodeIfPresent(AutoInputConfiguration.self, forKey: .autoInput) ?? .init()
         flyKey = try container.decodeIfPresent(FlyKeyConfiguration.self, forKey: .flyKey) ?? .init()
         cleanerDurationSeconds = try container.decodeIfPresent(Int.self, forKey: .cleanerDurationSeconds) ?? 180
@@ -109,6 +118,37 @@ struct ReceiptDocument: Codable { var schema = 1; var records: [FileOperationRec
 enum DataFailure: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let text) = self { return L10n.text(text) }; return nil }
+}
+
+struct LocalDataDirectoryIdentity: Codable, Equatable {
+    var device: UInt64
+    var inode: UInt64
+}
+struct LocalDataRetirementFileIdentity: Codable, Equatable {
+    var device: UInt64
+    var inode: UInt64
+    var size: Int64
+    var sha256: String
+}
+struct LocalDataRetirementSnapshot {
+    var data: Data
+    var identity: LocalDataRetirementFileIdentity
+}
+struct LocalDataRetirementWriteError: LocalizedError {
+    var journalCommitted: Bool
+    var cleanupComplete: Bool
+    var underlyingMessage: String
+    var errorDescription: String? { underlyingMessage }
+}
+
+private struct LocalDataDesktopRetirementIntent: Codable, Equatable {
+    var schema = 1
+    var transactionID: String
+    var directoryPath: String
+    var directoryIdentity: LocalDataDirectoryIdentity
+    var journalFilename: String
+    var original: LocalDataRetirementFileIdentity
+    var stage: LocalDataRetirementFileIdentity
 }
 
 final class LocalData {
@@ -195,6 +235,209 @@ final class LocalData {
             fingerprints[name] = fingerprint
             return data
         }
+    }
+
+    func verifiedDirectoryIdentity() throws -> LocalDataDirectoryIdentity {
+        try guarded(LegacyDesktopMigrationImporter.journalFilename) {
+            let descriptor = try checkedDirectory(); defer { close(descriptor) }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else { throw posixFailure("核对封存根目录") }
+            return LocalDataDirectoryIdentity(device: UInt64(bitPattern: Int64(info.st_dev)), inode: UInt64(info.st_ino))
+        }
+    }
+
+    func retirementFileSnapshot(_ name: String) throws -> LocalDataRetirementSnapshot {
+        try guarded(name) {
+            let descriptor = try checkedDirectory(); defer { close(descriptor) }
+            guard let (data, fingerprint) = try read(name, at: descriptor, maximumSize: 32_000_000) else {
+                throw DataFailure.message("桌面迁移日志缺失；不能封存空白日志。")
+            }
+            try verifyKnown(name, fingerprint: fingerprint)
+            fingerprints[name] = fingerprint; knownMissing.remove(name)
+            return .init(data: data, identity: retirementIdentity(fingerprint))
+        }
+    }
+
+    /// Dedicated, recoverable compaction transaction. The ordinary JSON writer
+    /// deliberately remains unchanged. A durable intent binds both file inodes
+    /// before swap, so a crash never turns an unowned raw file into cleanup work.
+    func retireLegacyDesktopJournal(_ data: Data, plan: LegacyDesktopSourceRetirementPlan,
+                                    beforeCommit: () throws -> Void,
+                                    fault: ((LegacyDesktopMigrationFaultPoint) throws -> Void)? = nil) throws {
+        var committed = false
+        var cleanupComplete = false
+        do {
+            if let failure { throw DataFailure.message(failure) }
+            _ = try plan.validated()
+            let compacted = try LegacyDesktopMigrationJournalValidator.decode(data)
+            let name = LegacyDesktopMigrationImporter.journalFilename
+            guard compacted.schema == 2, plan.journalFilename == name, plan.targetDirectoryPath == directory.path,
+                  LegacyDesktopMigrationJournalValidator.isSHA256(plan.approvalDigest),
+                  LegacyDesktopMigrationCoding.digest(data) == plan.afterExpectedRawSHA256,
+                  data.count <= 32_000_000 else { throw DataFailure.message("桌面封存写入方案不一致。") }
+            let descriptor = try checkedDirectory(); defer { close(descriptor) }
+            var root = stat()
+            guard fstat(descriptor, &root) == 0,
+                  LocalDataDirectoryIdentity(device: UInt64(bitPattern: Int64(root.st_dev)), inode: UInt64(root.st_ino)) == plan.targetDirectoryIdentity else {
+                throw DataFailure.message("封存根目录身份已变化。")
+            }
+            let stageName = ".retiring-desktop-" + plan.approvalDigest + ".stage"
+            let intentName = ".retiring-desktop-" + plan.approvalDigest + ".intent.json"
+            guard let (_, initial) = try read(name, at: descriptor, maximumSize: 32_000_000) else {
+                throw DataFailure.message("封存日志在提交前缺失。")
+            }
+            committed = retirementIdentity(initial).sha256 == plan.afterExpectedRawSHA256
+            var intentFile = try read(intentName, at: descriptor, maximumSize: 64_000)
+            var stageFile = try read(stageName, at: descriptor, maximumSize: 32_000_000)
+            let intent: LocalDataDesktopRetirementIntent
+            if let (raw, _) = intentFile {
+                try requireRetirementPrivateFile(intentName, at: descriptor)
+                try LegacyDesktopStrictJSON.validate(raw)
+                let fields = try LegacyDesktopMigrationJournalValidator.object(JSONSerialization.jsonObject(with: raw), keys: [
+                    "schema", "transactionID", "directoryPath", "directoryIdentity", "journalFilename", "original", "stage"
+                ])
+                _ = try LegacyDesktopMigrationJournalValidator.object(fields["directoryIdentity"], keys: ["device", "inode"])
+                for key in ["original", "stage"] {
+                    _ = try LegacyDesktopMigrationJournalValidator.object(fields[key], keys: ["device", "inode", "size", "sha256"])
+                }
+                intent = try JSONDecoder().decode(LocalDataDesktopRetirementIntent.self, from: raw)
+                guard intent.schema == 1, intent.transactionID == plan.approvalDigest,
+                      intent.directoryPath == directory.path, intent.directoryIdentity == plan.targetDirectoryIdentity,
+                      intent.journalFilename == name, intent.original == plan.beforeJournalIdentity,
+                      intent.stage.sha256 == plan.afterExpectedRawSHA256, intent.stage.size == Int64(data.count),
+                      intent.stage.device == plan.targetDirectoryIdentity.device,
+                      intent.stage.inode != intent.original.inode else {
+                    throw DataFailure.message("封存事务依据不属于此方案；保留未知暂存文件。")
+                }
+            } else {
+                if committed {
+                    guard stageFile == nil else { throw DataFailure.message("日志已封存但缺少暂存所有权依据；未清理未知文件。") }
+                    let latest = try checkedDirectory(); close(latest)
+                    guard fsync(descriptor) == 0 else { throw posixFailure("同步已完成封存状态") }
+                    fingerprints[name] = initial; knownMissing.remove(name)
+                    return
+                }
+                guard retirementIdentity(initial) == plan.beforeJournalIdentity else {
+                    throw DataFailure.message("旧桌面日志身份或摘要已变化，拒绝封存。")
+                }
+                guard stageFile == nil else {
+                    throw DataFailure.message("封存暂存名缺少持久所有权依据，须由Root核对路径：" + directory.appendingPathComponent(stageName).path + "；未接管、覆盖或删除。")
+                }
+                try fault?(.beforeRetirementIntent)
+                try createRetirementFile(data, name: stageName, at: descriptor)
+                stageFile = try read(stageName, at: descriptor, maximumSize: 32_000_000)
+                guard let (stageData, stage) = stageFile, stageData == data,
+                      retirementIdentity(stage).sha256 == plan.afterExpectedRawSHA256 else {
+                    throw DataFailure.message("新封存暂存文件缺失或已变化。")
+                }
+                try requireRetirementPrivateFile(stageName, at: descriptor)
+                intent = .init(transactionID: plan.approvalDigest, directoryPath: directory.path,
+                    directoryIdentity: plan.targetDirectoryIdentity, journalFilename: name,
+                    original: plan.beforeJournalIdentity, stage: retirementIdentity(stage))
+                guard fsync(descriptor) == 0 else { throw posixFailure("同步封存暂存目录") }
+                try createRetirementFile(LegacyDesktopMigrationRawCoding.encode(intent), name: intentName, at: descriptor)
+                guard fsync(descriptor) == 0 else { throw posixFailure("同步封存事务依据") }
+                intentFile = try read(intentName, at: descriptor, maximumSize: 64_000)
+            }
+            try fault?(.afterRetirementIntent)
+            guard let (_, current) = try read(name, at: descriptor, maximumSize: 32_000_000) else {
+                throw DataFailure.message("桌面日志在封存事务中缺失。")
+            }
+            let currentIdentity = retirementIdentity(current)
+            stageFile = try read(stageName, at: descriptor, maximumSize: 32_000_000)
+            if currentIdentity == intent.original {
+                guard let (_, stage) = stageFile, retirementIdentity(stage) == intent.stage else {
+                    throw DataFailure.message("封存新暂存身份已变化；未交换或删除。")
+                }
+                try requireRetirementPrivateFile(stageName, at: descriptor)
+                try requireRetirementPrivateFile(intentName, at: descriptor)
+                try beforeCommit()
+                let latestDirectory = try checkedDirectory(); close(latestDirectory)
+                guard let (_, latest) = try read(name, at: descriptor, maximumSize: 32_000_000),
+                      retirementIdentity(latest) == intent.original,
+                      let (_, latestStage) = try read(stageName, at: descriptor, maximumSize: 32_000_000),
+                      retirementIdentity(latestStage) == intent.stage,
+                      let (_, latestIntent) = try read(intentName, at: descriptor, maximumSize: 64_000),
+                      let (_, expectedIntent) = intentFile, latestIntent == expectedIntent else {
+                    throw DataFailure.message("封存事务文件在提交前已变化；未交换。")
+                }
+                guard renameatx_np(descriptor, stageName, descriptor, name, UInt32(RENAME_SWAP)) == 0 else {
+                    throw posixFailure("交换桌面封存日志")
+                }
+                // The rename has happened even if the next read fails. Route
+                // every subsequent error through the structured review receipt.
+                committed = true
+                guard let (_, exchanged) = try read(name, at: descriptor, maximumSize: 32_000_000),
+                      retirementIdentity(exchanged) == intent.stage else {
+                    throw DataFailure.message("交换后的正式日志不是确认暂存；保留全部现物。")
+                }
+                guard fsync(descriptor) == 0 else { throw posixFailure("同步已交换封存日志") }
+                try fault?(.afterRetirementSwap)
+            } else {
+                guard currentIdentity == intent.stage else {
+                    throw DataFailure.message("封存事务中的正式日志身份不匹配；保留全部现物。")
+                }
+                committed = true
+            }
+            // Confirm the anchored current inode and its content before touching
+            // the displaced raw evidence. A foreign stage is never discarded.
+            guard let (_, saved) = try read(name, at: descriptor, maximumSize: 32_000_000),
+                  retirementIdentity(saved) == intent.stage else {
+                throw DataFailure.message("封存日志交换后身份不一致；原件仍保留。")
+            }
+            if let (_, displaced) = try read(stageName, at: descriptor, maximumSize: 32_000_000) {
+                guard retirementIdentity(displaced) == intent.original else {
+                    throw DataFailure.message("旧原件暂存身份不匹配；未删除未知文件。")
+                }
+                guard unlinkat(descriptor, stageName, 0) == 0 else { throw posixFailure("删除已核验桌面日志原件") }
+            }
+            guard fsync(descriptor) == 0 else { throw posixFailure("同步桌面原件移除") }
+            try fault?(.afterRetirementDisplacedRemoval)
+            guard let (_, latestIntent) = try read(intentName, at: descriptor, maximumSize: 64_000),
+                  let (_, expectedIntent) = intentFile, latestIntent == expectedIntent,
+                  try read(stageName, at: descriptor, maximumSize: 32_000_000) == nil else {
+                throw DataFailure.message("封存清理依据已变化；未宣告完成。")
+            }
+            guard unlinkat(descriptor, intentName, 0) == 0 else { throw posixFailure("移除已完成桌面封存依据") }
+            guard fsync(descriptor) == 0 else { throw posixFailure("同步封存事务完成") }
+            let rechecked = try checkedDirectory(); close(rechecked)
+            guard try read(stageName, at: descriptor, maximumSize: 32_000_000) == nil,
+                  try read(intentName, at: descriptor, maximumSize: 64_000) == nil,
+                  let (_, final) = try read(name, at: descriptor, maximumSize: 32_000_000),
+                  retirementIdentity(final) == intent.stage else { throw DataFailure.message("封存收尾未完成，需继续同一事务。") }
+            fingerprints[name] = final; knownMissing.remove(name)
+            cleanupComplete = true
+        } catch {
+            failure = "桌面日志封存事务停止：" + error.localizedDescription
+            throw LocalDataRetirementWriteError(journalCommitted: committed, cleanupComplete: cleanupComplete, underlyingMessage: failure!)
+        }
+    }
+
+    private func retirementIdentity(_ value: Fingerprint) -> LocalDataRetirementFileIdentity {
+        .init(device: UInt64(bitPattern: Int64(value.identity.device)), inode: UInt64(value.identity.inode),
+              size: Int64(value.size), sha256: value.hash.map { String(format: "%02x", $0) }.joined())
+    }
+    private func requireRetirementPrivateFile(_ name: String, at descriptor: Int32) throws {
+        var info = stat()
+        guard fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+              info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else {
+            throw DataFailure.message("封存事务文件权限或所有者异常；未接管。")
+        }
+    }
+    private func createRetirementFile(_ data: Data, name: String, at descriptor: Int32) throws {
+        let file = openat(descriptor, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard file >= 0 else { throw posixFailure("排他创建封存事务文件") }
+        defer { close(file) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let amount = Darwin.write(file, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if amount < 0, errno == EINTR { continue }
+                guard amount > 0 else { throw posixFailure("写入封存事务文件") }
+                offset += amount
+            }
+        }
+        guard fsync(file) == 0 else { throw posixFailure("同步封存事务文件") }
     }
 
     func createFile(_ data: Data, name: String) throws {
@@ -286,6 +529,10 @@ final class LocalData {
     }
 
     private func validateSchema(_ data: Data, name: String) throws {
+        if name == LegacyDesktopMigrationImporter.journalFilename {
+            _ = try LegacyDesktopMigrationJournalValidator.decode(data)
+            return
+        }
         let json = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         if let dictionary = json as? [String: Any], let raw = dictionary["schema"] {
             guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.intValue == 1,

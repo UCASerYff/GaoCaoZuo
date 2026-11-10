@@ -1,0 +1,421 @@
+{
+  "sourceProject": "GaoJieTu",
+  "sourceBundleID": "com.gaoseries.GaoJieTu",
+  "sourceVersion": "1.08",
+  "sourceBuild": "9",
+  "sourceCommit": "bcc499354bdc2941802284e52d46c8e565cd7396",
+  "purpose": "One-time source import provenance; no build/runtime dependency on source project. Imported main/delegate omitted; host owns lifecycle. Subsequent integration edits bind final candidate inputs separately.",
+  "symbolMap": {
+    "RecordingSource": "ScreenshotRecordingSource",
+    "AppModel": "ScreenshotAppModel",
+    "CaptureDisplay": "ScreenshotCaptureDisplay",
+    "GaoRequestPhase": "ScreenshotGaoRequestPhase",
+    "TranslationAttempt": "ScreenshotTranslationAttempt",
+    "AnnotationCanvas": "ScreenshotAnnotationCanvas",
+    "GaoRequestReceipt": "ScreenshotGaoRequestReceipt",
+    "GaoInstalledProvider": "ScreenshotGaoInstalledProvider",
+    "PinImageView": "ScreenshotPinImageView",
+    "CaptureCatalog": "ScreenshotCaptureCatalog",
+    "GaoProcessedRequest": "ScreenshotGaoProcessedRequest",
+    "OCRRecognitionLevel": "ScreenshotOCRRecognitionLevel",
+    "RecordingRecoveryInspection": "ScreenshotRecordingRecoveryInspection",
+    "CaptureColorSampler": "ScreenshotCaptureColorSampler",
+    "RecordingRecoveryRecord": "ScreenshotRecordingRecoveryRecord",
+    "GaoActionContract": "ScreenshotGaoActionContract",
+    "ScrollTargetCheckStage": "ScreenshotScrollTargetCheckStage",
+    "GaoActionWriter": "ScreenshotGaoActionWriter",
+    "SystemTranslationPanel": "ScreenshotSystemTranslationPanel",
+    "GaoDeclaredIdentity": "ScreenshotGaoDeclaredIdentity",
+    "OCRPage": "ScreenshotOCRPage",
+    "LocalTranslationService": "ScreenshotLocalTranslationService",
+    "OCRPageStatus": "ScreenshotOCRPageStatus",
+    "RecordingTrack": "ScreenshotRecordingTrack",
+    "ActionTaskHandle": "ScreenshotActionTaskHandle",
+    "OCRRecoverySnapshot": "ScreenshotOCRRecoverySnapshot",
+    "AnnotationLayer": "ScreenshotAnnotationLayer",
+    "OCRProgress": "ScreenshotOCRProgress",
+    "OCRPDFExportProgress": "ScreenshotOCRPDFExportProgress",
+    "ScrollTargetDiagnostic": "ScreenshotScrollTargetDiagnostic",
+    "ScrollInputPolicy": "ScreenshotScrollInputPolicy",
+    "OCRExporter": "ScreenshotOCRExporter",
+    "LongCapturePreparation": "ScreenshotLongCapturePreparation",
+    "ExchangeController": "ScreenshotExchangeController",
+    "TranslationPanel": "ScreenshotTranslationPanel",
+    "ScrollVisibilityPlan": "ScreenshotScrollVisibilityPlan",
+    "TranslationExecutionFailure": "ScreenshotTranslationExecutionFailure",
+    "OCRView": "ScreenshotOCRView",
+    "RecordingFilePlan": "ScreenshotRecordingFilePlan",
+    "OCRRecoveryStore": "ScreenshotOCRRecoveryStore",
+    "ScrollAccessibilityAction": "ScreenshotScrollAccessibilityAction",
+    "OCRError": "ScreenshotOCRError",
+    "DataBackup": "ScreenshotDataBackup",
+    "GaoPrivateIO": "ScreenshotGaoPrivateIO",
+    "ScrollFocusIdentity": "ScreenshotScrollFocusIdentity",
+    "LongCaptureWindowCrop": "ScreenshotLongCaptureWindowCrop",
+    "GaoActionCapability": "ScreenshotGaoActionCapability",
+    "GaoOutgoingFile": "ScreenshotGaoOutgoingFile",
+    "AnnotationTool": "ScreenshotAnnotationTool",
+    "AnnotationView": "ScreenshotAnnotationView",
+    "PinnedImagePersistence": "ScreenshotPinnedImagePersistence",
+    "CaptureOptions": "ScreenshotCaptureOptions",
+    "GIFExportResult": "ScreenshotGIFExportResult",
+    "AppVersion": "ScreenshotAppVersion",
+    "PinnedImageController": "ScreenshotPinnedImageController",
+    "ScrollWindowMetadata": "ScreenshotScrollWindowMetadata",
+    "LocalStore": "ScreenshotLocalStore",
+    "LongCapturePanelController": "ScreenshotLongCapturePanelController",
+    "OCRExportFormat": "ScreenshotOCRExportFormat",
+    "OCROptions": "ScreenshotOCROptions",
+    "CaptureImageExport": "ScreenshotCaptureImageExport",
+    "GaoCapabilityDiscovery": "ScreenshotGaoCapabilityDiscovery",
+    "pngData": "ScreenshotPngData",
+    "GIFCapacityEstimate": "ScreenshotGIFCapacityEstimate",
+    "ScrollOverlapMatcher": "ScreenshotScrollOverlapMatcher",
+    "GaoActionManifest": "ScreenshotGaoActionManifest",
+    "PermissionSnapshot": "ScreenshotPermissionSnapshot",
+    "CaptureService": "ScreenshotCaptureService",
+    "CaptureSelectionController": "ScreenshotCaptureSelectionController",
+    "ScrollPixelEventBundle": "ScreenshotScrollPixelEventBundle",
+    "CapturedFrame": "ScreenshotCapturedFrame",
+    "GaoStagedItem": "ScreenshotGaoStagedItem",
+    "OCRService": "ScreenshotOCRService",
+    "RecordingState": "ScreenshotRecordingState",
+    "CaptureSelectionGeometry": "ScreenshotCaptureSelectionGeometry",
+    "PinnedImageGeometry": "ScreenshotPinnedImageGeometry",
+    "RecordingAudioExporter": "ScreenshotRecordingAudioExporter",
+    "PinnedImageWindow": "ScreenshotPinnedImageWindow",
+    "CaptureRegionSelection": "ScreenshotCaptureRegionSelection",
+    "CaptureGeometry": "ScreenshotCaptureGeometry",
+    "ScrollCaptureGeometry": "ScreenshotScrollCaptureGeometry",
+    "RecordingExportSessionBox": "ScreenshotRecordingExportSessionBox",
+    "OCRLine": "ScreenshotOCRLine",
+    "ScrollSeamPreview": "ScreenshotScrollSeamPreview",
+    "GIFExporter": "ScreenshotGIFExporter",
+    "LongCaptureOperation": "ScreenshotLongCaptureOperation",
+    "CaptureAsset": "ScreenshotCaptureAsset",
+    "ScrollTargetIdentity": "ScreenshotScrollTargetIdentity",
+    "MainView": "ScreenshotMainView",
+    "SelectionCanvas": "ScreenshotSelectionCanvas",
+    "SelectionPanel": "ScreenshotSelectionPanel",
+    "ScrollTargetSnapshot": "ScreenshotScrollTargetSnapshot",
+    "AppIssue": "ScreenshotAppIssue",
+    "ScrollTargetValidationFailure": "ScreenshotScrollTargetValidationFailure",
+    "GaoJSONGuard": "ScreenshotGaoJSONGuard",
+    "PinPanel": "ScreenshotPinPanel",
+    "CaptureFailure": "ScreenshotCaptureFailure",
+    "GaoActionReference": "ScreenshotGaoActionReference",
+    "RecordingRecorderDelegate": "ScreenshotRecordingRecorderDelegate",
+    "RecordingOutputRouteGuard": "ScreenshotRecordingOutputRouteGuard",
+    "RecordingView": "ScreenshotRecordingView",
+    "TranslationOperationIdentity": "ScreenshotTranslationOperationIdentity",
+    "TranslationExecution": "ScreenshotTranslationExecution",
+    "SettingsView": "ScreenshotSettingsView",
+    "HistoryView": "ScreenshotHistoryView",
+    "ScrollSeamPreviewRenderer": "ScreenshotScrollSeamPreviewRenderer",
+    "GaoProcessedRequestStore": "ScreenshotGaoProcessedRequestStore",
+    "ScrollTargetProbing": "ScreenshotScrollTargetProbing",
+    "GIFCancellationToken": "ScreenshotGIFCancellationToken",
+    "LocalTranslationError": "ScreenshotLocalTranslationError",
+    "ScrollCaptureState": "ScreenshotScrollCaptureState",
+    "LongCapturePanel": "ScreenshotLongCapturePanel",
+    "LongScreenshotSession": "ScreenshotLongScreenshotSession",
+    "OCRDocument": "ScreenshotOCRDocument",
+    "GaoActionIssue": "ScreenshotGaoActionIssue",
+    "AppSettings": "ScreenshotAppSettings",
+    "CaptureChooser": "ScreenshotCaptureChooser",
+    "ScrollTargetFailureReason": "ScreenshotScrollTargetFailureReason",
+    "GIFOptions": "ScreenshotGIFOptions",
+    "LongCapturePreparedSource": "ScreenshotLongCapturePreparedSource",
+    "LocalTranslationResult": "ScreenshotLocalTranslationResult",
+    "RecordingConfiguration": "ScreenshotRecordingConfiguration",
+    "ScrollTargetGuard": "ScreenshotScrollTargetGuard",
+    "OCRController": "ScreenshotOCRController",
+    "AnnotationState": "ScreenshotAnnotationState",
+    "CaptureHome": "ScreenshotCaptureHome",
+    "OCRCorrectionView": "ScreenshotOCRCorrectionView",
+    "OCRPDFValidation": "ScreenshotOCRPDFValidation",
+    "OCRCancellationToken": "ScreenshotOCRCancellationToken",
+    "RecordingError": "ScreenshotRecordingError",
+    "OCRReadingOrder": "ScreenshotOCRReadingOrder",
+    "FileSafety": "ScreenshotFileSafety",
+    "ScrollCaptureBudget": "ScreenshotScrollCaptureBudget",
+    "RecordingPipeline": "ScreenshotRecordingPipeline",
+    "CaptureWindow": "ScreenshotCaptureWindow",
+    "OCRSource": "ScreenshotOCRSource",
+    "readImage": "ScreenshotReadImage",
+    "ScrollFocusEvidence": "ScreenshotScrollFocusEvidence",
+    "RecordingTimeline": "ScreenshotRecordingTimeline",
+    "ScrollSeamEstimate": "ScreenshotScrollSeamEstimate",
+    "AnnotationRenderer": "ScreenshotAnnotationRenderer",
+    "ScrollFrameSegment": "ScreenshotScrollFrameSegment",
+    "TranslationExecutionPhase": "ScreenshotTranslationExecutionPhase",
+    "HistoryEnvelope": "ScreenshotHistoryEnvelope",
+    "OCRRecoverySource": "ScreenshotOCRRecoverySource",
+    "PendingActionResult": "ScreenshotPendingActionResult",
+    "LongCaptureWindowCropResult": "ScreenshotLongCaptureWindowCropResult",
+    "PermissionService": "ScreenshotPermissionService",
+    "RecordingStateMachine": "ScreenshotRecordingStateMachine",
+    "CaptureSource": "ScreenshotCaptureSource",
+    "RecordingController": "ScreenshotRecordingController",
+    "GaoActionTransport": "ScreenshotGaoActionTransport",
+    "GaoFixedFD": "ScreenshotGaoFixedFD",
+    "PinnedImageRecord": "ScreenshotPinnedImageRecord",
+    "GaoValidatedPackage": "ScreenshotGaoValidatedPackage",
+    "RecordingRecovery": "ScreenshotRecordingRecovery",
+    "CapturedPixelColor": "ScreenshotCapturedPixelColor",
+    "RecordingMetrics": "ScreenshotRecordingMetrics",
+    "GaoActionItem": "ScreenshotGaoActionItem",
+    "RecordingAudioRoute": "ScreenshotRecordingAudioRoute",
+    "GaoJSONValue": "ScreenshotGaoJSONValue",
+    "CaptureWindowHitTesting": "ScreenshotCaptureWindowHitTesting",
+    "PinnedImageRestorePlan": "ScreenshotPinnedImageRestorePlan",
+    "AnnotationDocument": "ScreenshotAnnotationDocument",
+    "RecordingDiskSpace": "ScreenshotRecordingDiskSpace",
+    "AnnotationNSView": "ScreenshotAnnotationNSView",
+    "LiveScrollTargetProbe": "ScreenshotLiveScrollTargetProbe",
+    "CaptureRegionPlan": "ScreenshotCaptureRegionPlan",
+    "CaptureWindowEligibility": "ScreenshotCaptureWindowEligibility"
+  },
+  "files": [
+    {
+      "source": "Sources/Annotation/Annotation.swift",
+      "sourceSHA256": "b917d0b933b13b4544667b203939479b7b34d4bcde8abeb5440648514b422c1c",
+      "target": "Sources/ScreenshotAnnotation.swift",
+      "initialNamespacedSHA256": "d498757df65b94bf1e8fc7c42e443611f67bb9d9d9d975da6d7be847c90b3b25"
+    },
+    {
+      "source": "Sources/Capture/CaptureService.swift",
+      "sourceSHA256": "df9a4a5bda44f86ad9f9e03d86556acff9f9a6aefd99958d70ab86cb9d1772bd",
+      "target": "Sources/ScreenshotCaptureService.swift",
+      "initialNamespacedSHA256": "841de25860569e96632beb35997de9e57fae7d7ca483fc11ea847a2234675122"
+    },
+    {
+      "source": "Sources/Capture/LongCaptureOperation.swift",
+      "sourceSHA256": "f7c09e41c35f0bba380e98bb2ffdf1a005680b6101a1b90f8cfe832eb668a1b5",
+      "target": "Sources/ScreenshotLongCaptureOperation.swift",
+      "initialNamespacedSHA256": "e02346cfa787275872761facb274804ea02bcfa051ebbab6574f90109220f624"
+    },
+    {
+      "source": "Sources/Capture/LongCapturePanelController.swift",
+      "sourceSHA256": "0c92bf8522961f55f381cee697946660730b3d4687c102e6b26ca026940298e3",
+      "target": "Sources/ScreenshotLongCapturePanelController.swift",
+      "initialNamespacedSHA256": "34840113fe931e956410b4c055ca9ed877677efb9a317c0cca2aad52ef13dad5"
+    },
+    {
+      "source": "Sources/Capture/LongCaptureWindowCrop.swift",
+      "sourceSHA256": "2c3b221d1380fad0365bde5ecfce5439405d3f2497cd3c15701b22b87ed4c8ae",
+      "target": "Sources/ScreenshotLongCaptureWindowCrop.swift",
+      "initialNamespacedSHA256": "56792949d07d7708073d77230aa44cf1deec704169cc23e975b5cfb239ae1220"
+    },
+    {
+      "source": "Sources/Capture/LongScreenshotSession.swift",
+      "sourceSHA256": "b20c281b3d39e47c4b689a1c35c736ea1e400d2d07098e755e92321b83abfe4b",
+      "target": "Sources/ScreenshotLongScreenshotSession.swift",
+      "initialNamespacedSHA256": "dc8ff407c0ad092d8a28a9bfaba9238a07473b6f303306df49be2f9128cf62e0"
+    },
+    {
+      "source": "Sources/Capture/ScrollInputPolicy.swift",
+      "sourceSHA256": "2432f49a1c78ed720aca92245a79c9986657efe79fb497072df16ce57263107e",
+      "target": "Sources/ScreenshotScrollInputPolicy.swift",
+      "initialNamespacedSHA256": "57c130a8d2757e1e2cef1542eaf5b0ed5511bcd0561090c8ecaed46a2ba9ad33"
+    },
+    {
+      "source": "Sources/Capture/ScrollPixelEventBundle.swift",
+      "sourceSHA256": "8e97a9d102879a4b9d81a1402654ad7578449f4339c9ba88c3054aa5ff66ec6d",
+      "target": "Sources/ScreenshotScrollPixelEventBundle.swift",
+      "initialNamespacedSHA256": "71b1e058ec1e73425aa8ef1f0920cb6e215b52b08893de57641b898d90d55cde"
+    },
+    {
+      "source": "Sources/Capture/ScrollTargetGuard.swift",
+      "sourceSHA256": "01fd6d57422737ec084377a211094535766ad0cab898cc6aebf3ca3d48bab8c7",
+      "target": "Sources/ScreenshotScrollTargetGuard.swift",
+      "initialNamespacedSHA256": "5e9443d01b21d0c0b25177cd434db01cbd856c510f2ff5177c485732e95d35ca"
+    },
+    {
+      "source": "Sources/Capture/ScrollVisibilityPlan.swift",
+      "sourceSHA256": "78f1e41e26b40627629246c060c8d256802150137997846177de4fa4d40aa43d",
+      "target": "Sources/ScreenshotScrollVisibilityPlan.swift",
+      "initialNamespacedSHA256": "c7d2d290497c2b9db365e83964b8013e93ba784662356d2506437f56b5cffcdc"
+    },
+    {
+      "source": "Sources/Core/AppVersion.swift",
+      "sourceSHA256": "88d2ce0a6295bc7df1c4f8cc3c8bdaf7af7992c6c9a4cb46e6ad8dddc9bde95a",
+      "target": "Sources/ScreenshotAppVersion.swift",
+      "initialNamespacedSHA256": "9ad37604c2deec00c8a38380b4d700876359a5cf2f3656791a5eed6a0830f6a9"
+    },
+    {
+      "source": "Sources/Core/Core.swift",
+      "sourceSHA256": "a8ff93c9dd8aa6b79b464982e4e67f93ae4cb0fbddd5069db9747464bb042890",
+      "target": "Sources/ScreenshotCore.swift",
+      "initialNamespacedSHA256": "9533a7342e9337ca1d589f870eddb4bcca47cc3b9c91ba1fc450fcc997096b2b"
+    },
+    {
+      "source": "Sources/Core/DataBackup.swift",
+      "sourceSHA256": "78cc7140f1b77f51fd737c2e14bf2fea7cf68260f480786fda1966ecec88f542",
+      "target": "Sources/ScreenshotDataBackup.swift",
+      "initialNamespacedSHA256": "0d700488f57cc2b06daeb5e2a3d8ca17ccc63e58959014d944fa469e77a4eb11"
+    },
+    {
+      "source": "Sources/Core/PermissionService.swift",
+      "sourceSHA256": "6187dcf0c13b095b84c2d1077cc370d3992737439a84d8ebf934aaafe96e2ae0",
+      "target": "Sources/ScreenshotPermissionService.swift",
+      "initialNamespacedSHA256": "bfe699164adbf7cb9f5957f889d31261cdbc9da728e494d65cd36409a023ab01"
+    },
+    {
+      "source": "Sources/Exchange/ActionTaskHandle.swift",
+      "sourceSHA256": "61e0561b07b961e0c7badeda4e10b951482c3d5058c0e624586f2f943a83fd31",
+      "target": "Sources/ScreenshotActionTaskHandle.swift",
+      "initialNamespacedSHA256": "88f5a447bac34403f1927e1b7fb8927e1c8664123281ca5d1c56a1b73b34f599"
+    },
+    {
+      "source": "Sources/Exchange/GaoActionCapabilities.swift",
+      "sourceSHA256": "7e226590f88ed88a50c3ab867a5e190ac8827e59974dc78e480f8aa3c51166c8",
+      "target": "Sources/ScreenshotGaoActionCapabilities.swift",
+      "initialNamespacedSHA256": "7db86b8fa35b43d52522565784480233b11d09b59384223a2410d553619e65e4"
+    },
+    {
+      "source": "Sources/Exchange/GaoActionModel.swift",
+      "sourceSHA256": "12b2b18db4a63372f2e71a801d46109cc76948f099f6e1a8e9c2dce60ed5b673",
+      "target": "Sources/ScreenshotGaoActionModel.swift",
+      "initialNamespacedSHA256": "4d7264aef360f7778fec1c45edaf6f96b7ae43991a4e4b0ecb2022ee92dc6dae"
+    },
+    {
+      "source": "Sources/Exchange/GaoActionState.swift",
+      "sourceSHA256": "55f7c40a8724a64eb8e2473850d650a214579658886315236812bfe8381e7b21",
+      "target": "Sources/ScreenshotGaoActionState.swift",
+      "initialNamespacedSHA256": "49b5a3777730579fc91d12804b72e9336a16b54345afef4b81b674dc76bb8558"
+    },
+    {
+      "source": "Sources/Exchange/GaoActionTransport.swift",
+      "sourceSHA256": "a1a17b254de0c6c1189099f88092cf6533bb41c89dadd0e8cca2e13d8056249f",
+      "target": "Sources/ScreenshotGaoActionTransport.swift",
+      "initialNamespacedSHA256": "3fa846d30b86805a9034b14b30ae4e0f52666b6ee320166c4697bd809266b44d"
+    },
+    {
+      "source": "Sources/OCR/OCRController.swift",
+      "sourceSHA256": "4bfe1b1ed5df3bab102058987fb43095735e61c1ec5644816d65c6dc229c86cb",
+      "target": "Sources/ScreenshotOCRController.swift",
+      "initialNamespacedSHA256": "28e4dcab70a7eb38857d1ff55aaab23694db1b06e8a1cf36bde1d5c5f5ad8b09"
+    },
+    {
+      "source": "Sources/OCR/OCRExporter.swift",
+      "sourceSHA256": "f6acc6c9b48e6ecde5da1292dc8aa5d5a1d9983935e22caae0871b3bc016cc3f",
+      "target": "Sources/ScreenshotOCRExporter.swift",
+      "initialNamespacedSHA256": "39bedba9735ee3a4e0cb3f4c0f9d86a4d9062bec9b009db4cb296aa86bc140fb"
+    },
+    {
+      "source": "Sources/OCR/OCRModels.swift",
+      "sourceSHA256": "6a9601b0e3ff18e3d6957ff06e0dc83f45d13a0f8234782e11814ddce64fdf55",
+      "target": "Sources/ScreenshotOCRModels.swift",
+      "initialNamespacedSHA256": "e97998591b42841652fd1510af7120bae9f6093faaa420f0ef608236480743b1"
+    },
+    {
+      "source": "Sources/OCR/OCRRecoveryStore.swift",
+      "sourceSHA256": "03c9a06d22036cfece4717ffc2efbf37694a9991b1a34f6f34a408881d42c98a",
+      "target": "Sources/ScreenshotOCRRecoveryStore.swift",
+      "initialNamespacedSHA256": "1f1972eecd48c779b8f5900ff6b4c5c4d11447f5db9c5b938c193f03c0fe5a0d"
+    },
+    {
+      "source": "Sources/OCR/OCRService.swift",
+      "sourceSHA256": "39709dd77c609953c7af792214e0d18ef1c5adece1f7ebb874b0db11ed7ba3ea",
+      "target": "Sources/ScreenshotOCRService.swift",
+      "initialNamespacedSHA256": "9d5f47c37aba13692d03e89603348c963fb5d310a3e008510a42f3a42cf7f5a1"
+    },
+    {
+      "source": "Sources/PinnedImage/PinnedImageController.swift",
+      "sourceSHA256": "d5a9fa60617bc96d84e1a7d7e7774650b3c4a1f9853e4fdcf33bc8d794812111",
+      "target": "Sources/ScreenshotPinnedImageController.swift",
+      "initialNamespacedSHA256": "fa5a5ae63fc1379d313a898dd86df4893d2fcfdf42b8a8aa62e86a9fad89bced"
+    },
+    {
+      "source": "Sources/Recording/GIFExporter.swift",
+      "sourceSHA256": "e7abc53920b8e70646e3f9e91bb7961187ba05a825bc5e16d8014130a0060e28",
+      "target": "Sources/ScreenshotGIFExporter.swift",
+      "initialNamespacedSHA256": "d9d5004a1a5a12c1cf0f478fe78f12473eb2fd1ba8a577071b360453db4a54c6"
+    },
+    {
+      "source": "Sources/Recording/RecordingController.swift",
+      "sourceSHA256": "280d3886f75d1e5caacc02f45d1441f1eff98abc23f6c66fd223dc237904ad00",
+      "target": "Sources/ScreenshotRecordingController.swift",
+      "initialNamespacedSHA256": "6a0fec553a4b92e404a0efa9a5db3fa01680affe978f8c50f2fed40bd758b7b9"
+    },
+    {
+      "source": "Sources/Recording/RecordingModels.swift",
+      "sourceSHA256": "8855817d886c9d7fab95c9360ae8c42a68be16ba233dae5976776cac2c984d42",
+      "target": "Sources/ScreenshotRecordingModels.swift",
+      "initialNamespacedSHA256": "f1d53f6decc91f9d083c6ec8257322da3e04f9174e43df36adad6b1122b46c51"
+    },
+    {
+      "source": "Sources/Recording/RecordingPipeline.swift",
+      "sourceSHA256": "996d8cb429e65303be4fe50599c771b9787195c7266e01d1fc7922fd5cd22fde",
+      "target": "Sources/ScreenshotRecordingPipeline.swift",
+      "initialNamespacedSHA256": "7b45bc895fa6cd7212283dd1857fd30225649582c3130bf7ff17e153efd5355c"
+    },
+    {
+      "source": "Sources/Recording/RecordingRecovery.swift",
+      "sourceSHA256": "ec767c6184792493d702e206da709c9b54edd10431d4a900d1b409a78e1ff5c2",
+      "target": "Sources/ScreenshotRecordingRecovery.swift",
+      "initialNamespacedSHA256": "ab8c51d07c5f5236ac7f5e47d451c827d350f9e453234edc18189fe23136784a"
+    },
+    {
+      "source": "Sources/SelectionOverlay/CaptureSelectionController.swift",
+      "sourceSHA256": "c46a64f7e72f9ae60fd5f2bb56c5f47544c9a84b298baad142e6e07a1b9c5373",
+      "target": "Sources/ScreenshotCaptureSelectionController.swift",
+      "initialNamespacedSHA256": "6204d762fee775f6fca0388cf2515068cfe6a6b4790a94a08ac9b77c973ceea5"
+    },
+    {
+      "source": "Sources/Translation/TranslationOperation.swift",
+      "sourceSHA256": "e7f21d510ad927daef3d6ae035426b1181a248b32b5683abf4bbe1532c67ca0c",
+      "target": "Sources/ScreenshotTranslationOperation.swift",
+      "initialNamespacedSHA256": "6eac27cf76297e97f6018d1c3e6afc85605f3e453a36d81f3eabf782efbc2f3f"
+    },
+    {
+      "source": "Sources/Translation/TranslationPanel.swift",
+      "sourceSHA256": "c2281740ce7f60741aecc665d1e8a06049ea74e676a2bdbbda013f14c81aa9a3",
+      "target": "Sources/ScreenshotTranslationPanel.swift",
+      "initialNamespacedSHA256": "76650f13db8248a25b24a1c4660e920a309717f00a261d8bb0a86a8858ad5e08"
+    },
+    {
+      "source": "Sources/UI/App.swift",
+      "sourceSHA256": "1a0e34682a840820e95d7ae39bdfb4954ae8f9b5602a76276f77cc8530b89b63",
+      "target": "Sources/ScreenshotApp.swift",
+      "initialNamespacedSHA256": "69ea2f7348a3e58de7deb18c3a7da66068b820e587b5070d6431882844b27e56"
+    },
+    {
+      "source": "Sources/UI/AppActions.swift",
+      "sourceSHA256": "69bc76a42584b217a0c615f08d3684898bfa5fc9621136657437652279293408",
+      "target": "Sources/ScreenshotAppActions.swift",
+      "initialNamespacedSHA256": "b976910b7651f74415568d36761f4abef6bd791b0c984eafc60cf2c0ffeb6787"
+    },
+    {
+      "source": "Sources/UI/ExchangeController.swift",
+      "sourceSHA256": "4193cf8d64a7296af1b34754fa5e1fd04faeadf08fca2115cfcc2a6ed20673b9",
+      "target": "Sources/ScreenshotExchangeController.swift",
+      "initialNamespacedSHA256": "7bf97945d5bf15762697abc9cb677f88c96994e3f7270dbc6c60efe93c606359"
+    },
+    {
+      "source": "Sources/UI/MainView.swift",
+      "sourceSHA256": "fed2f46d526b47d53393395692b5489a03a3118b7e2f1aee42aea3ec28703a33",
+      "target": "Sources/ScreenshotMainView.swift",
+      "initialNamespacedSHA256": "6336adbfe8afb2174b7d61aaf82a5442e5572887106d4ff34b958f22cc9fcc42"
+    },
+    {
+      "source": "Sources/UI/OCRView.swift",
+      "sourceSHA256": "326473a18981f45060f2356a1d083002f6c25cb633737b0373245e2df305c6fd",
+      "target": "Sources/ScreenshotOCRView.swift",
+      "initialNamespacedSHA256": "05984d27a4ad3b3e0dc692eb9803b6033b0994cffa1f82d138045cad8710426f"
+    },
+    {
+      "source": "Sources/UI/RecordingView.swift",
+      "sourceSHA256": "cdb33a77d0420b7b7de17352429111c90be2430cd00154e02ff98b9b36422ada",
+      "target": "Sources/ScreenshotRecordingView.swift",
+      "initialNamespacedSHA256": "a5008a52785220e51a2229ac5e60235c817cc62c0aaa350a008763791db17efb"
+    },
+    {
+      "source": "Sources/UI/SettingsView.swift",
+      "sourceSHA256": "7401f211984849de2bf260ceb7e7b9aceaf8739dfa3a2b2ecedaca1b84a97c18",
+      "target": "Sources/ScreenshotSettingsView.swift",
+      "initialNamespacedSHA256": "45fd69e18d9c3622a5e31f12b8c79deb35129f434850d1d82b9da29ba4132f34"
+    }
+  ]
+}

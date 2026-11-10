@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "bundleID": "com.gaoseries.GaoCaoZuo",
+  "appVersion": "1.15",
+  "actions": [],
+  "resultActions": [
+    "downloads.prepare"
+  ]
+}

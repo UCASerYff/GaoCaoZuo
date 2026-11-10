@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from xml.parsers.expat import ExpatError
 
 BUNDLE = "com.gaoseries.GaoCaoZuo"
 APP_NAME = "搞操作.app"
@@ -60,9 +61,19 @@ def atomic_json(path, content):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(str(temporary), str(path))
+        sync_directory(path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def sync_directory(path):
+    """Persist directory entries, including receipt replacements and App moves."""
+    fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def digest_file(path):
@@ -209,6 +220,12 @@ def ensure_not_running(target, simulate):
         return
     info = app_info(target)
     executable = str(target / "Contents/MacOS" / info["CFBundleExecutable"])
+    ensure_executable_not_running(executable, simulate)
+
+
+def ensure_executable_not_running(executable, simulate):
+    if simulate:
+        return
     for line in run(["/bin/ps", "-axo", "pid=,comm="]).splitlines():
         pieces = line.strip().split(None, 1)
         if len(pieces) == 2 and pieces[1] == executable:
@@ -298,13 +315,183 @@ def verify_backup(manifest):
                 fail("安全备份校验失败，禁止删除旧程序：" + key)
 
 
+def program_backup_record(manifest, path):
+    """A recovery pointer can only name this transaction's private fixed path."""
+    record = manifest.get("program_backup")
+    if not isinstance(record, dict) or not manifest.get("had_previous"):
+        fail("缺少独立旧程序恢复记录，保留暂存并停止。")
+    container = path.parent / "Program.noindex"
+    backup = container / APP_NAME
+    if (record.get("state") not in ("planned", "retained")
+            or record.get("backup_path") != str(backup)
+            or record.get("inventory") != manifest.get("previous_inventory")
+            or not isinstance(record.get("inventory"), dict)
+            or record["inventory"].get("state") != "present"
+            or any(type(record.get(key)) is not int for key in ("device", "inode"))):
+        fail("旧程序恢复指针、库存或身份无效，禁止继续。")
+    for directory in (path.parent, container):
+        details = directory.lstat()
+        if (not stat.S_ISDIR(details.st_mode) or directory.is_symlink()
+                or details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
+            fail("程序恢复容器必须为当前用户私有实际目录：" + str(directory))
+    return record, backup
+
+
+def verify_program_backup(manifest, path):
+    record, backup = program_backup_record(manifest, path)
+    details = backup.lstat()
+    if (not stat.S_ISDIR(details.st_mode) or backup.is_symlink()
+            or (details.st_dev, details.st_ino) != (record["device"], record["inode"])):
+        fail("旧程序恢复原件身份发生变化，禁止清理或恢复。")
+    verify_signature(backup, manifest["simulate"])
+    if inventory(backup, permit_symlinks=True) != record["inventory"]:
+        fail("独立旧程序恢复原件校验失败，禁止清理或恢复。")
+    return backup
+
+
+def verify_program_pointer(manifest, path):
+    with path.open(encoding="utf-8") as stream:
+        durable = json.load(stream)
+    if (durable.get("program_backup") != manifest.get("program_backup")
+            or durable.get("previous_inventory") != manifest.get("previous_inventory")
+            or durable.get("nonce") != manifest.get("nonce")
+            or durable.get("bundle_id") != BUNDLE):
+        fail("旧程序恢复记录回读不符，保留所有程序并停止。")
+
+
+def preserve_previous_program(manifest, path):
+    """Retain the original inode before any stage cleanup; retry after interruption."""
+    if not manifest["had_previous"]:
+        if "program_backup" in manifest:
+            fail("首次安装不能含有旧程序恢复记录。")
+        return
+    stage = Path(manifest["stage_dir"])
+    previous = stage / "previous.app"
+    container = path.parent / "Program.noindex"
+    backup = container / APP_NAME
+    if "program_backup" not in manifest:
+        # Never infer an absent old program from an empty or already removed stage.
+        ensure_not_running(previous, manifest["simulate"])
+        verify_signature(previous, manifest["simulate"])
+        if inventory(previous, permit_symlinks=True) != manifest.get("previous_inventory"):
+            fail("旧程序暂存缺失或已改变，禁止确认安装。")
+        if container.is_symlink():
+            fail("程序恢复容器不可为符号链接。")
+        if not container.exists():
+            container.mkdir(mode=0o700)
+            sync_directory(container.parent)
+            sync_directory(container.parent.parent)
+        elif any(container.iterdir()):
+            fail("存在未归属的程序恢复实物，禁止覆盖。")
+        details = previous.stat()
+        if container.stat().st_dev != details.st_dev:
+            fail("程序恢复容器与旧程序不在同一卷，保留暂存；禁止跨卷移动。")
+        manifest["program_backup"] = {
+            "state": "planned", "backup_path": str(backup),
+            "inventory": manifest["previous_inventory"],
+            "device": details.st_dev, "inode": details.st_ino,
+        }
+        program_backup_record(manifest, path)
+        atomic_json(path, manifest)
+    record, _ = program_backup_record(manifest, path)
+    verify_program_pointer(manifest, path)
+    if previous.exists():
+        if backup.exists() or backup.is_symlink():
+            fail("暂存与独立恢复位置同时有旧程序，禁止覆盖或清理。")
+        ensure_not_running(previous, manifest["simulate"])
+        verify_signature(previous, manifest["simulate"])
+        details = previous.stat()
+        if ((details.st_dev, details.st_ino) != (record["device"], record["inode"])
+                or container.stat().st_dev != details.st_dev
+                or inventory(previous, permit_symlinks=True) != record["inventory"]):
+            fail("旧程序移动前身份、卷或库存改变，保留现场。")
+        previous.rename(backup)
+    # Also fsync on a retry after a move whose directory sync was interrupted.
+    if stage.exists():
+        sync_directory(stage)
+    sync_directory(container)
+    verify_program_backup(manifest, path)
+    register(backup, manifest["simulate"], remove=True)
+    record["state"] = "retained"
+    atomic_json(path, manifest)
+    verify_program_pointer(manifest, path)
+    verify_program_backup(manifest, path)
+
+
+def prepare_retained_restore(manifest, path):
+    """Restore through a disposable verified copy; never consume the retained App."""
+    backup = verify_program_backup(manifest, path)
+    verify_program_pointer(manifest, path)
+    ensure_not_running(backup, manifest["simulate"])
+    stage = Path(manifest["stage_dir"])
+    if not stage.name.endswith(".noindex"):
+        # Legacy receipts remain rollback-compatible without generating new Apps
+        # inside their historical indexable staging location.
+        stage = stage.with_name(stage.name + ".noindex")
+        manifest["rollback_stage_dir"] = str(stage)
+        atomic_json(path, manifest)
+    if stage.is_symlink():
+        fail("回滚暂存不可为符号链接。")
+    if not stage.exists():
+        stage.mkdir(mode=0o700)
+        sync_directory(stage.parent)
+    details = stage.lstat()
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != os.getuid()
+            or stat.S_IMODE(details.st_mode) & 0o077):
+        fail("回滚暂存必须为当前用户私有目录。")
+    previous = stage / "previous.app"
+    copying = stage / "recovery-copy.app"
+    if previous.exists():
+        fail("恢复目标已存在，禁止覆盖。")
+    if copying.exists() or copying.is_symlink():
+        if copying.is_symlink() or not copying.is_dir():
+            fail("恢复复制暂存无效，保留现场。")
+        # Only the fixed disposable copy may be retried, with the original still
+        # independently verified above. Never modify the long-lived recovery App.
+        executable = app_info(backup)["CFBundleExecutable"]
+        ensure_executable_not_running(str(copying / "Contents/MacOS" / executable), manifest["simulate"])
+        info_path = copying / "Contents/Info.plist"
+        if info_path.exists():
+            try:
+                with info_path.open("rb") as stream:
+                    info = plistlib.load(stream)
+            except (plistlib.InvalidFileException, ValueError, EOFError, ExpatError):
+                # A torn metadata copy is not a launchable App. This fixed private
+                # scratch path can be rebuilt from the independently verified App.
+                info = None
+            if info is not None:
+                if info.get("CFBundleIdentifier") != BUNDLE or info.get("CFBundleExecutable") != executable:
+                    fail("恢复复制暂存出现无关应用，禁止删除。")
+                if (copying / "Contents/MacOS" / executable).is_file():
+                    register(copying, manifest["simulate"], remove=True)
+        shutil.rmtree(str(copying))
+    copy_verified(backup, copying, manifest["simulate"], permit_symlinks=True)
+    verify_signature(copying, manifest["simulate"])
+    verify_program_backup(manifest, path)
+    copying.rename(previous)
+    sync_directory(stage)
+    return stage
+
+
 def rollback(manifest, path):
     target = Path(manifest["target_app"])
-    stage = Path(manifest["stage_dir"])
+    original_stage = Path(manifest["stage_dir"])
+    stage = Path(manifest.get("rollback_stage_dir", manifest["stage_dir"]))
+    safe_stage = original_stage if original_stage.name.endswith(".noindex") else original_stage.with_name(original_stage.name + ".noindex")
+    if stage not in (original_stage, safe_stage) or stage.is_symlink():
+        fail("回滚暂存路径无效。")
     previous = stage / "previous.app"
     failed = stage / "failed-candidate.app"
     simulate = manifest["simulate"]
     ensure_not_running(target, simulate)
+    if "program_backup" in manifest:
+        _, retained = program_backup_record(manifest, path)
+        if not retained.exists() and not retained.is_symlink():
+            # A durable plan may have stopped before its move. Complete the
+            # retention before restoring, rather than leave a dangling pointer.
+            preserve_previous_program(manifest, path)
+        verify_program_backup(manifest, path)
+        verify_program_pointer(manifest, path)
     # If a registration command failed after the old app was restored, a retry
     # resumes that exact recovery rather than replacing the saved failed candidate.
     # A prepared transaction may have stopped before moving the old program,
@@ -322,7 +509,11 @@ def rollback(manifest, path):
             fail("已有待检查的失败程序，禁止覆盖：" + str(failed))
         if manifest["had_previous"]:
             if not previous.exists():
-                fail("旧程序未找到，已保留现有资料与备份，请人工核验安装记录。")
+                stage = prepare_retained_restore(manifest, path)
+                previous = stage / "previous.app"
+                failed = stage / "failed-candidate.app"
+                if failed.exists():
+                    fail("已有待检查的失败程序，禁止覆盖：" + str(failed))
             ensure_not_running(previous, simulate)
             verify_signature(previous, simulate)
             if inventory(previous, permit_symlinks=True) != manifest.get("previous_inventory"):
@@ -335,6 +526,8 @@ def rollback(manifest, path):
             target.rename(failed)
         if manifest["had_previous"]:
             previous.rename(target)
+            sync_directory(target.parent)
+            sync_directory(stage)
     if failed.exists():
         ensure_not_running(failed, simulate)
         app_info(failed)
@@ -361,6 +554,8 @@ def rollback(manifest, path):
         manifest["failed_candidate"]["removed_after_registration"] = True
     if stage.exists() and not any(stage.iterdir()):
         stage.rmdir()
+    if original_stage != stage and original_stage.exists() and not any(original_stage.iterdir()):
+        original_stage.rmdir()
     manifest["state"] = "rolled_back"
     manifest["rolled_back_at"] = datetime.datetime.now().astimezone().isoformat()
     atomic_json(path, manifest)
@@ -406,7 +601,7 @@ def install(args):
         for prior in backup_root.glob("安装-*/manifest.json"):
             with prior.open(encoding="utf-8") as stream:
                 recorded = json.load(stream)
-            if recorded.get("bundle_id") == BUNDLE and recorded.get("state") in ("prepared", "installed_pending_verification"):
+            if recorded.get("bundle_id") == BUNDLE and recorded.get("state") in ("prepared", "installed_pending_verification", "rollback_in_progress"):
                 fail("存在未完成验收的安装，请先验证或回滚：" + str(prior))
         nonce = uuid.uuid4().hex
         stamp = datetime.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
@@ -486,11 +681,23 @@ def finalize(args):
     path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(path)
     with installation_lock(Path(manifest["backup_root"])):
-        if manifest["state"] in ("verified", "rolled_back"):
+        if manifest["state"] == "rolled_back" or (manifest["state"] == "verified" and not args.rollback):
+            if manifest["state"] == "verified" and "program_backup" in manifest:
+                verify_program_backup(manifest, path)
+                verify_program_pointer(manifest, path)
             print("安装事务已完成：" + manifest["state"])
             return
         if args.rollback:
-            if manifest["state"] not in ("prepared", "installed_pending_verification"):
+            if manifest["state"] == "verified":
+                # Historical verified receipts without a retained program are not
+                # treated as recoverable merely because they say "verified".
+                verify_program_backup(manifest, path)
+                verify_backup(manifest)
+                if inventory(Path(manifest["target_app"]), permit_symlinks=True) != manifest["candidate_inventory"]:
+                    fail("正式程序已不再是此事务的候选，禁止用旧事务覆盖后续安装。")
+                manifest["state"] = "rollback_in_progress"
+                atomic_json(path, manifest)
+            elif manifest["state"] not in ("prepared", "installed_pending_verification", "rollback_in_progress"):
                 fail("此安装事务没有可核验的已准备程序，禁止回滚。")
             rollback(manifest, path)
             return
@@ -546,8 +753,10 @@ def finalize(args):
         # before deleting the recovery copy. Any failed command leaves the pending
         # transaction, stage and data backups intact and safely retryable.
         register(target, manifest["simulate"])
+        preserve_previous_program(manifest, path)
         if stage.exists():
             shutil.rmtree(str(stage))
+            sync_directory(stage.parent)
         manifest["state"] = "verified"
         manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()
         manifest["verification_scope"] = scope
@@ -555,7 +764,7 @@ def finalize(args):
         atomic_json(path, manifest)
         if not manifest["simulate"]:
             cleanup_old_releases(manifest["version"])
-        print("安装核验已确认（" + ("静态与定向验证；未运行冒烟或GUI验收" if scope == "static-and-targeted" else "人工验收") + "），旧程序和本次安装暂存已删除。用户资料与安全备份保留。")
+        print("安装核验已确认（" + ("静态与定向验证；未运行冒烟或GUI验收" if scope == "static-and-targeted" else "人工验收") + "），本次安装暂存已删除；旧程序原件在私有 Program.noindex 中长期保留。用户资料与安全备份保留。")
 
 
 def cleanup_old_releases(current_version):

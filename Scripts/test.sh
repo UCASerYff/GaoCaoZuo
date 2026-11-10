@@ -6,7 +6,7 @@ if [[ "${1:-}" == '--swift-only' ]]; then
   TEST_SWIFT_ONLY=true
   shift
 fi
-TEST_ROOT=$(mktemp -d /private/tmp/gaocaozuo-tests.XXXXXX)
+TEST_ROOT=$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="gaocaozuo-tests-", suffix=".noindex", dir="/private/tmp"))')
 STAGING="$TEST_ROOT/Build.noindex"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$STAGING/Tests.app/Contents/MacOS"
@@ -19,6 +19,7 @@ Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoserie
 PY
 if [[ "$TEST_SWIFT_ONLY" == false ]]; then
 python3 -B "$PROJECT_DIR/Tests/InstallTests.py"
+python3 -B "$PROJECT_DIR/Tests/ProgramBackupTests.py"
 python3 -B "$PROJECT_DIR/Tests/ReplacementPreparationTests.py"
 python3 -B "$PROJECT_DIR/Tests/TemplateAssetTests.py"
 python3 -B "$PROJECT_DIR/Tests/FinderCallbackTests.py"
@@ -41,7 +42,7 @@ if [[ -f "$PROJECT_DIR/Tests/TestMain.swift" ]]; then
     -module-cache-path "$STAGING/cache" "$STAGING"/Sources/*.swift "$STAGING"/Shared/*.swift "${TEST_FILES[@]}" \
     -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers -framework CryptoKit \
     -framework ApplicationServices -framework Carbon -framework CoreImage -framework ServiceManagement \
-    -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -o "$STAGING/Tests.app/Contents/MacOS/tests"
+    -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -framework ScreenCaptureKit -framework AVFoundation -framework AVKit -framework Vision -framework PDFKit -framework Accelerate -o "$STAGING/Tests.app/Contents/MacOS/tests"
   "$STAGING/Tests.app/Contents/MacOS/tests" --data-dir "$STAGING/data" --engine "$PROJECT_DIR/Resources/Tools/7zz" "$@"
 else
   print '尚无 Tests/TestMain.swift，已完成独立安装与图标测试。'

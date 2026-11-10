@@ -11,11 +11,19 @@ import SwiftUI
         do {
             if var value=try data.load("finder-menu.json",as:FinderMenuPreferences.self) {
                 guard value.schema == 1 else {throw DataFailure.message("右键配置来自更新版本，原配置已保留。")}
-                let legacyTitles=["file.ishot":"打开 iShot","file.ishot.markup":"用 iShot 打开图片","file.diskmap":"DiskMap 分析"]
+                let legacyTitles:[String:Set<String>]=[
+                    "file.ishot":["打开 iShot","用搞截图截取区域"],
+                    "file.ishot.markup":["用 iShot 打开图片","用搞截图标注图片"],
+                    "file.diskmap":["DiskMap 分析"],
+                    "file.capture.window":["用搞截图截取窗口"],
+                    "file.capture.display":["用搞截图截取屏幕"],
+                    "file.images.pin":["用搞截图贴图"],
+                    "file.ocr":["用搞截图识别文字"]
+                ]
                 let defaults=Dictionary(uniqueKeysWithValues:FinderMenuPreferences.defaults.map{($0.id,$0.title)})
                 for index in value.items.indices {
                     let item=value.items[index]
-                    if legacyTitles[item.id] == item.title,let replacement=defaults[item.id] {value.items[index].title=replacement}
+                    if legacyTitles[item.id]?.contains(item.title) == true,let replacement=defaults[item.id] {value.items[index].title=replacement}
                 }
                 let ids=Set(value.items.map(\.id));value.items += FinderMenuPreferences.defaults.filter{!ids.contains($0.id)}
                 preferences=value

@@ -4,7 +4,28 @@ import Darwin
 
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--screenshot-retirement-host-only") {
+            setbuf(stdout,nil)
+            try await runScreenshotImportedOCRRestoreTests()
+            return
+        }
+        if CommandLine.arguments.contains("--screenshot-host-integration-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try await runGaoActionTests()
+            try runScreenshotHostStoreTests()
+            try runInputLifecycleTests()
+            return
+        }
         setbuf(stdout,nil)
+        if CommandLine.arguments.contains("--desktop-lock-integration-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try await runGaoActionTests()
+            try runDesktopProviderTests()
+            try runDesktopOverviewTests()
+            try runLocalLockPolicyTests()
+            try runLegacyDesktopMigrationTests()
+            return
+        }
         if CommandLine.arguments.contains("--device-service-refresh-only") {
             try runHIDEventServiceRefreshTests()
             return

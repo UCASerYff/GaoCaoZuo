@@ -4,7 +4,7 @@ import Darwin
 
 @MainActor func runGaoActionTests() async throws {
     let fm=FileManager.default,clock=GaoActionV1.parseDate("2026-10-12T12:00:00Z")!
-    let temp=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("GaoAction-Tests-"+UUID().uuidString,isDirectory:true)
+    let temp=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("GaoAction-Tests-"+UUID().uuidString+".noindex",isDirectory:true)
     try fm.createDirectory(at:temp,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700]);defer{try? fm.removeItem(at:temp)}
     let nonce=Data(repeating:0,count:32).base64EncodedString(),hello=Data("hello\n".utf8)
     let hash="5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
@@ -33,6 +33,9 @@ import Darwin
         return url
     }
     func validate(_ m:GaoActionManifest) throws {try GaoActionV1.validateManifest(m,now:clock)}
+    try assert(GaoActionV1.owners["capture.region"]==GaoActionV1.ownBundleID,"截图已属于当前宿主")
+    var oldScreenshot=request(90,action:"capture.region");oldScreenshot.targetBundleID="com.gaoseries.GaoJieTu"
+    try rejected("旧截图目标不能变成宿主新请求") {try validate(oldScreenshot)}
     var known=Set<String>()
     try assert(GaoActionV1.calculateSHA256(data:hello)==hash,"canonical UTF-8 hello 摘要")
     // Fixed V1 fixtures, with targets assigned to the actual owner of each action.
@@ -45,7 +48,9 @@ import Darwin
     let storageURL=try package(storage)
     let loadedStorage=try GaoActionV1.validatePackageDirectory(at:storageURL,now:clock,knownIDs:&known)
     try assert(loadedStorage.references[0].declaredIdentity?.inode==storage.references[0].declaredIdentity?.inode,"v1-storage-directory 实际身份")
-    let ocr=GaoActionManifest(kind:.result,requestID:id(3),sourceBundleID:"com.gaoseries.GaoJieTu",targetBundleID:GaoActionV1.ownBundleID,action:"ocr.files",createdAt:first.createdAt,expiresAt:first.expiresAt,nonce:nonce,inReplyTo:id(3),status:.partial,provenance:["pagesProcessed":.init(2),"pagesSucceeded":.init(1),"sources":.init([["sourceItemID":"item-1","sourceSHA256":hash,"pages":[["page":1,"status":"completed"],["page":2,"status":"failed"]]]])])
+    let ocr=GaoActionManifest(kind:.result,requestID:id(3),sourceBundleID:"com.gaoseries.GaoCaoZuo",targetBundleID:GaoActionV1.ownBundleID,action:"ocr.files",createdAt:first.createdAt,expiresAt:first.expiresAt,nonce:nonce,inReplyTo:id(3),status:.partial,provenance:["pagesProcessed":.init(2),"pagesSucceeded":.init(1),"sources":.init([["sourceItemID":"item-1","sourceSHA256":hash,"pages":[["page":1,"status":"completed"],["page":2,"status":"failed"]]]])])
+    var oldOCR=ocr;oldOCR.sourceBundleID="com.gaoseries.GaoJieTu"
+    try rejected("旧截图声明不能成为新宿主结果") {try validate(oldOCR)}
     let ocrURL=try package(ocr)
     let loadedOCR=try GaoActionV1.validatePackageDirectory(at:ocrURL,now:clock,knownIDs:&known,expectedTarget:GaoActionV1.ownBundleID)
     try assert(loadedOCR.status == .partial && loadedOCR.inReplyTo==id(3),"v1-ocr-partial 保留逐页失败与关联")
@@ -222,7 +227,7 @@ import Darwin
     try assert(try Data(contentsOf:retained)==hello,"预算拒绝不会删除未完成副本")
     var captureResult=ocr;captureResult.action="capture.region";captureResult.status = .completed;captureResult.provenance=[:]
     try rejected("截图完成但无图像") {try validate(captureResult)}
-    var downloadResult=ocr;downloadResult.action="downloads.prepare";downloadResult.sourceBundleID="com.gaoseries.GaoXiaZai";downloadResult.status = .completed;downloadResult.provenance=["workflowState":.init("accepted"),"taskIDs":.init(["task-1"])]
+    var downloadResult=ocr;downloadResult.action="downloads.prepare";downloadResult.sourceBundleID="cn.mendao.launcher";downloadResult.status = .completed;downloadResult.provenance=["workflowState":.init("accepted"),"taskIDs":.init(["task-1"])]
     try rejected("下载accepted不得当完成") {try validate(downloadResult)}
     downloadResult.status = .pending;try validate(downloadResult);checks += 1
     var pinResult=ocr;pinResult.action="images.pin";pinResult.status = .completed;pinResult.provenance=["workflowState":.init("opened")]
@@ -234,12 +239,12 @@ import Darwin
     // Real installed provider capability gating is read-only; synthetic app tests below never launch apps.
     let fake=temp.appendingPathComponent("Fake.app"),resources=fake.appendingPathComponent("Contents/Resources",isDirectory:true)
     try fm.createDirectory(at:resources,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-    let info:[String:Any]=["CFBundleIdentifier":"com.gaoseries.GaoJieTu","CFBundleShortVersionString":"1.00","CFBundlePackageType":"APPL"]
+    let info:[String:Any]=["CFBundleIdentifier":"com.gaoseries.GaoCaoZuo","CFBundleShortVersionString":"1.00","CFBundlePackageType":"APPL"]
     try PropertyListSerialization.data(fromPropertyList:info,format:.xml,options:0).write(to:fake.appendingPathComponent("Contents/Info.plist"))
-    try rejected("已安装但无能力表") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoJieTu")}
-    let caps:[String:Any]=["schemaVersion":1,"bundleID":"com.gaoseries.GaoJieTu","appVersion":"1.00","actions":[["action":"capture.region","parametersSchema":["type":"object","properties":["delaySeconds":["type":"number","minimum":0,"maximum":60]],"additionalProperties":false],"supportsItems":false,"supportsReferences":false]]]
+    try rejected("已安装但无能力表") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoCaoZuo")}
+    let caps:[String:Any]=["schemaVersion":1,"bundleID":"com.gaoseries.GaoCaoZuo","appVersion":"1.00","actions":[["action":"capture.region","parametersSchema":["type":"object","properties":["delaySeconds":["type":"number","minimum":0,"maximum":60]],"additionalProperties":false],"supportsItems":false,"supportsReferences":false]]]
     try JSONSerialization.data(withJSONObject:caps).write(to:resources.appendingPathComponent("GaoCapabilities.json"))
-    let capability=try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoJieTu")
+    let capability=try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoCaoZuo")
     try capability.require(action:"capture.region",parameters:["delaySeconds":5],items:false,references:false);checks += 1
     try rejected("未声明动作") {try capability.require(action:"capture.display",parameters:[:],items:false,references:false)}
     try rejected("未声明附件") {try capability.require(action:"capture.region",parameters:[:],items:true,references:false)}
@@ -269,8 +274,8 @@ import Darwin
     let downloadSchema:[String:Any]=["type":"object","properties":[
         "urls":["type":"array","minItems":1,"maxItems":32,"items":["type":"string","format":"uri"]],
         "mediaType":["type":"string","enum":["file"]]],"required":["urls"],"additionalProperties":false]
-    func writeDownload(_ action:[String:Any],owner:String="com.gaoseries.GaoXiaZai",version:String="1.00") throws {
-        let info:[String:Any]=["CFBundleIdentifier":"com.gaoseries.GaoXiaZai","CFBundleShortVersionString":version]
+    func writeDownload(_ action:[String:Any],owner:String="cn.mendao.launcher",version:String="1.00") throws {
+        let info:[String:Any]=["CFBundleIdentifier":"cn.mendao.launcher","CFBundleShortVersionString":version]
         try PropertyListSerialization.data(fromPropertyList:info,format:.xml,options:0).write(to:fake.appendingPathComponent("Contents/Info.plist"))
         try JSONSerialization.data(withJSONObject:["schemaVersion":1,"bundleID":owner,"appVersion":"1.00","actions":[action]]).write(to:resources.appendingPathComponent("GaoCapabilities.json"))
     }
@@ -278,7 +283,7 @@ import Darwin
     let legacy:[String:Any]=["action":"downloads.prepare","parametersSchema":downloadSchema,"supportsItems":false,"supportsReferences":false]
     for action in [alternate,legacy] {
         try writeDownload(action)
-        let declared=try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")
+        let declared=try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")
         try declared.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/a?x=1"],"mediaType":"file"],items:false,references:false);checks += 1
         let invalidParameters:[[String:Any]]=[[:],["urls":[]],["urls":["relative/path"]],["urls":["file:///tmp/private"]],
             ["urls":["https://user:secret@example.invalid/a"]],["urls":["https://example.invalid/a b"]],
@@ -291,24 +296,24 @@ import Darwin
         try rejected("下载不接收引用") {try declared.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/a"]],items:false,references:true)}
     }
     var mixed=alternate;mixed["parametersSchema"]=downloadSchema;try writeDownload(mixed)
-    try rejected("不能混用两种参数形状") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("不能混用两种参数形状") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     var limits=alternate;limits["items"]=["maxCount":1];try writeDownload(limits)
-    try rejected("不能忽略非零输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("不能忽略非零输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     limits["items"]=["maxCount":0,"futureConstraint":true];try writeDownload(limits)
-    try rejected("不能忽略未知输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("不能忽略未知输入限制") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     var invalidSchema=downloadSchema;var properties=downloadSchema["properties"] as! [String:Any]
     properties["mediaType"]=["type":"string","format":"futureFormat"];invalidSchema["properties"]=properties
     var invalid=alternate;invalid["parameters"]=invalidSchema;try writeDownload(invalid)
-    try rejected("未填写的可选参数也不能隐藏未知schema") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("未填写的可选参数也不能隐藏未知schema") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     try writeDownload(alternate,owner:"com.gaoseries.GaoMenHu")
-    try rejected("能力表归属不符") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("能力表归属不符") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     try writeDownload(alternate,version:"1.01")
-    try rejected("不使用Bundle缓存掩盖版本变化") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai")}
+    try rejected("不使用Bundle缓存掩盖版本变化") {_ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher")}
     try writeDownload(alternate)
-    _ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"com.gaoseries.GaoXiaZai");checks += 1
-    let installedDownload=URL(fileURLWithPath:"/Applications/搞下载.app",isDirectory:true)
-    if FileManager.default.fileExists(atPath:installedDownload.path) {
-        let installed=try GaoActionProviderCapabilities.load(appURL:installedDownload,bundleID:"com.gaoseries.GaoXiaZai")
+    _ = try GaoActionProviderCapabilities.load(appURL:fake,bundleID:"cn.mendao.launcher");checks += 1
+    let installedDownload=URL(fileURLWithPath:"/Applications/搞门户.app",isDirectory:true)
+    if CommandLine.arguments.contains("--installed-provider-capability-check"), FileManager.default.fileExists(atPath:installedDownload.path) {
+        let installed=try GaoActionProviderCapabilities.load(appURL:installedDownload,bundleID:"cn.mendao.launcher")
         try installed.require(action:"downloads.prepare",parameters:["urls":["https://example.invalid/fixture"],"mediaType":"file"],items:false,references:false)
         checks += 1
         print("Installed download capability read-only PASS (\(installed.appVersion)); no app or download started")

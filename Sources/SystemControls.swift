@@ -1,6 +1,7 @@
 import AppKit
 @preconcurrency import ApplicationServices
 import Combine
+import Carbon
 import IOKit.pwr_mgt
 
 enum SystemControlError: LocalizedError {
@@ -401,7 +402,7 @@ final class WindowManager: ObservableObject {
         lastError = isTrusted ? nil : "请在系统设置的“隐私与安全性 → 辅助功能”中允许搞操作。"
     }
 
-    func perform(_ action: WindowAction, targetMode: InputWindowTargetMode = .inheritSettings) async throws -> WindowOperationOutcome {
+    func perform(_ action: WindowAction, targetMode: InputWindowTargetMode = .inheritSettings, overviewTarget: DesktopOverviewActionTarget? = nil) async throws -> WindowOperationOutcome {
         guard !windowOperationBusy else { throw SystemControlError.message("窗口操作正在进行，请稍候再试。") }
         windowOperationBusy = true
         defer { windowOperationBusy = false }
@@ -414,7 +415,11 @@ final class WindowManager: ObservableObject {
             // Direct shortcuts still recapture; an explicit rule choice reaches
             // this final capture instead of being replaced by the global setting.
             // captureTarget itself preserves the saved target while our panel is frontmost.
-            captureExecutionTarget(mode: targetMode)
+            if let selected = overviewTarget {
+                try validateTarget(selected.element, pid: selected.pid, application: selected.application, identity: selected.identity)
+                target = selected.element; targetPID = selected.pid; targetApplication = selected.application
+                targetIdentity = selected.identity; capturedForegroundPID = selected.pid
+            } else { captureExecutionTarget(mode: targetMode) }
             guard let window = target, let pid = targetPID, let application = targetApplication else {
                 throw SystemControlError.message("没有可操作的目标窗口。请先切换到需要调整的窗口，再打开操作面板。")
             }
@@ -932,7 +937,7 @@ enum SystemActions {
     static func perform(id: String) throws {
         switch id {
         case "lock", "system.lock":
-            guard AXIsProcessTrusted() else { throw SystemControlError.message("锁定屏幕快捷操作需要辅助功能权限。") }
+            guard AXIsProcessTrusted(), CGPreflightPostEventAccess(), !IsSecureEventInputEnabled() else { throw SystemControlError.message("锁屏请求需要辅助功能和事件发送授权，安全输入时暂停。") }
             guard let source = CGEventSource(stateID: .hidSystemState),
                   let down = CGEvent(keyboardEventSource: source, virtualKey: 12, keyDown: true),
                   let up = CGEvent(keyboardEventSource: source, virtualKey: 12, keyDown: false) else {
@@ -940,6 +945,8 @@ enum SystemActions {
             }
             down.flags = [.maskControl, .maskCommand]
             up.flags = [.maskControl, .maskCommand]
+            down.setIntegerValueField(.eventSourceUserData, value: EnhancedInputEngine.syntheticTag)
+            up.setIntegerValueField(.eventSourceUserData, value: EnhancedInputEngine.syntheticTag)
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
         case "sleep", "system.sleep":

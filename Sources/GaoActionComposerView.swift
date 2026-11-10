@@ -127,10 +127,17 @@ import SwiftUI
         guard store.dataHealthy else {status="资料处于保护模式，未建立交接包。";return}
         do {
             let draft=try build();let request=entry;let client=GaoActionClient(dataDirectory:store.data.directory)
+            let submittingSheetID=store.sheet?.id
             let operation=store.beginCrossApplicationOperation();status=nil
             Task { @MainActor in
                 defer {store.endCrossApplicationOperation(operation)}
                 do {
+                    if !exportOnly,CrossApplicationActions.bundleID(request)==GaoActionV1.ownBundleID,
+                       let submittingSheetID,store.sheet?.id==submittingSheetID {
+                        // The submitted draft is already captured above. Dismiss
+                        // only its own form; never a replacement tool or document.
+                        store.sheet=nil
+                    }
                     if exportOnly {
                         exported=try await client.exportRequest(action:request.action,targetBundleID:CrossApplicationActions.bundleID(request),parameters:draft.parameters,inputFiles:draft.items,references:draft.references)
                         status="已生成私有交接包，动作尚未执行。"

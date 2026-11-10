@@ -3,10 +3,10 @@ import SwiftUI
 import Combine
 
 enum OperationSection: String, CaseIterable, Identifiable {
-    case home = "常用", files = "文件", windows = "窗口", archives = "压缩", clipboard = "剪贴板", tools = "小工具", input = "快捷键与手势", workflows = "组合操作", history = "恢复记录"
+    case home = "常用", files = "文件", windows = "窗口", overview = "窗口总览", lockPolicy = "锁屏策略", screenshots = "截图与录制", archives = "压缩", clipboard = "剪贴板", tools = "小工具", input = "快捷键与手势", workflows = "组合操作", history = "恢复记录"
     var id: String { rawValue }
     var icon: String {
-        switch self { case .home: return "star"; case .files: return "folder"; case .windows: return "rectangle.split.2x1"; case .archives: return "archivebox"; case .clipboard: return "doc.on.clipboard"; case .tools: return "wand.and.stars"; case .input: return "keyboard"; case .workflows: return "square.stack.3d.up"; case .history: return "clock.arrow.circlepath" }
+        switch self { case .home: return "star"; case .files: return "folder"; case .windows: return "rectangle.split.2x1"; case .overview: return "rectangle.3.group"; case .lockPolicy: return "lock.shield"; case .screenshots: return "viewfinder"; case .archives: return "archivebox"; case .clipboard: return "doc.on.clipboard"; case .tools: return "wand.and.stars"; case .input: return "keyboard"; case .workflows: return "square.stack.3d.up"; case .history: return "clock.arrow.circlepath" }
     }
 }
 struct OperationAction: Identifiable {
@@ -64,7 +64,19 @@ struct OperationAction: Identifiable {
             .init(id:"clipboard.pasteplain",title:"粘贴为纯文本",detail:"去除格式后直接粘贴到目标应用",icon:"text.alignleft",section:.clipboard),
             .init(id:"clipboard.copyplain",title:"复制为纯文本",detail:"只移除剪贴板格式，不发送粘贴",icon:"doc.plaintext",section:.clipboard),
             .init(id:"system.preventSleep.toggle",title:"切换保持唤醒",detail:"阻止自动系统睡眠",icon:"sun.max",section:.tools),
-            .init(id:"system.lock",title:"锁定屏幕",detail:"发送系统锁屏请求",icon:"lock",section:.tools),
+            .init(id:"system.lock",title:"锁定屏幕",detail:"提交系统锁屏快捷键请求",icon:"lock",section:.tools),
+            .init(id:"windows.overview",title:"窗口总览",detail:"搜索、分组并选择实际窗口",icon:"rectangle.3.group",section:.windows),
+            .init(id:"desktop.openSettings",title:"桌面与窗口设置",detail:"总览偏好、迁移与权限",icon:"slider.horizontal.3",section:.windows),
+            .init(id:"lock.settings",title:"锁屏策略",detail:"默认关闭的本机闲置策略",icon:"lock.shield",section:.tools),
+            .init(id:"screenshot.workspace",title:"截图与录制工作台",detail:"截图、长截图、标注、OCR、翻译及录屏录音",icon:"viewfinder",section:.screenshots),
+            .init(id:"screenshot.long",title:"长截图",detail:"选择实际窗口并在本机拼接",icon:"rectangle.portrait",section:.screenshots),
+            .init(id:"screenshot.recording",title:"录屏与录音",detail:"选择来源后明确开始",icon:"record.circle",section:.screenshots),
+            .init(id:"screenshot.settings",title:"截图设置与迁移",detail:"原截图资料显式迁移、历史与保存策略",icon:"slider.horizontal.3",section:.screenshots),
+            .init(id:"screenshot.pins.restore",title:"恢复持久贴图",detail:"复核并打开已主动保存的贴图",icon:"pin",section:.screenshots),
+            .init(id:"screenshot.ocr.capture",title:"静默截图 OCR",detail:"选择区域并识别；复制按已保存设置执行",icon:"text.viewfinder",section:.screenshots),
+            .init(id:"screenshot.ocr.clipboard",title:"识别剪贴板图片",detail:"只在本次明确动作中读取图片",icon:"doc.viewfinder",section:.screenshots),
+            .init(id:"screenshot.translate.clipboard",title:"本机翻译剪贴板文字",detail:"只读取本次内容，随后在翻译页开始",icon:"character.bubble",section:.screenshots),
+            .init(id:"screenshot.translate.capture",title:"截图后本机翻译",detail:"选择区域并识别，在翻译页明确开始",icon:"viewfinder",section:.screenshots),
             .init(id:"system.sleep",title:"电脑睡眠",detail:"发送系统睡眠请求",icon:"moon",section:.tools),
             .init(id:"workflow.show",title:"查看组合操作",detail:"编辑并运行多个动作",icon:"square.stack.3d.up",section:.workflows)
         ]
@@ -115,6 +127,61 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     let snippetLibrary: SnippetLibraryStore
     let inputCloudSync:InputCloudSync
     let windows = WindowManager()
+    lazy var screenshots:ScreenshotHostController = {
+        let host=ScreenshotHostController(data:data, onShowWorkspace:{ [weak self] in
+            self?.section = .screenshots; self?.showMain?()
+        }, onHideHost:{ [weak self] in self?.hideScreenshotHost?() })
+        host.operationBlockingReason={ [weak self] in
+            guard let self,self.dataHealthy else {return "资料保护模式下不能开始捕获或处理。"}
+            if CleanerController.shared.state != .idle {return "请先结束清洁模式和退出键验证，再开始截图或录制。"}
+            if self.busy || self.archive.isRunning || self.workflowRunning || self.queuedCount > 0 || self.sheet != nil {return "请先完成当前文件、压缩或组合操作。"}
+            if self.clipboard.hasActivePasteTransaction {return "请先处理当前粘贴确认或恢复。"}
+            return self.input.hostedCaptureBlockingReason
+        }
+        host.onBeginExclusiveInput={ [weak self] in self?.input.yieldPendingInputForCapture() }
+        return host
+    }()
+    lazy var desktopStatusStrip = DesktopOverviewStatusStrip()
+    lazy var desktopProvider = DesktopActionProvider(directory: data.directory)
+    lazy var desktopOverview = DesktopOverviewController(preferences: settings.desktopOverview, onPreferencesChange: { [weak self] value in
+        guard let self, self.dataHealthy else { throw DataFailure.message("资料保护模式下不能保存窗口总览设置。") }
+        var next = self.settings; next.desktopOverview = value
+        try self.data.save(next, name: "settings.json"); self.adoptCommittedDesktopSettings(next)
+    }, onWindowAction: { [weak self] action, target in
+        guard let self else { throw DataFailure.message("窗口会话已结束。") }
+        return try await self.windows.perform(action, targetMode: .frontmost, overviewTarget: target)
+    })
+    lazy var localLock = LocalLockController(busyReason: { [weak self] in self?.localLockBlockingReason }, event: { [weak self] event in self?.notify(event.message) })
+    var localLockBlockingReason: String? {
+        if !dataHealthy { return "资料保护模式下暂停闲置策略。" }
+        if screenshots.busy || screenshots.captureInputExclusive { return "截图、录制或资料处理尚未完成。" }
+        if busy || archive.isRunning || workflowRunning || crossApplicationBusy || GaoActionActivity.shared.isBusy || queuedCount > 0 { return "文件或交接任务正在运行。" }
+        if clipboard.hasActivePasteTransaction || sheet != nil || awaitingArchivePassword { return "正在核对输入、工具或文件请求。" }
+        if CleanerController.shared.state != .idle { return "清洁模式正在运行。" }
+        if awake { return "保持唤醒已开启。" }
+        return nil
+    }
+    func adoptCommittedDesktopSettings(_ value: OperationSettings) {
+        ready = false; settings = value; ready = true
+        clipboard.configure(value); onSettingsChanged?()
+    }
+    func configureDesktopIntegration() {
+        desktopOverview.applyPreferences(settings.desktopOverview)
+        var appearance = settings.desktopOverview
+        if !dataHealthy { appearance.statusStripEnabled = false }
+        desktopStatusStrip.applyPreferences(appearance)
+        do {
+            var config = settings.localLock
+            if !dataHealthy { config.enabled = false }
+            try localLock.updateConfiguration(config)
+            if config.enabled { localLock.start() } else { localLock.stop() }
+        } catch { localLock.stop(); notify(error.localizedDescription, failed: true) }
+    }
+    func openDesktopAction(_ action: String) -> Bool {
+        if action == "windows.overview" { return showOverview?() ?? false }
+        if action == "desktop.openSettings" { return showDesktopSettings?() ?? false }
+        return false
+    }
     let input = InputController()
     let archive = ArchiveService()
     let archiveEnhancements: ArchiveEnhancementController
@@ -122,6 +189,9 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
     let finderPreferences: FinderPreferenceController
     var showPanel: (() -> Void)?
     var showMain: (() -> Void)?
+    var hideScreenshotHost: (() -> Void)?
+    var showOverview: (() -> Bool)?
+    var showDesktopSettings: (() -> Bool)?
     var showSettings: (() -> Void)?
     var showExtensionSettings: ((Int) -> Void)?
     var showPermissions: (() -> Void)?
@@ -162,6 +232,10 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             try data.save(ReceiptDocument(records:receipts), name:"receipts.json")
         } catch { data.block(error.localizedDescription); self.error = error.localizedDescription; ready = true }
         do{try recoverInterruptedMigration()}catch{data.block(error.localizedDescription);self.error=error.localizedDescription}
+        if data.failure == nil {
+            do { try LegacyDesktopMigrationImporter(targetData:data).recoverCommittedJournals(currentSettings:settings) }
+            catch { data.block(error.localizedDescription); self.error=error.localizedDescription }
+        }
         if data.failure == nil {
             do { try snippetLibrary.migrateLegacy(settings.snippets) }
             catch { self.error = error.localizedDescription }
@@ -232,6 +306,9 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         clipboard.capturePasteTarget()
     }
     func prepare(_ id: String, files: [URL],targetMode:InputWindowTargetMode = .inheritSettings) {
+        if screenshots.captureInputExclusive && !id.hasPrefix("screenshot.") {
+            notify("截图选择或录制正在使用输入，请先完成或取消当前任务。",failed:true);return
+        }
         captureSelectionForActions()
         let choices = actionChoices
         if let reason=choices.first(where:{$0.id == id})?.unavailableReason {notify(reason,failed:true);return}
@@ -239,6 +316,18 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
             notify(L10n.format("此动作需要%@权限，请在权限页开启。",L10n.text(descriptor.requiredPermission.title)), failed:true)
             showPermissions?(); return
         }
+        if ["windows.overview", "service.windows.overview"].contains(id) { _ = openDesktopAction("windows.overview"); return }
+        if ["desktop.openSettings", "service.desktop.openSettings"].contains(id) { _ = openDesktopAction("desktop.openSettings"); return }
+        if id == "lock.settings" { section = .lockPolicy; showMain?(); return }
+        if id == "screenshot.settings" {showExtensionSettings?(16);return}
+        let screenshotAction = id.hasPrefix("service.") ? String(id.dropFirst(8)) : (CrossApplicationActions.legacyIDs[id] ?? id)
+        if screenshotAction.hasPrefix("screenshot.") || ScreenshotGaoActionContract.supportedActions.contains(screenshotAction) {
+            guard dataHealthy else {notify("资料保护模式下不能开始截图工作。",failed:true);return}
+            Task { do { _ = try await screenshots.performAction(screenshotAction,files:files) } catch { notify(error.localizedDescription,failed:true) } }
+            return
+        }
+        if id == "system.lock" { guard !screenshots.busy else {notify("截图或录制尚未结束，请先完成当前任务。",failed:true);return};do { try localLock.requestNow() } catch { notify(error.localizedDescription, failed: true) }; return }
+        if ["system.sleep","system.screenSaver"].contains(id),screenshots.busy || screenshots.captureInputExclusive {notify("截图或录制尚未结束，请先完成当前任务。",failed:true);return}
         if id == "finder.popup" { showFinderPopup(); return }
         if id == "panel.show" { showPanel?(); return }
         if id == "clipboard.show" { showClipboard?(); return }

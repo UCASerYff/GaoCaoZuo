@@ -20,6 +20,18 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     var configuration = InputEnhancementConfiguration()
     var handler:((String)->Void)?
     var invocationHandler:((String,InputWindowTargetMode)->Void)?
+    var hostedInputIsExclusive:(()->Bool)?
+    var hostedCaptureBlockingReason:String? {
+        if activeScript?.isRunning == true {return "输入脚本仍在运行，请等待后开始捕获。"}
+        if !replacements.isEmpty || drawing != nil || touchDrag != nil {return "输入手势尚未结束，请松开后开始捕获。"}
+        return nil
+    }
+    func yieldPendingInputToHost() {
+        lifecycleGeneration &+= 1
+        cancelSmoothScroll();timers.values.forEach{$0.invalidate()};timers.removeAll()
+        keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll()
+        drawing=nil;corner=nil;pressureLatched=false;touchSession.removeAll()
+    }
     var report:((String?)->Void)?
     var excludedApps:Set<String> = []
     private var keys:Set<UInt16> = []
@@ -188,10 +200,11 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         }
     }
     private func allowed(pid:pid_t)->Bool {
-        configuration.enabled && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid && !excludedApps.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
+        hostedInputIsExclusive?() != true && configuration.enabled && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid && !excludedApps.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
     }
     /// Returns true only for an explicitly configured replacement or consume rule.
     func receive(type:CGEventType,event:CGEvent)->Bool {
+        guard hostedInputIsExclusive?() != true else {return false}
         guard configuration.enabled,event.getIntegerValueField(.eventSourceUserData) != Self.syntheticTag else{return false}
         guard let front=NSWorkspace.shared.frontmostApplication else{return false}
         let pid=front.processIdentifier,app=front.bundleIdentifier ?? ""
@@ -279,6 +292,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         return InputScreenEdgeGeometry.matches(name,point:point,frames:rectangles,start:start,end:end,width:width)
     }
     private func receivePressure(_ event:NSEvent) {
+        guard hostedInputIsExclusive?() != true else {return}
         observedPressureEvents += 1
         guard configuration.enabled,event.type == .pressure,let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
         if event.stage==0 || event.pressure<0.05 {pressureLatched=false;return}
@@ -455,6 +469,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         }
     }
     private func receiveHIDButton(_ observation:HIDButtonObservation) {
+        guard hostedInputIsExclusive?() != true else {return}
         guard configuration.enabled,let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
         let app=front.bundleIdentifier ?? ""
         let mappings=configuration.hidProfiles.filter{$0.enabled && $0.deviceID==observation.deviceID}.flatMap(\.buttons).filter{$0.enabled && $0.usage==observation.usage && $0.whenReleased != observation.pressed && ($0.appBundleID.isEmpty || $0.appBundleID==app) && !$0.excludedApps.contains(app)}.sorted{!$0.appBundleID.isEmpty && $1.appBundleID.isEmpty}
@@ -471,6 +486,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         }
     }
     private func receiveTouch(_ frame:RawTouchFrame) {
+        guard hostedInputIsExclusive?() != true else {return}
         guard configuration.enabled,let app=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(app.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{finishTouchDrag();touchSession.removeAll();return}
         let pid=app.processIdentifier
         if frame.contacts.isEmpty {

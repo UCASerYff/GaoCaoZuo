@@ -332,7 +332,7 @@ private struct WorkflowActionChoice: Identifiable {
     @State private var backupMessage: String?
     init(store: OperationStore, initialTab: Int = 0) {
         self.store = store
-        _selectedTab = State(initialValue: (0...13).contains(initialTab) ? initialTab : 0)
+        _selectedTab = State(initialValue: (0...16).contains(initialTab) ? initialTab : 0)
     }
     var body: some View {
         HStack(spacing:0) {
@@ -348,6 +348,9 @@ private struct WorkflowActionChoice: Identifiable {
                 settingsItem(6,"文件","folder")
                 settingsItem(8,"布局","rectangle.split.2x2")
                 settingsItem(4,"窗口","rectangle.3.group")
+                settingsItem(14,"总览与迁移","square.stack.3d.up")
+                settingsItem(15,"锁屏策略","lock.shield")
+                settingsItem(16,"截图与迁移","viewfinder")
                 settingsItem(1,"权限","hand.raised")
                 settingsItem(2,"数据","externaldrive")
                 settingsItem(3,"关于","info.circle")
@@ -356,6 +359,9 @@ private struct WorkflowActionChoice: Identifiable {
             Divider()
             Group {
                 switch selectedTab {
+                case 14: IntegratedDesktopSettingsView(store:store)
+                case 15: IntegratedLockSettingsView(store:store)
+                case 16: IntegratedScreenshotSettingsView(store:store)
                 case 10: AutoInputSettingsView(configuration:setting(\.autoInput))
                 case 11: SnippetsSettingsView(library:store.snippetLibrary)
                 case 12: CleanerSettingsView(durationSeconds:setting(\.cleanerDurationSeconds))
@@ -530,9 +536,10 @@ private struct WorkflowActionChoice: Identifiable {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(status.allReady ? "所需权限已就绪" : "完成授权，操作更顺手").font(.headline)
+                    Text(status.allReady ? "操作权限已就绪" : "完成授权，操作更顺手").font(.headline)
                     Text(L10n.format("已完成 %@/3 项 · 从系统设置返回后自动检查", String(describing: (status.readyCount))))
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("截图、录屏与麦克风权限在“截图与迁移”中按需申请。").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("重新检测") { status.refresh() }

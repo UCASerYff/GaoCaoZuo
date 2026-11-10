@@ -90,6 +90,10 @@ extension FileEnhancementController {
         }
     }
     private func sendGaoAction(id:String,files:[URL],directory:URL,store:OperationStore) {
+        if let action=CrossApplicationActions.legacyIDs[id],ScreenshotGaoActionContract.supportedActions.contains(action) {
+            Task {do {_ = try await store.screenshots.performAction(action,files:files)} catch {store.notify(error.localizedDescription,failed:true)}}
+            return
+        }
         let operation=store.beginCrossApplicationOperation()
         Task { @MainActor in
             defer {store.endCrossApplicationOperation(operation)}
@@ -97,12 +101,6 @@ extension FileEnhancementController {
                 let action:String,target:String
                 var inputs:[URL]=[],references:[GaoActionReference]=[],parameters:[String:Any]=[:]
                 switch id {
-                case "file.ishot":action="capture.region";target="com.gaoseries.GaoJieTu"
-                case "file.capture.window":action="capture.window";target="com.gaoseries.GaoJieTu"
-                case "file.capture.display":action="capture.display";target="com.gaoseries.GaoJieTu"
-                case "file.ishot.markup":action="images.annotate";target="com.gaoseries.GaoJieTu";inputs=files
-                case "file.images.pin":action="images.pin";target="com.gaoseries.GaoJieTu";inputs=files
-                case "file.ocr":action="ocr.files";target="com.gaoseries.GaoJieTu";inputs=files
                 case "file.cleanup.review":action="cleanup.review";target="com.gaoseries.GaoJiLing"
                 case "file.apps.uninstall.review":
                     action="apps.uninstall.review";target="com.gaoseries.GaoJiLing"

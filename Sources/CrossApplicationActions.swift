@@ -14,22 +14,20 @@ struct CrossApplicationAction: Identifiable {
 
 enum CrossApplicationActions {
     static let entries:[CrossApplicationAction] = [
-        .init(action:"capture.region",title:"搞截图：截取区域",provider:"GaoJieTu"),
-        .init(action:"capture.window",title:"搞截图：截取窗口",provider:"GaoJieTu"),
-        .init(action:"capture.display",title:"搞截图：截取屏幕",provider:"GaoJieTu"),
-        .init(action:"ocr.files",title:"搞截图：识别文件文字",provider:"GaoJieTu"),
-        .init(action:"images.annotate",title:"搞截图：标注图片",provider:"GaoJieTu"),
-        .init(action:"images.pin",title:"搞截图：贴图",provider:"GaoJieTu"),
-        .init(action:"text.translate",title:"搞截图：翻译文本文件",provider:"GaoJieTu"),
-        .init(action:"files.search",title:"搞整理：搜索文件",provider:"GaoZhengLi"),
-        .init(action:"files.choose",title:"搞整理：选择文件",provider:"GaoZhengLi"),
-        .init(action:"files.reveal",title:"搞整理：定位原件",provider:"GaoZhengLi"),
-        .init(action:"associations.manage",title:"搞整理：管理文件关联",provider:"GaoZhengLi"),
+        .init(action:"capture.region",title:"截图：截取区域",provider:"GaoCaoZuo"),
+        .init(action:"capture.window",title:"截图：截取窗口",provider:"GaoCaoZuo"),
+        .init(action:"capture.display",title:"截图：截取屏幕",provider:"GaoCaoZuo"),
+        .init(action:"ocr.files",title:"截图：识别文件文字",provider:"GaoCaoZuo"),
+        .init(action:"images.annotate",title:"截图：标注图片",provider:"GaoCaoZuo"),
+        .init(action:"images.pin",title:"截图：贴图",provider:"GaoCaoZuo"),
+        .init(action:"text.translate",title:"截图：翻译文本文件",provider:"GaoCaoZuo"),
+        .init(action:"files.search",title:"搞文件：搜索文件",provider:"GaoWenJian"),
+        .init(action:"files.choose",title:"搞文件：选择文件",provider:"GaoWenJian"),
+        .init(action:"files.reveal",title:"搞文件：定位原件",provider:"GaoWenJian"),
+        .init(action:"associations.manage",title:"搞文件：管理文件关联",provider:"GaoWenJian"),
         .init(action:"documents.open",title:"搞文件：打开文档副本",provider:"GaoWenJian"),
         .init(action:"documents.newText",title:"搞文件：新建文字文档",provider:"GaoWenJian"),
-        .init(action:"windows.overview",title:"搞桌面：窗口总览",provider:"GaoZhuoMian"),
-        .init(action:"desktop.openSettings",title:"搞桌面：打开设置",provider:"GaoZhuoMian"),
-        .init(action:"downloads.prepare",title:"搞下载：准备下载",provider:"GaoXiaZai"),
+        .init(action:"downloads.prepare",title:"搞门户：准备下载",provider:"portal"),
         .init(action:"storage.inspect",title:"搞机灵：分析目录",provider:"GaoJiLing"),
         .init(action:"cleanup.review",title:"搞机灵：清理复核",provider:"GaoJiLing"),
         .init(action:"apps.uninstall.review",title:"搞机灵：卸载复核",provider:"GaoJiLing"),
@@ -66,7 +64,7 @@ enum CrossApplicationActions {
         if let existing=cached[bundleID] {result=existing}
         else {
             result=Result {
-                guard let url=NSWorkspace.shared.urlForApplication(withBundleIdentifier:bundleID) else {throw GaoActionError.providerNotReady("未安装提供方；可从跨应用交接导出私有包")}
+                guard let url=bundleID == GaoActionV1.ownBundleID ? Bundle.main.bundleURL : NSWorkspace.shared.urlForApplication(withBundleIdentifier:bundleID) else {throw GaoActionError.providerNotReady("未安装提供方；可从跨应用交接导出私有包")}
                 return try GaoActionProviderCapabilities.load(appURL:url,bundleID:bundleID)
             }
             cached[bundleID]=result

@@ -183,6 +183,15 @@ final class InputController: ObservableObject {
     private var lifecycleObservers:[NSObjectProtocol]=[]
     private var sleepingOrInactive=false
     var onPauseChanged: ((Bool) -> Void)?
+    var hostedInputIsExclusive:(()->Bool)? {didSet{enhanced.hostedInputIsExclusive=hostedInputIsExclusive}}
+    var hostedCaptureBlockingReason:String? {enhanced.hostedCaptureBlockingReason}
+    private var yieldedHostedInput=false
+    private var hostedInputGeneration=HostedInputGeneration()
+    func yieldPendingInputForCapture() {
+        hostedInputGeneration.invalidate()
+        gestureStart=nil;cancelWindowInput();enhanced.yieldPendingInputToHost()
+        yieldedHostedInput=true
+    }
     private let enhanced = EnhancedInputEngine()
     private var enhancementError: String?
     private var tapModeError:String?
@@ -316,7 +325,13 @@ final class InputController: ObservableObject {
             guard let context else { return Unmanaged.passUnretained(event) }
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
             let consume = MainActor.assumeIsolated { () -> Bool in
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {controller.receive(type:type,event:event);return false}
                 if event.getIntegerValueField(.eventSourceUserData) == EnhancedInputEngine.syntheticTag { return false }
+                if controller.hostedInputIsExclusive?() == true {
+                    if !controller.yieldedHostedInput {controller.yieldPendingInputForCapture()}
+                    return false
+                }
+                controller.yieldedHostedInput=false
                 if CleanerController.shared.handleInputEvent(type:type,event:event) { return true }
                 if !controller.isPaused {
                     InputSourceCoordinator.shared.handleInputActivity(type:type,event:event)
@@ -468,10 +483,12 @@ final class InputController: ObservableObject {
         }
         if let matched {
             // Defer work outside the event-tap callback, which the system expects to return promptly.
-            let action = matched.actionID,capturedGeneration=tapGeneration
+            let action = matched.actionID,capturedGeneration=tapGeneration,hostedGeneration=hostedInputGeneration.snapshot
             guard let front,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
             DispatchQueue.main.async { [weak self] in
                 guard let self,!self.isPaused,self.desiredRunning,!self.sleepingOrInactive,
+                      self.hostedInputIsExclusive?() != true,
+                      self.hostedInputGeneration.matches(hostedGeneration),
                       self.tapGeneration==capturedGeneration,!IsSecureEventInputEnabled(),
                       let current=NSWorkspace.shared.frontmostApplication,!current.isTerminated,
                       current.bundleIdentifier==app,!self.excludedApps.contains(app),
@@ -484,7 +501,7 @@ final class InputController: ObservableObject {
 
     private func canContinueWindowInput(_ token:UUID)->Bool {
         let front=NSWorkspace.shared.frontmostApplication
-        guard windowDragToken==token,WindowInputPolicy.canContinue(capturedPID:windowDragPID,frontPID:front?.processIdentifier,
+        guard hostedInputIsExclusive?() != true,windowDragToken==token,WindowInputPolicy.canContinue(capturedPID:windowDragPID,frontPID:front?.processIdentifier,
             paused:isPaused,running:desiredRunning,excluded:excludedApps.contains(front?.bundleIdentifier ?? "")) else {
             if windowDragToken==token {cancelWindowInput()}
             return false

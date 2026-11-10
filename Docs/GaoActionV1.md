@@ -1,10 +1,12 @@
-# GaoAction V1：搞操作消费端与结果接收端
+# GaoAction V1：搞操作消费端、窗口提供方与结果接收端
 
 本文说明搞操作当前实现如何使用任务01规定的 GaoAction V1，不改变固定契约，不表示其他提供方已经安装、实现或通过端到端验收。
 
 ## 动作归属和能力探测
 
-搞操作是消费者与结果接收者。`GaoCapabilities.json` 的 `actions` 为空；它不冒充搞整理的 `files.reveal` 或搞文件的文档动作，也不执行其他提供方的外来请求。
+搞操作保留消费者与结果接收功能，V1.15起同时提供`windows.overview`、`desktop.openSettings`。这两动作固定无参数、无附件、无引用，只在本应用独立确认后打开实际界面；不会由外部请求截图、关闭或移动窗口，completed仅说明界面实际打开。其余请求不由本App冒充提供方。
+
+2026-11-02整合后的唯一归属：文件搜索/选择/定位/关联由`com.gaoseries.GaoWenJian`提供；`downloads.prepare`由`cn.mendao.launcher`提供；两项窗口界面动作由`com.gaoseries.GaoCaoZuo`提供。内部总览动作直接打开自身，不往已退休App发送。旧账本不重放，旧owner不作为新请求兼容兜底。
 
 主应用文件动作按稳定ID映射：
 
@@ -36,6 +38,8 @@
 包由 `manifest.json` 与 `payload/` 组成。固定字段：schemaVersion=1、kind、requestID(UUID)、sourceBundleID、targetBundleID、action、UTC createdAt/expiresAt、32字节随机数标准Base64 nonce、items、references、parameters。result另有inReplyTo、status、errorCode、provenance。请求/结果TTL均最多120秒；接收时检查过期，批准后的长任务不受原TTL中途取消。生产nonce使用系统安全随机源；固定零nonce只用于隔离fixture。
 
 每个item包含id、payload内relativePath、uti、byteCount、sha256。最多256项、总载荷默认2GiB、manifest最多1MiB，超限明确拒绝分批，不截断。items只复制普通文件，不移动原件，不将目录或应用包伪装为附件。生成包的目录0700、文件0600；先完成副本与摘要，再写manifest，最后原子发布，不覆盖已有请求ID。
+
+接收兼容：为兼容门户 V1.17 生成的变体，仅对 `kind=result`、`action=downloads.prepare`、`sourceBundleID=cn.mendao.launcher` 结果允许 `relativePath` 带包根的 `payload/` 前缀。读取和暂存时只剥去一次此前缀，重新校验安全相对路径并拒绝归一后重复项；不尝试另一种磁盘布局，也不改写原 manifest 字节。其他动作和来源继续使用上述 payload 内相对路径定义，包括真实名为 payload 的子目录。
 
 外部读取逐级使用`openat`与`O_NOFOLLOW`，固定FD、检查UID、权限、普通文件及独立链接数；拒绝符号链接、硬链接附件、路径逃逸、重复路径/ID、非法类型与尺寸。manifest在读取前检查尺寸，并在流式读取中继续设限。附件复制到接收方自己的有界staging，流式计算摘要并比较复制前后FD身份、大小与修改状态；文本动作在同一复制字节流中校验UTF-8。固定FD不能保证内容不被同UID进程并发修改，检测到变化或摘要错误即失败。
 
@@ -75,3 +79,7 @@ references是待核实原件描述，不是访问授权、可信身份或删除�
 ## V1.09 提供方约束复核
 
 客户端读取可选 referencesSchema，核验实际引用的数量、kind及声明的受支持约束；未知约束明确拒绝。新发、历史重递交、异步打包完成后的最终发送使用同一门控，提供方更新后不沿用旧假定。重复文件选项只有实际提供方声明该mode才启用。能力声明与客户端fixture不能替代双方业务产物和receipt验收。
+
+## 窗口提供方持久化
+
+新请求独立复制到`DesktopProvider/Exchange/Incoming`，`provider.json`与根`desktop-provider-initialization.json`共同约束初始化，缺失/损坏停止写入。确认前重新校验原字节、TTL和动作，先持久执行意图才打开界面，中断只记interrupted，不重放。取消/完成结果须用户显式发送，每次新UUID/新120秒，结果只声明界面打开，不暗示窗口调整、录屏或系统授权成功。来源声明仍不是身份认证。

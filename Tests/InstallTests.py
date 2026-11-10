@@ -44,12 +44,13 @@ def registration_regressions(installer, root):
     def pending(name):
         case = root / name
         target = case / "Applications/搞操作.app"
-        stage = target.parent / (".gaocaozuo-install-" + name)
+        stage = target.parent / (".gaocaozuo-install-" + name + ".noindex")
         previous = stage / "previous.app"
         fixture(target, "1.01", b"candidate " + name.encode())
         fixture(previous, "1.00", b"previous " + name.encode())
         path = case / "Backups/transaction/manifest.json"
         path.parent.mkdir(parents=True)
+        path.parent.chmod(0o700)
         manifest = {
             "format": 1, "bundle_id": BUNDLE, "nonce": name,
             "state": "installed_pending_verification", "version": "1.01", "build": "2",
@@ -95,9 +96,10 @@ def registration_regressions(installer, root):
     assert verified["state"] == "verified" and verified["gui_verified"] is False
     assert verified["verification_scope"] == "static-and-targeted" and not stage.exists()
 
-    # The complete old pair is unregistered before the installed pair is added;
-    # the old app is checked for running processes and deleted only after success.
+    # The old pair is unregistered before the installed pair is added. Its original
+    # inode is retained privately before any disposable staging directory is removed.
     target, stage, previous, path = pending("registration-order")
+    previous_identity = (previous.stat().st_dev, previous.stat().st_ino)
     events = []
     real_rmtree = shutil.rmtree
     def delete(candidate):
@@ -109,8 +111,12 @@ def registration_regressions(installer, root):
          unittest.mock.patch.object(installer, "cleanup_old_releases"), \
          unittest.mock.patch.object(installer.shutil, "rmtree", side_effect=delete):
         installer.finalize(SimpleNamespace(manifest=str(path), rollback=False))
-    assert events == [["stopped", str(previous)]] + commands(previous, True) + commands(target, False) + [["delete", str(stage)]], events
-    assert json.loads(path.read_text())["state"] == "verified"
+    retained = path.parent / "Program.noindex" / "搞操作.app"
+    assert [event for event in events if event[0] != "stopped"] == commands(previous, True) + commands(target, False) + commands(retained, True) + [["delete", str(stage)]], events
+    assert ["stopped", str(previous)] in events
+    verified = json.loads(path.read_text())
+    assert verified["state"] == "verified" and verified["program_backup"]["state"] == "retained"
+    assert (retained.stat().st_dev, retained.stat().st_ino) == previous_identity
 
     # A failed plug-in registration retains the pending old program and manifest.
     target, stage, previous, path = pending("registration-failure")
@@ -313,7 +319,7 @@ def registration_regressions(installer, root):
 
 
 def main():
-    root = Path(tempfile.mkdtemp(prefix="GaoActions-InstallTests-")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="GaoActions-InstallTests-", suffix=".noindex")).resolve()
     try:
         source = root / "new/搞操作.app"
         fixture(source, "1.00", b"initial candidate")
@@ -347,6 +353,7 @@ def main():
         invoke([FINALIZE, "--manifest", manifest_path, "--verified"])
         assert target.exists() and not Path(manifest["stage_dir"]).exists()
         assert json.loads(manifest_path.read_text())["state"] == "verified"
+        assert "program_backup" not in json.loads(manifest_path.read_text())
 
         # An update backs up attachments and preferences byte-for-byte.
         (data / "attachments/nested").mkdir(parents=True)
@@ -373,13 +380,21 @@ def main():
         assert (target / "Contents/MacOS/GaoCaoZuo").read_bytes() == b"initial candidate"
         assert preferences.read_bytes() == prefs and (data / "database.sqlite").exists()
 
-        # After GUI verification, only the obsolete program and staging are removed.
+        # Verification removes staging but retains the original old program privately.
         manifest_path = install()
         manifest = json.loads(manifest_path.read_text())
+        previous = Path(manifest["stage_dir"]) / "previous.app"
+        original_identity = (previous.stat().st_dev, previous.stat().st_ino)
         invoke([FINALIZE, "--manifest", manifest_path, "--verified"])
         assert not Path(manifest["stage_dir"]).exists()
         assert Path(manifest["backups"]["data"]["backup_path"]).exists()
         assert (target / "Contents/MacOS/GaoCaoZuo").read_bytes() == b"updated candidate"
+        record = json.loads(manifest_path.read_text())["program_backup"]
+        retained = Path(record["backup_path"])
+        assert record["state"] == "retained" and retained.parent.name == "Program.noindex"
+        assert retained.parent.stat().st_mode & 0o777 == 0o700
+        assert (retained.stat().st_dev, retained.stat().st_ino) == original_identity
+        assert (retained / "Contents/MacOS/GaoCaoZuo").read_bytes() == b"initial candidate"
 
         # Wrong bundle IDs, damaged backups and unresolved attachments cannot be cleared.
         bad = root / "bad/搞操作.app"

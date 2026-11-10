@@ -7,10 +7,34 @@ BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 if [[ $# != 0 ]]; then
   [[ $# == 2 && "$1" == '--app-only' && "$2" == /* && "$2" == *.app && ! -e "$2" ]] || { print -u2 '用法：build.sh [--app-only <不存在的绝对路径.app>]'; exit 1; }
 fi
-BUILD_ROOT=$(mktemp -d /private/tmp/gaocaozuo-build.XXXXXX)
+# Every output App, including a caller-specified copy, must already be inside
+# a noindex container before its first byte is generated.
+if [[ "${1:-}" == '--app-only' ]]; then
+  python3 - "$2" <<'PYOUT'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); parent=p.parent
+if not parent.is_dir() or parent.resolve()!=parent or not any(x.name.endswith('.noindex') for x in p.parents):
+    raise SystemExit('App output must have an existing canonical .noindex ancestor')
+PYOUT
+fi
+BUILD_ROOT=$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="gaocaozuo-build-", suffix=".noindex", dir="/private/tmp"))')
 STAGING="$BUILD_ROOT/Build.noindex"
 mkdir -p "$STAGING"
-trap 'rm -rf "$BUILD_ROOT"' EXIT
+cleanup_build() {
+  local build_status=$?
+  # Once all binaries and metadata exist, keep the original isolated candidate
+  # and signing report on failure. A parser/key/signing error must not erase the
+  # only compiled evidence and force an unnecessary full rebuild to diagnose it.
+  if (( build_status != 0 )) && [[ -f "$STAGING/signing-report.json" && -d "$APP" ]]; then
+    print -u2 "FAILED_BUILD_ROOT=$BUILD_ROOT"
+    print -u2 '候选处理失败；原.noindex现场与签名记录已保留，核验后按精确路径清理。'
+    return $build_status
+  fi
+  rm -rf "$BUILD_ROOT"
+  return $build_status
+}
+trap cleanup_build EXIT
 APP="$STAGING/搞操作.app"
 EXT="$APP/Contents/PlugIns/GaoFinderSync.appex"
 QL_EXT="$APP/Contents/PlugIns/GaoArchiveQuickLook.appex"
@@ -30,7 +54,7 @@ fi
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   "$STAGING"/Sources/*.swift "$STAGING"/Shared/*.swift -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers \
   -framework CryptoKit -framework ApplicationServices -framework Carbon -framework CoreImage \
-  -framework ServiceManagement -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -o "$APP/Contents/MacOS/GaoCaoZuo"
+  -framework ServiceManagement -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -framework ScreenCaptureKit -framework AVFoundation -framework AVKit -framework Vision -framework PDFKit -framework Accelerate -o "$APP/Contents/MacOS/GaoCaoZuo"
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
   -module-name GaoFinderSync -application-extension -emit-executable -Xlinker -e -Xlinker _NSExtensionMain \
   "$STAGING"/FinderExtension/*.swift "$STAGING"/Shared/*.swift -framework AppKit -framework FinderSync -framework Security -o "$EXT/Contents/MacOS/GaoFinderSync"
@@ -44,17 +68,18 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos
   "${BROKER_SOURCES[@]}" "$STAGING"/Shared/*.swift "$STAGING/BrokerMain.swift" "$STAGING/QuickLookCallerAccess.o" \
   -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers -framework CryptoKit \
   -framework ApplicationServices -framework Carbon -framework CoreImage -framework ServiceManagement \
-  -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -o "$BROKER/Contents/MacOS/ArchiveBroker"
+  -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -framework ScreenCaptureKit -framework AVFoundation -framework AVKit -framework Vision -framework PDFKit -framework Accelerate -o "$BROKER/Contents/MacOS/ArchiveBroker"
 if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
 python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$APP/Contents/Resources" "$EXT/Contents/Resources" "$QL_EXT/Contents/Resources" "$BROKER/Contents/Resources"
-python3 - "$APP/Contents/Resources/GaoCapabilities.json" "$APP_VERSION" <<'PY'
+python3 - "$APP/Contents/Resources/GaoCapabilities.json" "$APP/Contents/Resources/DownloadGaoCapabilities.json" "$APP_VERSION" <<'PY'
 import json,sys
 from pathlib import Path
-p=Path(sys.argv[1]); data=json.loads(p.read_text()); data['appVersion']=sys.argv[2]
-p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+for name in sys.argv[1:-1]:
+    p=Path(name); data=json.loads(p.read_text()); data['appVersion']=sys.argv[-1]
+    p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
 PY
 cp "$PROJECT_DIR/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$PROJECT_DIR/Assets/AppIcon.png" "$APP/Contents/Resources/AppIcon.png"
@@ -69,23 +94,13 @@ from pathlib import Path
 Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoseries.GaoCaoZuo.QuickLook.ArchiveBroker','CFBundleExecutable':'ArchiveBroker','CFBundlePackageType':'XPC!','CFBundleShortVersionString':sys.argv[2],'CFBundleVersion':sys.argv[3],'XPCService':{'ServiceType':'Application','RunLoopType':'NSRunLoop'}}))
 PY
 plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist" "$QL_EXT/Contents/Info.plist"
-if [[ -f "$APP/Contents/Resources/Tools/7zz" ]]; then
-  chmod 755 "$APP/Contents/Resources/Tools/7zz"
-  codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.7zz "$APP/Contents/Resources/Tools/7zz"
-fi
-# Sign nested native code before signing the containing application.
-while IFS= read -r -d '' native; do
-  if /usr/bin/file -b "$native" | /usr/bin/grep -q 'Mach-O'; then
-    codesign --force --sign - --timestamp=none "$native"
-  fi
-done < <(find "$APP/Contents/Resources/Tools" -type f -print0)
-# The broker uses the main app's existing permissions. Only fixed archive
-# operations are exposed; every parser/rebuilder is sandboxed by its job scope.
-codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook.ArchiveBroker "$BROKER"
-codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.QuickLook --entitlements "$PROJECT_DIR/QuickLookExtension/QuickLook.entitlements" "$QL_EXT"
-codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo.FinderSync --entitlements "$PROJECT_DIR/Resources/FinderSync.entitlements" "$EXT"
-codesign --force --sign - --timestamp=none --identifier com.gaoseries.GaoCaoZuo "$APP"
-codesign --verify --deep --strict "$APP"
+# Stable project identity only. The signer preserves per-object entitlements and
+# policy flags, replaces old hash-bound requirements, then verifies every Mach-O.
+# A missing/unusable key or wrong Team is fatal; never fall back to ad-hoc.
+/usr/bin/python3 "$PROJECT_DIR/Scripts/sign-candidate.py" --app "$APP" --project "$PROJECT_DIR" --report "$STAGING/signing-report.json"
+mkdir -p "$PROJECT_DIR/TestResults"
+cp "$STAGING/signing-report.json" "$PROJECT_DIR/TestResults/LatestCandidateSigning.json"
+chmod 600 "$PROJECT_DIR/TestResults/LatestCandidateSigning.json"
 if [[ "${1:-}" == '--app-only' ]]; then
   ditto "$APP" "$2"
   print "APP=$2"

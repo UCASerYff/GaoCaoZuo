@@ -59,7 +59,26 @@ final class OperationPanel: NSPanel {
         store=OperationStore(directory:directory)
         GaoLocale.shared.setLanguage(GaoLanguage(rawValue:store.settings.language) ?? .system)
         gaoActionClient=GaoActionClient(dataDirectory:directory)
+        GaoActionClient.localRequestReceiver={ [weak self] url in
+            guard let self else {throw GaoActionError.providerNotReady("本机工作台已关闭。")}
+            try await self.receiveLocalRequest(url)
+        }
+        ScreenshotExchangeController.localResultReceiver={ [weak self] url in
+            guard let self else {throw GaoActionError.providerNotReady("本机交接结果入口已关闭。")}
+            await self.gaoActionClient.receivePackage(url) { [weak self] message,failed in self?.store.notify(message,failed:failed) }
+        }
         store.showMain={ [weak self] in self?.showMain() }
+        store.hideScreenshotHost={ [weak self] in
+            SelectionActionBar.shared.dismiss()
+            self?.mainWindow?.orderOut(nil);self?.settingsWindow?.orderOut(nil)
+            self?.panel?.orderOut(nil);self?.clipboardPanel?.orderOut(nil)
+        }
+        store.showOverview={ [weak self] in
+            guard let self else { return false }; self.store.section = .overview; self.showMain(); return self.mainWindow?.isVisible == true
+        }
+        store.showDesktopSettings={ [weak self] in
+            guard let self else { return false }; self.showSettings(tab:14); return self.settingsWindow?.isVisible == true
+        }
         store.showPanel={ [weak self] in self?.showPanel() }
         store.showSettings={ [weak self] in self?.showSettings() }
         store.showExtensionSettings={ [weak self] tab in self?.showSettings(tab:tab) }
@@ -76,8 +95,11 @@ final class OperationPanel: NSPanel {
             CleanerController.shared.state == .idle ? nil : "请先退出清洁模式或退出键验证，再粘贴。"
         }
         CleanerController.shared.canBegin={ [weak self] in
-            self?.store.clipboard.hasActivePasteTransaction == true ? "请先处理当前粘贴，再验证退出键或进入清洁模式。" : nil
+            guard let self else {return "工作台尚未准备好。"}
+            if self.store.screenshots.busy || self.store.screenshots.captureInputExclusive {return "截图或录制尚未结束，请先完成当前任务再进入清洁模式。"}
+            return self.store.clipboard.hasActivePasteTransaction ? "请先处理当前粘贴，再验证退出键或进入清洁模式。" : nil
         }
+        store.input.hostedInputIsExclusive={ [weak self] in self?.store.screenshots.captureInputExclusive == true }
         SelectionActionBar.shared.onStatus={ [weak self] message,failed in self?.store.notify(message,failed:failed) }
         SelectionActionBar.shared.onSaveSnippet={ [weak self] snapshot in
             guard let self,self.store.dataHealthy else {return}
@@ -101,7 +123,7 @@ final class OperationPanel: NSPanel {
         clipboardErrorObserver=store.clipboard.$error.compactMap{$0}.removeDuplicates().sink { [weak self] message in
             self?.store.notify(message,failed:true)
         }
-        store.onSettingsChanged={ [weak self] in self?.configureInput();self?.applyAppearance();self?.applyStatusVisibility();if let self{self.store.finderPreferences.publish(store:self.store)} }
+        store.onSettingsChanged={ [weak self] in self?.configureInput();self?.applyAppearance();self?.applyStatusVisibility();self?.store.configureDesktopIntegration();if let self{self.store.finderPreferences.publish(store:self.store)} }
         store.finderPreferences.changed={ [weak self] in if let self{self.store.finderPreferences.publish(store:self.store)} }
         store.fileEnhancements.$settings.dropFirst().sink { [weak self] _ in Task { @MainActor in if let self{self.store.finderPreferences.publish(store:self.store)} } }.store(in:&enhancementObservers)
         store.finderPreferences.publish(store:store)
@@ -111,7 +133,7 @@ final class OperationPanel: NSPanel {
         mainWindow.title="搞操作 V\(store.version)";mainWindow.minSize=NSSize(width:960,height:680);mainWindow.isReleasedWhenClosed=false;mainWindow.delegate=self
         mainWindow.contentView=NSHostingView(rootView:GaoLocalizedContent { OperationRootView(store:self.store) });mainWindow.center();mainWindow.setFrameAutosaveName("GaoCaoZuo.main")
         if let i=args.firstIndex(of:"--migration"),args.count>i+1,args[i+1].hasPrefix("/") {do{try store.importReplacementSettings(URL(fileURLWithPath:args[i+1]))}catch{store.notify(error.localizedDescription,failed:true)}}
-        installMenu();configureStatus();configureInput();applyAppearance();applyStatusVisibility()
+        installMenu();configureStatus();configureInput();applyAppearance();applyStatusVisibility();store.configureDesktopIntegration()
         activationObserver=NSWorkspace.shared.notificationCenter.addObserver(forName:NSWorkspace.didActivateApplicationNotification,object:nil,queue:.main){[weak self]note in
             guard let app=note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,app.processIdentifier != ProcessInfo.processInfo.processIdentifier else{return}
             Task{@MainActor in self?.store.windows.captureTarget();self?.panel?.orderOut(nil);self?.clipboardPanel?.orderOut(nil)}
@@ -227,7 +249,11 @@ final class OperationPanel: NSPanel {
             window.contentView=content;window.setContentSize(content.fittingSize);window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
         }
     }
-    func windowWillClose(_ notification:Notification){if let window=notification.object as? NSWindow,window === passwordPanel {finishPassword?(nil)}}
+    func windowWillClose(_ notification:Notification){
+        guard let window=notification.object as? NSWindow else {return}
+        if window === passwordPanel {finishPassword?(nil)}
+        if window === mainWindow {store.desktopOverview.endSession()}
+    }
     private func installMenu(){
         let menu=NSMenu()
         let appMenu=NSMenu();appMenu.addItem(item("关于搞操作",#selector(about)));appMenu.addItem(.separator());appMenu.addItem(item("设置…",#selector(settingsAction),key:","));appMenu.addItem(.separator());appMenu.addItem(item("退出搞操作",#selector(quit),key:"q"))
@@ -235,8 +261,17 @@ final class OperationPanel: NSPanel {
         let file=NSMenu();file.addItem(item("选择文件…",#selector(selectFiles),key:"o"));file.addItem(item("显示主窗口",#selector(mainAction),key:"0"));file.addItem(item("打开操作面板",#selector(panelAction)));file.addItem(item("跨应用任务…",#selector(exchangeHistoryAction)));file.addItem(.separator());file.addItem(item("关闭窗口",#selector(closeWindow),key:"w"))
         menu.addItem(withTitle:L10n.text("文件"),action:nil,keyEquivalent:"").submenu=file
         let edit=NSMenu()
-        for (title,selector,key) in [("撤销",Selector(("undo:")),"z"),("剪切",#selector(NSText.cut(_:)),"x"),("复制",#selector(NSText.copy(_:)),"c"),("粘贴",#selector(NSText.paste(_:)),"v"),("全选",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(NSMenuItem(title:L10n.text(title),action:selector,keyEquivalent:key))}
+        edit.addItem(item("撤销",#selector(undoAction),key:"z"))
+        let redo=item("重做",#selector(redoAction),key:"z");redo.keyEquivalentModifierMask=[.command,.shift];edit.addItem(redo)
+        for (title,selector,key) in [("剪切",#selector(NSText.cut(_:)),"x"),("复制",#selector(NSText.copy(_:)),"c"),("粘贴",#selector(NSText.paste(_:)),"v"),("全选",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(NSMenuItem(title:L10n.text(title),action:selector,keyEquivalent:key))}
         menu.addItem(withTitle:L10n.text("编辑"),action:nil,keyEquivalent:"").submenu=edit
+        let capture=NSMenu()
+        for (title,action) in [("截图与录制工作台","screenshot.workspace"),("区域截图","capture.region"),("窗口截图","capture.window"),("屏幕截图","capture.display"),("长截图","screenshot.long"),("录屏与录音","screenshot.recording"),("OCR","ocr.files"),("本机翻译","text.translate"),("截图设置与迁移","screenshot.settings")] {
+            let entry=item(title,#selector(quickMenuAction(_:)));entry.representedObject=action;capture.addItem(entry)
+        }
+        capture.addItem(.separator());capture.addItem(item("取消当前截图或长截图",#selector(cancelScreenshotAction)))
+        capture.addItem(item("停止录制并保留输出",#selector(stopScreenshotRecordingAction)))
+        menu.addItem(withTitle:L10n.text("截图"),action:nil,keyEquivalent:"").submenu=capture
         let window=NSMenu();window.addItem(NSMenuItem(title:L10n.text("最小化"),action:#selector(NSWindow.performMiniaturize(_:)),keyEquivalent:"m"));menu.addItem(withTitle:L10n.text("窗口"),action:nil,keyEquivalent:"").submenu=window;NSApp.windowsMenu=window
         let help=NSMenu();help.addItem(item("使用说明",#selector(helpAction)));menu.addItem(withTitle:L10n.text("帮助"),action:nil,keyEquivalent:"").submenu=help
         NSApp.mainMenu=menu
@@ -247,6 +282,11 @@ final class OperationPanel: NSPanel {
     @objc private func statusClicked(){
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu=NSMenu();menu.addItem(item("打开操作面板",#selector(panelAction)));menu.addItem(item("显示主窗口",#selector(mainAction)));menu.addItem(item("剪贴板",#selector(clipboardAction)))
+            for (title,action) in [("区域截图","capture.region"),("截图与录制","screenshot.workspace")] {
+                let entry=item(title,#selector(quickMenuAction(_:)));entry.representedObject=action;menu.addItem(entry)
+            }
+            menu.addItem(item("取消当前截图或长截图",#selector(cancelScreenshotAction)))
+            menu.addItem(item("停止录制并保留输出",#selector(stopScreenshotRecordingAction)))
             if store.clipboard.hasActivePasteTransaction {menu.addItem(item("处理待确认粘贴",#selector(pasteReviewAction)))}
             let layouts=NSMenu()
             for action in WindowAction.allCases {let entry=item(action.title,#selector(quickMenuAction(_:)));entry.representedObject="window."+action.rawValue;layouts.addItem(entry)}
@@ -257,6 +297,25 @@ final class OperationPanel: NSPanel {
         }else{switch store.settings.statusBarLeftClick {case "main":showMain();case "clipboard":showClipboard();default:showPanel()}}
     }
     @objc private func clipboardAction(){showClipboard()}
+    private func cancelScreenshotCaptureWork(){
+        let model=store.screenshots.model
+        model.cancelCaptureWork()
+        // Only touch an existing Exchange operation; cancelling an idle module
+        // must not initialize its ledger or cancel other pending work.
+        if model.canCancelExchange {model.exchange.cancelExternalCapture()}
+    }
+    @objc private func cancelScreenshotAction(){cancelScreenshotCaptureWork()}
+    @objc private func stopScreenshotRecordingAction(){Task{await store.screenshots.model.recording.stop()}}
+    @objc private func undoAction(){
+        if let editor=NSApp.keyWindow?.firstResponder as? NSTextView {editor.undoManager?.undo()}
+        else if store.section == .screenshots,let document=store.screenshots.model.annotation {document.undo()}
+        else {_ = NSApp.sendAction(Selector(("undo:")),to:nil,from:nil)}
+    }
+    @objc private func redoAction(){
+        if let editor=NSApp.keyWindow?.firstResponder as? NSTextView {editor.undoManager?.redo()}
+        else if store.section == .screenshots,let document=store.screenshots.model.annotation {document.redo()}
+        else {_ = NSApp.sendAction(Selector(("redo:")),to:nil,from:nil)}
+    }
     @objc private func pasteReviewAction(){showPasteReview()}
     @objc private func permissionsAction(){showSettings(tab:1)}
     @objc private func quickMenuAction(_ sender:NSMenuItem){store.windows.captureTarget();if let id=sender.representedObject as? String{store.prepare(id)}}
@@ -282,7 +341,8 @@ final class OperationPanel: NSPanel {
     @objc(receiveText:userData:error:) func receiveText(_ pasteboard:NSPasteboard,userData:String?,error:AutoreleasingUnsafeMutablePointer<NSString?>?) {
         guard let text=pasteboard.string(forType:.string),!text.isEmpty,let action=userData else {error?.pointee="没有可处理的文字";return}
         do {
-            if action == "text.baidu" || action == "text.google" {try store.fileEnhancements.translate(text,provider:action)}
+            if action == "text.translate" {store.screenshots.model.setTranslationInput(text);store.screenshots.showWorkspace(tab:"翻译")}
+            else if action == "text.baidu" || action == "text.google" {try store.fileEnhancements.translate(text,provider:action)}
             else if action == "text.qrcode.clipboard" {let bytes=try FileTools.qrCode(text:text);let board=NSPasteboard.general;board.clearContents();board.setData(bytes,forType:.png);store.notify("二维码已复制")}
         }catch let failure {error?.pointee=failure.localizedDescription as NSString}
     }
@@ -292,9 +352,22 @@ final class OperationPanel: NSPanel {
         store.windows.captureTarget()
         let exchangeURLs=urls.filter{$0.isFileURL && $0.pathExtension.lowercased()==GaoActionV1.packageExtension}
         for url in exchangeURLs {
-            Task { @MainActor [client=gaoActionClient!,weak self] in await client.receivePackage(url) { message,failed in self?.store.notify(message,failed:failed) } }
+            Task { @MainActor [client=gaoActionClient!,weak self] in
+                guard let self else { return }
+                do {
+                    let header = try await Task.detached { try GaoActionV1.inspectManifest(at:url,expectedTarget:GaoActionV1.ownBundleID) }.value
+                    if header.manifest.kind == .request {
+                        try await self.receiveLocalRequest(url)
+                    } else { await client.receivePackage(url) { message,failed in self.store.notify(message,failed:failed) } }
+                } catch { self.store.notify(error.localizedDescription,failed:true) }
+            }
         }
-        let fileURLs=urls.filter{$0.isFileURL && $0.pathExtension.lowercased() != GaoActionV1.packageExtension}
+        let screenshotURLs=urls.filter { url in
+            guard url.isFileURL,url.pathExtension.lowercased() != GaoActionV1.packageExtension else {return false}
+            return ["gaoannotation","pdf"].contains(url.pathExtension.lowercased()) || UTType(filenameExtension:url.pathExtension)?.conforms(to:.image) == true
+        }
+        if !screenshotURLs.isEmpty {Task {await store.screenshots.receive(screenshotURLs)}}
+        let fileURLs=urls.filter{$0.isFileURL && $0.pathExtension.lowercased() != GaoActionV1.packageExtension && !screenshotURLs.contains($0)}
         if !fileURLs.isEmpty {store.selection=fileURLs;if fileURLs.allSatisfy({["zip","7z","rar","ace","lzh","lha","lz","lzip","tar","tgz","gz","bz2","xz","zst","cab","iso","xar","cpio","001"].contains($0.pathExtension.lowercased())}) {_ = store.archiveEnhancements.handle(id:"archive.open",files:fileURLs,store:store)}else{showPanel()}}
         for url in urls where url.scheme == "gaocaozuo" {
             if url.host == "finder" {
@@ -309,9 +382,17 @@ final class OperationPanel: NSPanel {
     func applicationDidBecomeActive(_ notification:Notification){
         if pendingInitialPresentation,mainWindow != nil {pendingInitialPresentation=false;showMain()}
     }
+    func applicationWillTerminate(_ notification: Notification) {
+        store?.screenshots.cleanupAfterApprovedTermination();GaoActionClient.localRequestReceiver=nil;ScreenshotExchangeController.localResultReceiver=nil
+        store?.localLock.stop(); store?.desktopOverview.endSession(); store?.desktopStatusStrip.stop()
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{showMain();return true}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
+        if store.screenshots.captureInputExclusive,store.screenshots.model.selection.isSelecting {
+            cancelScreenshotCaptureWork();store.notify("已取消截图选择；其他工作仍保留，请确认后再次退出。",failed:false);return .terminateCancel
+        }
+        if let reason=store.screenshots.terminationBlockReason {store.notify(reason,failed:true);store.screenshots.showWorkspace();return .terminateCancel}
         if store.clipboard.hasActivePasteTransaction {store.notify("请先处理剪贴板的恢复或粘贴确认，再退出，以保留原内容。",failed:true);showPasteReview();return .terminateCancel}
         if store.busy || store.archive.isRunning || store.workflowRunning || store.crossApplicationBusy || GaoActionActivity.shared.isBusy {
             let alert=NSAlert();alert.messageText=L10n.text("任务仍在运行");alert.informativeText=L10n.text("请等待文件任务完成，或在任务界面取消压缩/组合操作后退出。");alert.addButton(withTitle:L10n.text("返回任务"));alert.runModal();showMain();return .terminateCancel
@@ -322,19 +403,27 @@ final class OperationPanel: NSPanel {
 }
 
 @MainActor private extension OperationAppDelegate {
+    func receiveLocalRequest(_ url:URL) async throws {
+        let header=try await Task.detached {try GaoActionV1.inspectManifest(at:url,expectedTarget:GaoActionV1.ownBundleID)}.value
+        guard header.manifest.kind == .request else {throw GaoActionError.invalidPackage("结果包不能作为本机新请求执行。")}
+        if ScreenshotGaoActionContract.supportedActions.contains(header.manifest.action) {await store.screenshots.receive([url])}
+        else {await store.desktopProvider.receive(url);showSettings(tab:14)}
+    }
     func sendSelection(_ snapshot:SelectionSnapshot,translate:Bool) {
         guard store.dataHealthy else {store.notify("资料处于保护模式，未建立交接包。",failed:true);return}
         guard Date().timeIntervalSince(snapshot.timestamp) <= 60,!snapshot.selectedText.isEmpty else {store.notify("选区已过期，请重新选择。",failed:true);return}
         let action=translate ? "text.translate" : "documents.newText"
-        let target=translate ? "com.gaoseries.GaoJieTu" : "com.gaoseries.GaoWenJian"
+        let target=translate ? GaoActionV1.ownBundleID : "com.gaoseries.GaoWenJian"
         var parameters:[String:Any]=translate ? ["targetLanguage":"zh-Hans","sourceLanguage":"auto"] : ["suggestedTitle":"选中文字.txt"]
         if translate {
-            let alert=NSAlert();alert.messageText=L10n.text("翻译选中文字");alert.informativeText=L10n.text("选择目标语言；文本将交给搞截图的翻译界面。")
+            let alert=NSAlert();alert.messageText=L10n.text("翻译选中文字");alert.informativeText=L10n.text("选择目标语言，在本机翻译界面确认开始。")
             let picker=NSPopUpButton(frame:NSRect(x:0,y:0,width:260,height:28))
             let languages=[("简体中文","zh-Hans"),("English","en"),("日本語","ja"),("Deutsch","de"),("Français","fr"),("Español","es"),("한국어","ko"),("Português","pt")]
             picker.addItems(withTitles:languages.map(\.0));alert.accessoryView=picker;alert.addButton(withTitle:L10n.text("继续"));alert.addButton(withTitle:L10n.text("取消"))
             guard alert.runModal() == .alertFirstButtonReturn else {return}
             parameters["targetLanguage"]=languages[picker.indexOfSelectedItem].1
+            store.screenshots.model.setTranslationInput(snapshot.selectedText,targetLanguage:languages[picker.indexOfSelectedItem].1)
+            store.screenshots.showWorkspace(tab:"翻译");return
         }
         do { _ = try gaoActionClient.providerURL(bundleID:target,action:action,parameters:parameters,items:true) }
         catch {store.notify(error.localizedDescription,failed:true);return}
