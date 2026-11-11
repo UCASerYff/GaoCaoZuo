@@ -1,7 +1,6 @@
 import Foundation
 
-/// Before retirement includes the one committed archive; after retirement backs up live data and its minimal receipt only.
-/// Verification proves retained bytes/topology and a copy rehearsal, never automatic runtime path rebinding.
+/// Read-only validation of historical backup metadata. New backup creation is disabled.
 enum ScreenshotDataBackup {
     struct Entry: Codable, Equatable, Sendable { var bytes: Int64; var sha256: String }
     struct MigrationEvidence: Codable, Equatable, Sendable {
@@ -29,64 +28,10 @@ enum ScreenshotDataBackup {
         return files(snapshot)
     }
 
-    /// The returned URL is authoritative: a destination outside noindex ancestry gets a .noindex suffix before any App copy.
-    static func create(root: URL, destination requestedDestination: URL) throws -> URL {
-        let destination = protectedDestination(requestedDestination)
-        guard !ScreenshotMigrationIO.contains(root, destination), !ScreenshotMigrationIO.contains(destination, root),
-              try !ScreenshotMigrationIO.exists(requestedDestination), try !ScreenshotMigrationIO.exists(destination) else {
-            throw fail("完整备份目标必须是资料外的新目录；已有请求路径或.noindex目标不会覆盖。")
-        }
-        let before = try ScreenshotMigrationIO.snapshot(id: "Source", url: root, required: true)
-        guard before.isDirectory else { throw fail("截图资料根缺失或不是目录，不能构造空白备份。") }
-        try ScreenshotMigrationValidation.validate(root: root, snapshot: before, logicalRoot: root)
-        let marker = try initialization(at: root)
-        let retirement = try ScreenshotMigration.inspectRetirementReceipt(at: root, originalActiveRoot: root)
-        let evidence: MigrationEvidence?
-        if let marker, marker.mode == "migrated", retirement == nil {
-            guard let archivePath = marker.archivePath, let migrationID = marker.migrationID else { throw fail("迁移标记缺少归档身份，完整备份已停止。") }
-            let archive = URL(fileURLWithPath: archivePath)
-            guard !ScreenshotMigrationIO.contains(archive, destination), !ScreenshotMigrationIO.contains(destination, archive) else { throw fail("备份目标与本次迁移归档重叠，已停止递归备份。") }
-            let snapshot = try ScreenshotMigration.inspectCommittedArchive(at: archive, marker: marker, originalActiveRoot: root)
-            evidence = .init(originalArchivePath: archivePath, migrationID: migrationID,
-                             relativePath: "MigrationEvidence.noindex/" + migrationID + ".noindex", snapshot: snapshot)
-        } else { evidence = nil }
-        try ScreenshotMigrationIO.createDirectory(destination)
-        let data = destination.appendingPathComponent("Data")
-        try ScreenshotMigrationIO.copy(before, to: data)
-        if let evidence { try ScreenshotMigrationIO.copy(evidence.snapshot, to: destination.appendingPathComponent(evidence.relativePath)) }
-        try ScreenshotMigrationIO.requireSnapshot(before, at: data)
-        guard try ScreenshotMigrationIO.snapshot(id: "Source", url: root, required: true) == before else { throw fail("截图活动资料在备份时改变；来源和未完成备份均保留。") }
-        if let evidence, let marker {
-            let current = try ScreenshotMigration.inspectCommittedArchive(at: URL(fileURLWithPath: evidence.originalArchivePath), marker: marker, originalActiveRoot: root)
-            guard current == evidence.snapshot else { throw fail("迁移归档在备份时改变，未确认完整备份成功。") }
-            try ScreenshotMigrationIO.requireSnapshot(evidence.snapshot, at: destination.appendingPathComponent(evidence.relativePath))
-        }
-
-        // Rehearse BOTH the active data and the referenced archive. No source or marker is modified or rebound.
-        let rehearsal = destination.appendingPathComponent("RestoreRehearsal.noindex")
-        var dataCopy = before; dataCopy.originalPath = data.path
-        try ScreenshotMigrationIO.copy(dataCopy, to: rehearsal.appendingPathComponent("Data"))
-        try ScreenshotMigrationIO.requireSnapshot(before, at: rehearsal.appendingPathComponent("Data"))
-        try ScreenshotMigrationValidation.validate(root: rehearsal.appendingPathComponent("Data"), snapshot: before, logicalRoot: root)
-        if let evidence, let marker {
-            var copiedEvidence = evidence.snapshot
-            copiedEvidence.originalPath = destination.appendingPathComponent(evidence.relativePath).path
-            let rehearsedArchive = rehearsal.appendingPathComponent(evidence.relativePath)
-            try ScreenshotMigrationIO.copy(copiedEvidence, to: rehearsedArchive)
-            try ScreenshotMigrationIO.requireSnapshot(evidence.snapshot, at: rehearsedArchive)
-            let rehearsed = try ScreenshotMigration.inspectCommittedArchive(at: rehearsedArchive, marker: marker, originalActiveRoot: root)
-            guard rehearsed.inventory == evidence.snapshot.inventory, rehearsed.isDirectory == evidence.snapshot.isDirectory else { throw fail("迁移归档恢复演练库存不符，未确认成功。") }
-        }
-        if retirement != nil {
-            _ = try ScreenshotMigration.inspectRetirementReceipt(at: data, originalActiveRoot: root)
-            _ = try ScreenshotMigration.inspectRetirementReceipt(at: rehearsal.appendingPathComponent("Data"), originalActiveRoot: root)
-        }
-        try FileManager.default.removeItem(at: rehearsal) // Only this new, fully verified rehearsal is discarded.
-        let retiredSHA = retirement == nil ? nil : ScreenshotMigrationIO.sha(try ScreenshotMigrationIO.read(root.appendingPathComponent(ScreenshotMigration.retirementReceiptName)))
-        let report = Report(sourceExisted: true, inventory: files(before), dataSnapshot: before, migrationEvidence: evidence, retirementReceiptSHA256: retiredSHA)
-        try ScreenshotMigrationIO.writeNew(try ScreenshotMigrationIO.encoder.encode(report), to: destination.appendingPathComponent("Verification.json"))
-        _ = try verify(destination)
-        return destination
+    /// Retained only as a rejecting compatibility boundary for old callers.
+    /// This version never creates an export, rehearsal or migration backup.
+    static func create(root: URL, destination: URL) throws -> URL {
+        throw fail("本版本已移除截图备份功能；现用资料与附件保留在原目录。")
     }
 
     /// Reads only backup-local evidence. The original source/archive may be offline or retired.

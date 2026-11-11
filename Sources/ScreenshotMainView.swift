@@ -75,7 +75,6 @@ struct ScreenshotHistoryView: View {
                     }
                 }.frame(height: 180)
                 HStack {
-                    Button("完整备份并恢复演练…") { model.backupData() }
                     Button("恢复持久贴图") { model.restorePins() }
                     Button("显示私有交接目录") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: store.exchange.path) }
                 }

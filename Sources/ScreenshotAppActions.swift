@@ -35,25 +35,7 @@ extension ScreenshotAppModel {
     }
     func persistPin(){guard canBeginOperation()else{return};guard let image=try? annotation?.flatten()else{return};pins.persistenceDirectory=store.root;do{_ = try pins.persist(image:image,onEdit:{[weak self]image in self?.editPinnedImage(image)});message="已主动保存持久贴图。"}catch{fail(error)}}
     func restorePins(){guard canBeginOperation()else{return};pins.persistenceDirectory=store.root;pins.onNotice={[weak self]text in self?.message=text};pins.restorePersistentPins(onEdit:{[weak self]image in self?.editPinnedImage(image)})}
-    func backupData() {
-        guard canBeginOperation() else{return}
-        guard !busy,!canCancelCaptureWork,!chooser,!ocr.isRunning,!translationIsRunning,!exchangeIsExecuting,!recording.isActive,activeAuxiliaryWork.isEmpty,externalAnnotation==nil,externalTranslation==nil else{message="请等待当前任务停止后备份。";return}
-        let root=store.root,destination=store.backupRoot.appendingPathComponent("Backup-"+UUID().uuidString)
-        moduleBackupActive=true
-        let work=beginAuxiliaryWork("完整备份与恢复核验（不可取消）")
-        message="正在后台复制并核验完整截图资料及迁移归档；归档可能较大。此步骤不可取消，请保持应用运行。"
-        Task{@MainActor in
-            defer{moduleBackupActive=false;endAuxiliaryWork(work)}
-            do {
-                let result=try await Task.detached(priority:.utility){try ScreenshotDataBackup.create(root:root,destination:destination)}.value
-                message="完整备份与恢复复制核验已通过。原资料与凭据保持原位；恢复到其他路径仍须受控改绑。"
-                NSWorkspace.shared.activateFileViewerSelecting([result])
-            }catch{
-                message="完整备份未完成："+error.localizedDescription+" 来源及未完成备份均保留。"
-                showMain()
-            }
-        }
-    }
+
 }
 
 extension ScreenshotAppModel {

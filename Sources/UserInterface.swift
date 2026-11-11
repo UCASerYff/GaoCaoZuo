@@ -2,50 +2,134 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+enum OperationStyle {
+    static let accent = Color(red: 0.12, green: 0.48, blue: 0.42)
+    static let canvas = Color(nsColor: .windowBackgroundColor)
+    static let surface = Color(nsColor: .controlBackgroundColor)
+}
+
+extension OperationSection {
+    var displayTitle: String {
+        switch self {
+        case .home: return "工作台"
+        case .overview: return "桌面总览"
+        case .archives: return "压缩与解压"
+        case .tools: return "实用工具"
+        default: return rawValue
+        }
+    }
+    var summary: String {
+        switch self {
+        case .home: return "从这里开始，轻松处理日常。"
+        case .files: return "新建、整理与转换，文件处理更顺手。"
+        case .archives: return "快速打包、解压与预览压缩内容。"
+        case .windows: return "为眼前的工作，安排合适的位置。"
+        case .overview: return "查找应用与窗口，快速回到正在做的事。"
+        case .lockPolicy: return "按自己的习惯设置本机闲置与锁屏。"
+        case .screenshots: return "捕捉画面、识别文字，记录重要内容。"
+        case .clipboard: return "让复制过的内容，随时回到手边。"
+        case .tools: return "图片转换、校验与系统小工具。"
+        case .input: return "让常用动作，跟着你的操作习惯走。"
+        case .workflows: return "把重复步骤串起来，一次完成。"
+        case .history: return "查看文件操作，按需恢复处理结果。"
+        }
+    }
+}
+
 struct OperationRootView: View {
     @ObservedObject var store: OperationStore
-    @ObservedObject private var fileEnhancements:FileEnhancementController
-    init(store:OperationStore){self.store=store;self.fileEnhancements=store.fileEnhancements}
+    @ObservedObject private var fileEnhancements: FileEnhancementController
+    init(store: OperationStore) { self.store = store; self.fileEnhancements = store.fileEnhancements }
+    private var showsFileSelection: Bool {
+        [.files, .archives, .tools].contains(store.section) || (!store.selection.isEmpty && store.section != .home)
+    }
     var body: some View {
         NavigationSplitView {
-            List(selection: $store.section) {
-                ForEach(OperationSection.allCases) { section in Label(L10n.text(section.rawValue),systemImage:section.icon).tag(section) }
-            }.navigationSplitViewColumnWidth(min:160,ideal:180,max:230)
-            .safeAreaInset(edge:.bottom) {
-                Button { store.showSettings?() } label: { Label("设置…",systemImage:"gearshape").frame(maxWidth:.infinity,alignment:.leading) }.buttonStyle(.plain).padding()
-            }
-        } detail: {
-            VStack(spacing:0) {
+            VStack(spacing: 0) {
+                HStack(spacing: 11) {
+                    Image(systemName: "command").font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(OperationStyle.accent).frame(width: 43, height: 43)
+                        .background(OperationStyle.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: 13))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("搞操作").font(.system(size: 19, weight: .semibold))
+                        Text("让操作更顺手").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 22)
+                List(selection: $store.section) {
+                    navigationRow(.home)
+                    Section("日常工具") {
+                        navigationRow(.screenshots); navigationRow(.clipboard); navigationRow(.files)
+                        navigationRow(.archives); navigationRow(.tools)
+                    }
+                    Section("桌面与窗口") {
+                        navigationRow(.windows); navigationRow(.overview); navigationRow(.lockPolicy)
+                    }
+                    Section("自动化") { navigationRow(.input); navigationRow(.workflows) }
+                    Section("活动") { navigationRow(.history) }
+                }.listStyle(.sidebar)
+                Divider().padding(.horizontal, 18)
                 HStack {
-                    VStack(alignment:.leading,spacing:4) { Text("搞操作 V\(store.version)").font(.title2.weight(.semibold)); Text("让 Mac 的常用操作，少点几下。").foregroundStyle(.secondary) }
+                    Button { store.showSettings?() } label: { Label("设置", systemImage: "gearshape") }
+                        .buttonStyle(.plain).help("设置 ⌘,")
                     Spacer()
-                    Button { store.windows.captureTarget(); store.showPanel?() } label: { Label("操作面板",systemImage:"command") }
-                    Button { store.showSettings?() } label: { Image(systemName:"gearshape") }.help("设置 ⌘,")
+                    Text("V\(store.version)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                 }.padding(20)
-                Divider()
-                SelectionBar(store:store)
-                Divider()
-                if !store.dataHealthy { Label(L10n.format("资料保护模式：%@", String(describing: (store.data.failure ?? "无法写入资料"))),systemImage:"exclamationmark.shield").font(.callout).foregroundStyle(.red).padding().frame(maxWidth:.infinity,alignment:.leading) }
-                sectionContent
-                Divider()
+            }.navigationSplitViewColumnWidth(min: 205, ideal: 220, max: 260)
+        } detail: {
+            VStack(spacing: 0) {
+                workspaceHeader
+                if showsFileSelection { SelectionBar(store: store) }
+                if !store.dataHealthy {
+                    Label(L10n.format("资料保护模式：%@", String(describing: store.data.failure ?? "无法写入资料")), systemImage: "exclamationmark.shield")
+                        .font(.callout).foregroundStyle(.red).padding().frame(maxWidth: .infinity, alignment: .leading)
+                }
+                sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity)
                 OperationTaskStatusView(store: store)
-            }.frame(minWidth:740,minHeight:640)
+                    .background(OperationStyle.surface.opacity(0.7))
+                    .overlay(alignment: .top) { Divider().opacity(0.5) }
+            }.frame(minWidth: 700, minHeight: 640).background(OperationStyle.canvas)
         }
-        .sheet(item:$store.sheet) { request in ToolSheet(store:store,request:request) }
-        .sheet(item:$fileEnhancements.request) { _ in FileEnhancementToolView(controller:store.fileEnhancements,store:store) }
-        .alert("操作提示",isPresented:Binding(get:{store.error != nil},set:{if !$0 {store.error = nil}})) { Button("知道了"){store.error = nil} } message: { Text(L10n.text(store.error ?? "")) }
-        .onDrop(of:[UTType.fileURL.identifier],isTargeted:nil) { providers in acceptDrop(providers,store:store) }
+        .tint(OperationStyle.accent)
+        .sheet(item: $store.sheet) { request in ToolSheet(store: store, request: request) }
+        .sheet(item: $fileEnhancements.request) { _ in FileEnhancementToolView(controller: store.fileEnhancements, store: store) }
+        .alert("操作提示", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+            Button("知道了") { store.error = nil }
+        } message: { Text(L10n.text(store.error ?? "")) }
+        .onChange(of: store.section) { _, _ in store.query = "" }
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in acceptDrop(providers, store: store) }
+    }
+    private func navigationRow(_ section: OperationSection) -> some View {
+        Label {
+            Text(L10n.text(section.displayTitle))
+        } icon: {
+            Image(systemName: section == .home ? "square.grid.2x2" : section.icon)
+                .foregroundStyle(store.section == section ? OperationStyle.accent : .secondary)
+        }.padding(.vertical, 5).tag(section)
+    }
+    private var workspaceHeader: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(L10n.text(store.section.displayTitle)).font(.system(size: 23, weight: .semibold))
+                Text(L10n.text(store.section.summary)).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            Button { store.windows.captureTarget(); store.showPanel?() } label: {
+                Label("搜索操作", systemImage: "magnifyingglass").padding(.horizontal, 6).padding(.vertical, 3)
+            }.buttonStyle(.bordered).controlSize(.large).help("打开操作面板，搜索全部动作")
+        }.padding(.horizontal, 28).padding(.vertical, 22)
     }
     @ViewBuilder private var sectionContent: some View {
         switch store.section {
+        case .home: OperationDashboardView(store: store)
         case .overview: DesktopOverviewView(controller: store.desktopOverview)
         case .lockPolicy: IntegratedLockSettingsView(store: store)
         case .screenshots: store.screenshots.workspaceView
-        case .clipboard: ClipboardWorkspace(store:store,clipboard:store.clipboard)
-        case .input: InputRulesView(store:store)
-        case .workflows: WorkflowListView(store:store)
-        case .history: RecoveryView(store:store)
-        default: ActionWorkspace(store:store)
+        case .clipboard: ClipboardWorkspace(store: store, clipboard: store.clipboard)
+        case .input: InputRulesView(store: store)
+        case .workflows: WorkflowListView(store: store)
+        case .history: RecoveryView(store: store)
+        default: ActionWorkspace(store: store)
         }
     }
 }
@@ -85,16 +169,26 @@ private struct OperationTaskStatusView: View {
 struct SelectionBar: View {
     @ObservedObject var store: OperationStore
     var body: some View {
-        HStack(spacing:12) {
-            Image(systemName:store.selection.isEmpty ? "tray" : "doc.on.doc").foregroundStyle(.secondary)
-            VStack(alignment:.leading,spacing:3) {
-                Text(store.selection.isEmpty ? "拖入文件，或点击选择文件" : L10n.format("已选择 %@ 项", String(describing: (store.selection.count)))).font(.callout.weight(.medium))
-                if !store.selection.isEmpty { Text(store.selection.prefix(3).map(\.lastPathComponent).joined(separator:"、") + (store.selection.count > 3 ? "…" : "")).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(store.selection.map(\.path).joined(separator:"\n")) }
+        HStack(spacing: 12) {
+            Image(systemName: store.selection.isEmpty ? "tray.and.arrow.down" : "doc.on.doc")
+                .foregroundStyle(OperationStyle.accent).font(.system(size: 19))
+                .frame(width: 38, height: 38).background(OperationStyle.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(store.selection.isEmpty ? "拖入文件，开始处理" : L10n.format("已选择 %@ 项", String(store.selection.count)))
+                    .font(.callout.weight(.medium))
+                Text(store.selection.isEmpty ? "支持多选文件与文件夹" : store.selection.prefix(3).map(\.lastPathComponent).joined(separator: "、") + (store.selection.count > 3 ? "…" : ""))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help(store.selection.map(\.path).joined(separator: "\n"))
             }
-            Spacer()
-            Button("选择文件…",action:store.chooseFiles)
-            if !store.selection.isEmpty { Button("清除"){store.selection = []}.buttonStyle(.borderless) }
-        }.padding(.horizontal,20).padding(.vertical,12)
+            Spacer(minLength: 8)
+            Button("选择文件…", action: store.chooseFiles)
+            if !store.selection.isEmpty {
+                Button { store.selection = [] } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless).help("清除选择").accessibilityLabel("清除选择")
+            }
+        }.padding(14).background(OperationStyle.surface, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.primary.opacity(0.05)))
+            .padding(.horizontal, 28).padding(.bottom, 18)
     }
 }
 
@@ -103,7 +197,15 @@ struct ActionWorkspace: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:20) {
-                HStack { Text(L10n.text(store.section.rawValue)).font(.title3.weight(.semibold)); Spacer(); TextField("搜索动作、关键词或拼音",text:$store.query).textFieldStyle(.roundedBorder).frame(maxWidth:330) }
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("搜索动作、关键词或拼音", text: $store.query).textFieldStyle(.plain)
+                    if !store.query.isEmpty {
+                        Button { store.query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("清除搜索")
+                    }
+                    Spacer(minLength: 0)
+                    Text(L10n.format("%@ 个动作", String(store.visibleActions.count))).font(.caption).foregroundStyle(.secondary).fixedSize()
+                }.padding(12).background(OperationStyle.surface, in: RoundedRectangle(cornerRadius: 12))
                 if store.section == .windows { WindowPermissionCard(manager:store.windows) }
                 if store.visibleActions.isEmpty { ContentUnavailableView("暂无匹配动作",systemImage:"magnifyingglass",description:Text("可以更换关键词，或将动作加入收藏。")) }
                 LazyVGrid(columns:[GridItem(.adaptive(minimum:220),spacing:12)],spacing:12) {
@@ -111,7 +213,7 @@ struct ActionWorkspace: View {
                 }
                 if store.section == .home || store.section == .files { folders; templates }
                 if store.section == .tools { Label("窗口、锁屏等功能按需使用系统授权。",systemImage:"info.circle").font(.callout).foregroundStyle(.secondary) }
-            }.padding(20)
+            }.padding(.horizontal, 28).padding(.bottom, 24)
         }
     }
     private var folders: some View {
@@ -119,22 +221,27 @@ struct ActionWorkspace: View {
             HStack { Text("常用目录").font(.headline); Spacer(); Button("添加目录…",action:store.addFolder) }
             if store.settings.folders.isEmpty { Text("收藏常用目录，快速打开或在复制、移动时选择。").foregroundStyle(.secondary) }
             ForEach(store.settings.folders) { folder in
-                HStack(spacing: 10) {
-                    Button { store.openFolder(folder) } label: { Label(folder.name, systemImage: "folder") }
-                        .disabled(!folder.isCommon)
-                    Text(folder.path).foregroundStyle(.secondary).font(.caption).lineLimit(1).help(folder.path)
-                    Spacer(minLength: 8)
-                    Toggle("常用菜单",isOn:folderRole(folder,"common")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
-                    Toggle("发送菜单",isOn:folderRole(folder,"send")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
-                    if !store.selection.isEmpty {
-                        Button("复制到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: false) }
-                            .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
-                        Button("移动到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: true) }
-                            .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        Button { store.openFolder(folder) } label: { Label(folder.name, systemImage: "folder") }
+                            .disabled(!folder.isCommon)
+                        Text(folder.path).foregroundStyle(.secondary).font(.caption).lineLimit(1).truncationMode(.middle).help(folder.path)
+                        Spacer(minLength: 8)
+                        Button { store.update { $0.folders.removeAll { $0.id == folder.id } } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help("移除收藏")
                     }
-                    Button { store.update { $0.folders.removeAll { $0.id == folder.id } } } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless).help("移除收藏")
-                }
+                    HStack(spacing: 14) {
+                        Toggle("常用菜单", isOn: folderRole(folder, "common")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
+                        Toggle("发送菜单", isOn: folderRole(folder, "send")).toggleStyle(.checkbox).controlSize(.small).disabled(!store.dataHealthy)
+                        Spacer(minLength: 8)
+                        if !store.selection.isEmpty {
+                            Button("复制到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: false) }
+                                .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
+                            Button("移动到这里") { store.transfer(store.selection, to: URL(fileURLWithPath: folder.path, isDirectory: true), move: true) }
+                                .controlSize(.small).disabled(!store.dataHealthy || !folder.isSend)
+                        }
+                    }
+                }.padding(.vertical, 5)
             }
         }.padding().background(.quaternary.opacity(0.5),in:RoundedRectangle(cornerRadius:12))
     }
@@ -166,19 +273,35 @@ struct ActionWorkspace: View {
 struct ActionCard: View {
     @ObservedObject var store: OperationStore
     let action: OperationAction
+    @State private var hovering = false
     var body: some View {
-        HStack(alignment:.top,spacing:12) {
+        HStack(alignment: .top, spacing: 10) {
             Button { store.prepare(action.id) } label: {
-                HStack(alignment:.top,spacing:12) {
-                    Image(systemName:action.icon).font(.title2).foregroundStyle(.tint).frame(width:28)
-                    VStack(alignment:.leading,spacing:6) { Text(action.title).font(.headline); Text(action.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(minHeight:28) }
-                    Spacer(minLength:0)
-                }.contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: 14) {
+                    Image(systemName: action.icon).font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(OperationStyle.accent).frame(width: 42, height: 40)
+                        .background(OperationStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(action.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
+                        Text(action.detail).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                            .frame(minHeight: 34, alignment: .top)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(action.unavailableReason != nil).help(action.unavailableReason ?? action.detail)
-            Button { store.toggleFavorite(action.id) } label: { Image(systemName:store.settings.favorites.contains(action.id) ? "star.fill" : "star").foregroundStyle(store.settings.favorites.contains(action.id) ? Color.orange : Color.secondary) }.buttonStyle(.plain).help("收藏动作")
-        }.padding(14).background(.quaternary.opacity(0.4),in:RoundedRectangle(cornerRadius:12)).overlay(RoundedRectangle(cornerRadius:12).stroke(.separator.opacity(0.5)))
+            Button { store.toggleFavorite(action.id) } label: {
+                Image(systemName: store.settings.favorites.contains(action.id) ? "star.fill" : "star")
+                    .foregroundStyle(store.settings.favorites.contains(action.id) ? Color.orange : Color.secondary.opacity(0.65))
+                    .frame(width: 24, height: 24).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(store.settings.favorites.contains(action.id) ? "取消收藏" : "收藏到工作台")
+                .accessibilityLabel(store.settings.favorites.contains(action.id) ? "取消收藏" : "收藏到工作台")
+        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(OperationStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(hovering ? OperationStyle.accent.opacity(0.45) : Color.primary.opacity(0.06)))
+            .shadow(color: .black.opacity(hovering ? 0.05 : 0.02), radius: hovering ? 9 : 3, y: 2)
+            .onHover { hovering = $0 }
     }
 }
+
 struct WindowPermissionCard: View {
     @ObservedObject var manager: WindowManager
     var body: some View {

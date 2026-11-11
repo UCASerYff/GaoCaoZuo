@@ -324,9 +324,9 @@ public struct SnippetImportPreview {
         } catch { stop(error); throw error }
     }
 
+    /// Compatibility boundary: creating manual or automatic native backups is removed.
     public func exportNativeBackup(to destination: URL) async throws {
-        let files = try nativeBackupSnapshot()
-        try await Task.detached { try SnippetNativeBackupIO.write(files: files, to: destination) }.value
+        throw DataFailure.message("本版本已移除短语备份功能；现用短语与附件保留在本机。")
     }
 
     public func previewNativeBackup(at source: URL, policy: SnippetConflictPolicy) async throws -> SnippetNativeBackupPreview {
@@ -398,30 +398,6 @@ public struct SnippetImportPreview {
         guard totalAttachments <= Self.maximumLibraryAttachmentBytes else { throw DataFailure.message("恢复后附件及历史版本超过 64 MB，未导入。") }
         for (name, bytes) in additions { try local.createFile(bytes, name: name) }
         try commit(preview.candidate)
-    }
-
-    private func nativeBackupSnapshot() throws -> [String: Data] {
-        try requireHealthy(); try validateCurrentRevision()
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        var files: [String: Data] = [:], pending = [documentName], visited = Set<String>()
-        while let name = pending.popLast() {
-            guard visited.insert(name).inserted else { continue }
-            let bytes: Data
-            if name == documentName, document == SnippetLibraryDocument() { bytes = try encoder.encode(document) }
-            else { bytes = try local.verifiedData(name) }
-            let value = try JSONDecoder().decode(SnippetLibraryDocument.self, from: bytes)
-            if SnippetNativeBackupIO.revisionName(name), name != "revision-\(Self.sha(bytes)).json" { throw DataFailure.message("恢复版本标识与内容摘要不符，未导出。") }
-            try validate(value); files[name] = bytes
-            if let previous = value.previousRevision { pending.append(previous) }
-            pending += value.importedRecoveryRevisions ?? []
-            for snippet in value.snippets {
-                for attachment in (snippet.attachments ?? []) + (snippet.rtfAttachment.map { [$0] } ?? []) {
-                    files[attachment.filename] = try verifiedAttachment(attachment)
-                }
-            }
-            try SnippetNativeBackupIO.checkBudget(files)
-        }
-        return files
     }
 
     private func preview(snippets imported: [AdvancedSnippet], groups importedGroups: [SnippetGroup], incoming: Int) throws -> SnippetImportPreview {

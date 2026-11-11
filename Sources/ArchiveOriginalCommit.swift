@@ -4,15 +4,16 @@ import Darwin
 
 /// The trusted broker alone commits a verified private result. Decoders never
 /// receive the original directory. RENAME_SWAP retains the displaced inode;
-/// a durable pre-swap receipt and a frozen backup survive interruption.
+/// a transaction-local receipt protects interrupted work. Successful commits
+/// remove the displaced original and do not retain an archive backup.
 enum ArchiveOriginalCommit {
     struct Receipt:Codable {
         var schema=1;var requestID:UUID;var state:String
-        var original:URL;var backup:URL;var displaced:URL
+        var original:URL;var backup:URL?;var displaced:URL
         var originalSHA256:String;var resultSHA256:String
         var originalIdentity:QuickLookArchiveIdentity?=nil;var resultIdentity:QuickLookArchiveIdentity?=nil
     }
-    struct Result {var backup:URL;var displaced:URL;var sha256:String}
+    struct Result {var backup:URL?;var displaced:URL;var sha256:String}
     private static func failure(_ text:String)->Error {ArchiveError.invalid(L10n.text(text))}
     private static func posix()->Error {NSError(domain:NSPOSIXErrorDomain,code:Int(errno))}
     private static func identity(_ s:stat)->QuickLookArchiveIdentity {
@@ -63,7 +64,7 @@ enum ArchiveOriginalCommit {
         return (info.st_mode&0o7777,info.st_uid,info.st_gid,info.st_flags,values,aclText)
     }
     static func commit(original:URL,expected:QuickLookArchiveIdentity,sha256:String,candidate:URL,backupDirectory:URL,requestID:UUID,checkCancellation:()throws->Void={},observer:((String)throws->Void)?=nil)throws->Result {
-        let fm=FileManager.default,parent=original.deletingLastPathComponent().resolvingSymlinksInPath()
+        let parent=original.deletingLastPathComponent().resolvingSymlinksInPath()
         let directory=open(parent.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
         guard directory>=0 else {throw posix()};defer {close(directory)}
         var parentInfo=stat();guard fstat(directory,&parentInfo)==0 else {throw posix()}
@@ -91,6 +92,7 @@ enum ArchiveOriginalCommit {
                 // Only the one private candidate is disposable. Never recurse
                 // through a path that another process could have replaced.
                 _=unlinkat(recoveryFD,displaced.lastPathComponent,0)
+                _=unlinkat(recoveryFD,"Transaction.json",0)
                 var opened=stat(),current=stat()
                 if fstat(recoveryFD,&opened)==0,fstatat(directory,recoveryName,&current,AT_SYMLINK_NOFOLLOW)==0,opened.st_dev==current.st_dev,opened.st_ino==current.st_ino {_=unlinkat(directory,recoveryName,AT_REMOVEDIR)}
             }
@@ -102,14 +104,12 @@ enum ArchiveOriginalCommit {
         guard fcopyfile(source,replacement,nil,copyfile_flags_t(COPYFILE_METADATA))==0,fsync(replacement)==0 else {throw posix()}
         let preserved=try metadata(replacement)
         guard oldMetadata.mode==preserved.mode,oldMetadata.uid==preserved.uid,oldMetadata.gid==preserved.gid,oldMetadata.flags==preserved.flags,oldMetadata.xattrs==preserved.xattrs,oldMetadata.acl==preserved.acl,try digest(replacement)==resultHash else {throw failure("未能完整保留原包权限或扩展属性，原包未改变。")}
-        try fm.createDirectory(at:backupDirectory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-        let backup=backupDirectory.appendingPathComponent(requestID.uuidString+"."+original.pathExtension)
-        try copyRegular(original,to:backup,expected:expected,sha256:sha256)
-        let journal=LocalData(directory:backupDirectory),receiptName=requestID.uuidString+".json"
-        var receipt=Receipt(requestID:requestID,state:"prepared",original:original,backup:backup,displaced:displaced,originalSHA256:sha256,resultSHA256:resultHash)
+        // The receipt and displaced inode belong only to this active transaction.
+        // No full original is copied into a long-term backup directory.
+        let journal=LocalData(directory:recovery),receiptName="Transaction.json"
+        var receipt=Receipt(requestID:requestID,state:"prepared",original:original,backup:nil,displaced:displaced,originalSHA256:sha256,resultSHA256:resultHash)
         receipt.originalIdentity=expected;receipt.resultIdentity=try QuickLookArchiveIdentity(url:displaced)
         try journal.save(receipt,name:receiptName)
-        defer {if !retainRecovery {receipt.state="not-committed";try? journal.save(receipt,name:receiptName)}}
         try observer?("prepared");try checkCancellation();try validate()
         var candidateInfo=stat();guard fstat(replacement,&candidateInfo)==0 else {throw posix()}
         guard renameatx_np(recoveryFD,displaced.lastPathComponent,directory,name,UInt32(RENAME_SWAP))==0 else {throw posix()}
@@ -124,17 +124,18 @@ enum ArchiveOriginalCommit {
                   old.st_dev==expected.device,old.st_ino==expected.inode,old.st_size==expected.bytes,
                   try digest(source)==sha256,
                   fstatat(directory,name,&saved,AT_SYMLINK_NOFOLLOW)==0,saved.st_dev==candidateInfo.st_dev,saved.st_ino==candidateInfo.st_ino,
-                  try FileTools.sha256(original)==resultHash else {throw failure("保存时检测到外部更改，安全备份和现场已保留。")}
+                  try FileTools.sha256(original)==resultHash else {throw failure("保存时检测到外部更改，当前文件与未完成事务原件已保留。")}
             receipt.state="completed";try journal.save(receipt,name:receiptName)
         }catch {
             var current=stat()
             if fstatat(directory,name,&current,AT_SYMLINK_NOFOLLOW)==0,current.st_dev==candidateInfo.st_dev,current.st_ino==candidateInfo.st_ino,(try? FileTools.sha256(original))==resultHash,
                renameatx_np(recoveryFD,displaced.lastPathComponent,directory,name,UInt32(RENAME_SWAP))==0 {
-                receipt.state="rolled-back"
+                receipt.state="rolled-back";retainRecovery=false
             }else{receipt.state="needs-review"}
             try? journal.save(receipt,name:receiptName)
             throw error
         }
-        return Result(backup:backup,displaced:displaced,sha256:resultHash)
+        retainRecovery=false
+        return Result(backup:nil,displaced:displaced,sha256:resultHash)
     }
 }

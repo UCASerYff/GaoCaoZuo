@@ -46,7 +46,6 @@ import Combine
     @Published var translationResult:ScreenshotLocalTranslationResult?
     @Published var translationIsRunning=false
     @Published var moduleMigrationActive=false
-    @Published var moduleBackupActive=false
     @Published var importedActivityWorkActive=false
     var annotationHasUnsavedChanges:Bool { guard let annotation else{return false};return annotationCheckpoint != annotation.state }
     private func ocrDigest(_ document:ScreenshotOCRDocument)->String { let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys];guard let bytes=try? encoder.encode(document)else{return "unencodable-"+document.id.uuidString};return ScreenshotFileSafety.digest(bytes) }
@@ -80,7 +79,6 @@ import Combine
     var operationStartBlockingReason:String? {
         if unsavedReviewActive{return "请先处理截图工作台当前的未保存内容确认。"}
         if importedActivityWorkActive{return "正在核验或恢复迁入记录，请等待该步骤完成。"}
-        if moduleBackupActive{return "截图资料正在后台完整备份与核验，请等待完成；此步骤不可取消。"}
         if moduleMigrationActive{return "截图资料正在核验或迁移，请等待完成；本模块生产操作已暂停。"}
         if let reason=operationBlockingReason?(){return reason}
         guard store.writable else{return store.issue ?? "截图资料未就绪，请在搞操作的截图设置中显式迁移或初始化。"}

@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 /// Explicit copy/paste preparation only. These are private delivery copies;
-/// immutable library blobs remain the source of truth and belong to backups.
+/// immutable library blobs remain the source of truth in current user data.
 /// No timer removes a URL that a receiving application may still be reading.
 enum SnippetNamedAttachmentExports {
     struct Limits { var maximumItems = 64; var maximumBytes = 128 * 1_024 * 1_024 }

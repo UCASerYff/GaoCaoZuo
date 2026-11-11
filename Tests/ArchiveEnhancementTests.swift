@@ -175,10 +175,9 @@ enum ArchiveEnhancementTests {
         try expect(try Data(contentsOf: here.appendingPathComponent("中文资料/文件.txt")) == payload, "collision preserves existing bytes")
         let added = root.appendingPathComponent("new.txt"); try Data("added".utf8).write(to: added)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: root.appendingPathComponent("stored.zip").path)
-        let originalHash = try FileTools.fingerprint(root.appendingPathComponent("stored.zip"))
         let edit = try await service.edit(archive: root.appendingPathComponent("stored.zip"), password: nil, adding: [added], removing: ["中文资料/文件.txt"], removeHidden: false,
                                           saveTo: root.appendingPathComponent("stored.zip"), backupDirectory: root.appendingPathComponent("backups"))
-        try expect(edit.backup != nil && (try FileTools.fingerprint(edit.backup!)) == originalHash, "archive edit verified original backup")
+        try expect(edit.backup == nil && !fm.fileExists(atPath:root.appendingPathComponent("backups").path) && service.lastResultReceipts.isEmpty, "in-place archive edit creates no backup or destructive undo receipt")
         try expect((try fm.attributesOfItem(atPath: edit.result.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600, "editing preserves private archive mode")
         let edited = try await service.list(archive: edit.result, password: nil)
         try expect(edited.contains { $0.path == "new.txt" } && !edited.contains { $0.path == "中文资料/文件.txt" }, "archive edit add/delete saved")

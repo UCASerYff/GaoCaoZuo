@@ -14,13 +14,12 @@ import Darwin
     try tag.withUnsafeBytes{guard setxattr(original.path,"com.apple.metadata:_kMDItemUserTags",$0.baseAddress,tag.count,0,0)==0 else {throw DataFailure.message("Cannot set public tag fixture")}}
     let requestID=UUID(),identity=try QuickLookArchiveIdentity(url:original),hash=try FileTools.sha256(original)
     let committed=try ArchiveOriginalCommit.commit(original:original,expected:identity,sha256:hash,candidate:candidate,backupDirectory:backups,requestID:requestID)
-    try check(try Data(contentsOf:original)==new && Data(contentsOf:committed.backup)==old && Data(contentsOf:committed.displaced)==old,"Commit lost result, frozen backup or displaced original")
+    try check(try Data(contentsOf:original)==new && committed.backup == nil && !fm.fileExists(atPath:committed.displaced.path),"Commit must publish result without retaining backup or displaced original")
     try check((try fm.attributesOfItem(atPath:original.path)[.posixPermissions] as? NSNumber)?.intValue==0o640,"Original container permissions changed")
     var actual=Data(count:tag.count)
     let tagCount=actual.withUnsafeMutableBytes{getxattr(original.path,"com.apple.metadata:_kMDItemUserTags",$0.baseAddress,tag.count,0,0)}
     try check(tagCount==tag.count && actual==tag,"Original Finder tags changed")
-    let receipt=try LocalData(directory:backups).load(requestID.uuidString+".json",as:ArchiveOriginalCommit.Receipt.self)
-    try check(receipt?.state=="completed" && receipt?.originalSHA256==hash,"Durable commit receipt missing")
+    try check(!fm.fileExists(atPath:backups.path),"Successful commit created a long-term backup directory")
     awaitReject: do {
         try await rejects { _=try ArchiveOriginalCommit.commit(original:original,expected:identity,sha256:hash,candidate:candidate,backupDirectory:backups,requestID:UUID()) }
     }
@@ -53,10 +52,14 @@ import Darwin
         let request=QuickLookArchiveEditRequest(kind:.saveOriginal,archive:archive,identity:archiveIdentity,sha256:archiveHash,password:password,adding:[added])
         let response=try await QuickLookArchiveEditBackend.perform(request,service:try service(),backupDirectory:backups)
         try check(response.status=="completed" && response.members.contains{$0.path==added.lastPathComponent} && response.members.filter{!$0.directory}.allSatisfy{$0.encrypted},"Scoped original save lost new member or encryption: "+response.members.map{"\($0.path) directory=\($0.directory) encrypted=\($0.encrypted)"}.joined(separator:"; "))
-        try check(response.backup != nil && (try response.backup.map{try FileTools.sha256($0)})==archiveHash,"Encrypted original safety backup missing")
+        try check(response.backup == nil && !fm.fileExists(atPath:backups.path),"Encrypted original save must not retain an archive backup")
         let decoded=root.appendingPathComponent("decoded-"+format.rawValue)
         _=try await creator.extract(archive:archive,to:decoded,password:password,selected:nil)
         try check(try Data(contentsOf:decoded.appendingPathComponent(input.lastPathComponent))==Data(contentsOf:input) && Data(contentsOf:decoded.appendingPathComponent(added.lastPathComponent))==Data(contentsOf:added),"Saved encrypted archive failed exact-byte verification")
+        let direct=try await creator.edit(archive:archive,password:password,adding:[],removing:[added.lastPathComponent],removeHidden:false,saveTo:archive,backupDirectory:backups,preserveEncryption:true)
+        try check(direct.backup == nil && !fm.fileExists(atPath:backups.path) && creator.lastResultReceipts.isEmpty,"Direct original edit retained a backup or destructive create receipt")
+        let directEntries=try await creator.list(archive:archive,password:password)
+        try check(directEntries.contains{$0.path==input.lastPathComponent} && !directEntries.contains{$0.path==added.lastPathComponent} && directEntries.filter{!$0.isDirectory}.allSatisfy(\.isEncrypted),"Direct original edit changed retained member or encryption")
     }
-    print("原位保存专项通过（\(checks)）：真实加密ZIP/7Z原位重建、解密精确字节、密码错误不改原包、原包权限/Finder标签、完整双份原件与持久收据、陈旧目标拒绝、失败恢复及外部改动保护；仅公开合成资料，无GUI。")
+    print("原位保存专项通过（\(checks)）：真实加密ZIP/7Z原位重建、解密精确字节、密码错误不改原包、原包权限/Finder标签、成功后无备份或临时旧原件残留、陈旧目标拒绝、失败恢复及外部改动保护；仅公开合成资料，无GUI。")
 }

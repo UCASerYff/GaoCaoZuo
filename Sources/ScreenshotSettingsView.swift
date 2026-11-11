@@ -17,7 +17,7 @@ struct ScreenshotSettingsView: View {
                 Picker("默认动作", selection: $store.settings.captureStrategy) { Text("进入标注").tag("标注"); Text("复制").tag("复制"); Text("保存到所选目录").tag("保存") }
                 HStack { Text(store.settings.saveDirectory == nil ? "保存目录未选择" : "已选择保存目录"); Button("选择目录…") { chooseDirectory() } }
                 HStack { Text(store.settings.editorPath == nil ? "编辑 App 未选择" : "已选择编辑 App"); Button("选择 App…") { chooseEditor() } }
-            }.disabled(!store.writable || migrationBusy || model.moduleBackupActive)
+            }.disabled(!store.writable || migrationBusy)
             Section("OCR 与私密资料") {
                 TextField("语言（逗号分隔）", text: Binding(get: { store.settings.languages.joined(separator: ",") }, set: { store.settings.languages = $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }))
                 Toggle("静默截图 OCR 完成后复制文字", isOn: $store.settings.silentOCRCopies)
@@ -25,7 +25,7 @@ struct ScreenshotSettingsView: View {
                 Stepper("历史保留 \(store.settings.historyDays) 天", value: $store.settings.historyDays, in: 1...3650)
                 Stepper("历史容量 \(store.settings.historyCapacityMB) MiB", value: $store.settings.historyCapacityMB, in: 16...16384, step: 16)
                 Button("删除截图历史…", role: .destructive) { deleteHistory() }
-            }.disabled(!store.writable || migrationBusy || model.moduleBackupActive)
+            }.disabled(!store.writable || migrationBusy)
             Section("权限") {
                 Text("屏幕捕获：\(CGPreflightScreenCaptureAccess() ? "已获权" : "未获权")；麦克风：\(microphoneStatus)")
                 Button("打开屏幕录制设置") { model.screenSettings() }
@@ -35,7 +35,7 @@ struct ScreenshotSettingsView: View {
                 Text("外接屏幕与外置音频设备专项验收不做（用户取消）。").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                Button("保存截图设置") { guard model.canBeginOperation()else{return};do { try store.saveSettings(); model.message = "截图设置已保存。" } catch { model.fail(error) } }.disabled(!store.writable || migrationBusy || model.moduleBackupActive)
+                Button("保存截图设置") { guard model.canBeginOperation()else{return};do { try store.saveSettings(); model.message = "截图设置已保存。" } catch { model.fail(error) } }.disabled(!store.writable || migrationBusy)
                 Spacer()
                 Text("搞操作 V\(ScreenshotAppVersion.version) / build \(ScreenshotAppVersion.build)").font(.caption).foregroundStyle(.secondary)
             }
@@ -44,12 +44,12 @@ struct ScreenshotSettingsView: View {
     @ViewBuilder private var migrationSection: some View {
         Section("截图资料与迁移") {
             if let issue = store.issue { Text(issue).foregroundStyle(.red).textSelection(.enabled) }
-            Text(store.writable ? "截图资料已在搞操作的独立目录中保护。历史采集仍按原开关执行。" : "资料未完成初始化时保持只读；先预览来源与冲突，再明确迁移或初始化。不能将无法读取的旧资料当作空白。").font(.callout)
-            HStack {
+            Text(store.writable ? "截图资料已在搞操作的独立目录中保护。历史采集仍按原开关执行。" : "资料未完成初始化时保持只读。可只读预览旧来源，或在确无旧资料时初始化；不能将无法读取的旧资料当作空白。").font(.callout)
+            Text("本版不创建新迁移备份；已存在的中断迁移仍可按原编号核验并恢复。").font(.caption).foregroundStyle(.secondary)
+            if !store.writable { HStack {
                 Button("预览截图资料迁移") { previewMigration() }
-                Button("确认备份并迁移…") { applyMigration() }.disabled(migrationPlan == nil || migrationPlan?.conflicts.isEmpty == false)
                 if !store.writable { Button("无旧资料时初始化…") { initializeFresh() } }
-            }.disabled(migrationBusy)
+            }.disabled(migrationBusy) }
             if migrationBusy { ProgressView().controlSize(.small) }
             if let migrationPlan {
                 Text("迁移编号：\(migrationPlan.migrationID)").font(.caption).textSelection(.enabled)
@@ -84,18 +84,6 @@ struct ScreenshotSettingsView: View {
             catch{migrationPlan=nil;migrationMessage=error.localizedDescription;model.message=error.localizedDescription}
         }
     }
-    private func applyMigration() {
-        guard ensureIdle(), let plan = migrationPlan, plan.conflicts.isEmpty else { return }
-        let alert = NSAlert(); alert.messageText = "备份并迁移已预览的截图资料？"; alert.informativeText = "将再次核对来源摘要，完整备份并迁移到搞操作。来源资料、附件、历史归档与原钥匙串保留。来源改变或出现冲突时停止。"; alert.addButton(withTitle: "确认备份并迁移"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn,ensureIdle() else { return }
-        migrationBusy = true;model.moduleMigrationActive=true
-        let work = model.beginAuxiliaryWork("备份并迁移截图资料"),configuration=store.migrationConfiguration
-        Task { @MainActor in
-            defer { store.reloadAfterMigration();model.exchange.reloadStore();migrationBusy=false;model.moduleMigrationActive=false;model.endAuxiliaryWork(work) }
-            do { _ = try await Task.detached(priority:.userInitiated){try ScreenshotMigration(configuration:configuration).apply(plan,approvedDigest:plan.approvalDigest)}.value;migrationPlan=nil;migrationMessage="资料迁移完成并已重新核验。来源与完整备份保留。";model.message=migrationMessage ?? "" }
-            catch { migrationMessage=error.localizedDescription;model.message=error.localizedDescription }
-        }
-    }
     private func recoverMigration() {
         guard ensureIdle() else{return}
         let id=recoveryMigrationID.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -120,5 +108,5 @@ struct ScreenshotSettingsView: View {
     private var microphoneStatus: String { switch ScreenshotPermissionService.microphoneStatus { case .authorized: return "已获权"; case .denied: return "拒绝"; case .restricted: return "受限"; default: return "未申请" } }
     private func chooseDirectory() { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; if panel.runModal() == .OK { store.settings.saveDirectory = panel.url?.path } }
     private func chooseEditor() { let panel = NSOpenPanel(); panel.allowedContentTypes = [.application]; if panel.runModal() == .OK { store.settings.editorPath = panel.url?.path } }
-    private func deleteHistory() { guard ensureIdle(),model.canBeginOperation() else{return};let alert = NSAlert(); alert.messageText = "删除本应用保存的截图历史？"; alert.informativeText = "原用户文件不受影响；内部恢复副本会保留在 DeletedHistory。"; alert.addButton(withTitle: "删除历史"); alert.addButton(withTitle: "取消"); if alert.runModal() == .alertFirstButtonReturn { do { try store.deleteHistory() } catch { model.fail(error) } } }
+    private func deleteHistory() { guard ensureIdle(),model.canBeginOperation() else{return};let alert = NSAlert(); alert.messageText = "删除本应用保存的截图历史？"; alert.informativeText = "将永久删除本应用内部保存的截图历史，不创建恢复副本。用户另存或导出的原文件不受影响。"; alert.addButton(withTitle: "删除历史"); alert.addButton(withTitle: "取消"); if alert.runModal() == .alertFirstButtonReturn { do { try store.deleteHistory() } catch { model.fail(error) } } }
 }

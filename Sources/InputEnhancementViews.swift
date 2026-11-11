@@ -124,15 +124,6 @@ import UniformTypeIdentifiers
                     }
                 }
             }
-            Section("文件夹备份与交换") {
-                TextField("备份目录",text:$configuration.syncFolder)
-                HStack {
-                    Button("选择备份或交换文件夹") {let panel=NSOpenPanel();panel.canChooseDirectories=true;panel.canChooseFiles=false;if panel.runModal() == .OK,let url=panel.url {configuration.syncFolder=url.path}}
-                    Button("写入备份") {writeSync()}.disabled(configuration.syncFolder.isEmpty)
-                    Button("读取备份") {readSync()}.disabled(configuration.syncFolder.isEmpty)
-                }
-                Text("此处仅手动备份和读取；自动同步请使用上方 iCloud 功能。读取时保留本机修改并暂停新规则；原有副本先备份。").font(.caption).foregroundStyle(.secondary)
-            }
             Section("HID 鼠标设备") {HIDDeviceConfigurationView(profiles:$configuration.hidProfiles,actions:actions)}
             Section("设备实测") {InputDeviceTestView()}
         }.formStyle(.grouped).onAppear{scrollDevices.start(recordButtons:false)}.onDisappear{scrollDevices.stop()}
@@ -155,14 +146,7 @@ import UniformTypeIdentifiers
     private func migrationTitle(_ value:InputMigrationDisposition)->String {
         switch value {case .exact:return "精确转换";case .requiresReview:return "待语义或设备核验";case .unavailable:return "保真保留，尚未转换";case .preservedUserChange:return "保留用户修改"}
     }
-    private func syncURL()throws->URL {
-        let directory=URL(fileURLWithPath:configuration.syncFolder,isDirectory:true)
-        var isDirectory:ObjCBool=false
-        guard FileManager.default.fileExists(atPath:directory.path,isDirectory:&isDirectory),isDirectory.boolValue else{throw SystemControlError.message("备份目录不存在或无法读取，请重新选择。")}
-        return directory.appendingPathComponent("搞操作输入规则.json")
-    }
-    private func writeSync() {do {let url=try syncURL();if FileManager.default.fileExists(atPath:url.path) {let old=try Data(contentsOf:url);let backup=url.deletingLastPathComponent().appendingPathComponent("搞操作输入规则-备份-"+UUID().uuidString+".json");try old.write(to:backup,options:.withoutOverwriting)};try EnhancedRuleFiles.write(configuration,to:url);message="规则备份已写入；原有副本已保留。"} catch {message=error.localizedDescription}}
-    private func readSync() {do {let result=try EnhancedRuleFiles.read(syncURL());message=try merge(result.configuration) ?? result.note} catch {message=error.localizedDescription}}
+
 }
 
 @MainActor private struct EnhancedInputRuleEditor:View {

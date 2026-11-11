@@ -130,9 +130,10 @@ import Darwin
         try ScreenshotMigrationIO.copy(evidence, to: copied)
         _ = try ScreenshotMigration.inspectCommittedArchive(at: copied, marker: marker, originalActiveRoot: f.configuration.targetRoot)
         try expect(try ScreenshotMigrationIO.read(copied.appendingPathComponent("Journal.json")) == journalBytes, "copied evidence keeps original absolute journal bytes unchanged")
-        let backup = try ScreenshotDataBackup.create(root: f.configuration.targetRoot, destination: f.base.appendingPathComponent("SyntheticCompleteBackup.noindex"))
-        let report = try ScreenshotDataBackup.verify(backup)
-        try expect(report.restoreRehearsal && report.migrationEvidence != nil, "complete backup creation and copied archive verification retain stage-lineage evidence")
+        let destination = f.base.appendingPathComponent("SyntheticCompleteBackup.noindex")
+        var refused = false
+        do { _ = try ScreenshotDataBackup.create(root: f.configuration.targetRoot, destination: destination) } catch { refused = true }
+        try expect(refused && !FileManager.default.fileExists(atPath: destination.path), "retired backup creator refuses without copying migration evidence")
     }
     static func intentWithoutDirectoryIsResumable() throws {
         let f = try fixture(); defer { cleanup(f) }

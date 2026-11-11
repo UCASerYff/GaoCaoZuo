@@ -76,7 +76,7 @@ final class ScreenshotPinnedImageController: NSObject {
         return id
     }
 
-    /// Called only by an explicit user "persistent pin" action. The image and its position are included in app backups.
+    /// Called only by an explicit user "persistent pin" action. The image and its position are current application data.
     @discardableResult
     func persist(image: CGImage, onEdit: ((CGImage) -> Void)? = nil) throws -> UUID {
         let url = try savePrivateImage(image)
@@ -299,7 +299,7 @@ private final class ScreenshotPinnedImageWindow: NSWindowController, NSWindowDel
             do {
                 if explicitlyRemembered { savePositionIfRemembered(); return }
                 guard let url = try onPersist?(image) else { throw ScreenshotCaptureFailure.unsupported("持久贴图目录尚未配置。") }
-                try markRemembered(url: url); onNotice?("图像与位置已保存在本App私有资料目录，可随完整备份恢复。")
+                try markRemembered(url: url); onNotice?("图像与位置已保存在本App私有资料目录。")
             } catch { onNotice?(error.localizedDescription) }
             return
         }

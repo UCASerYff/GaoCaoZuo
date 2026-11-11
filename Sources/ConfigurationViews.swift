@@ -329,7 +329,6 @@ private struct WorkflowActionChoice: Identifiable {
     @State private var selectedTab = 0
     @State private var loginBusy = false
     @State private var loginMessage: String?
-    @State private var backupMessage: String?
     init(store: OperationStore, initialTab: Int = 0) {
         self.store = store
         _selectedTab = State(initialValue: (0...16).contains(initialTab) ? initialTab : 0)
@@ -470,16 +469,9 @@ private struct WorkflowActionChoice: Identifiable {
                 Button("在 Finder 中打开资料目录") { NSWorkspace.shared.open(store.data.directory) }
                 Text("settings.json 保存模板、输入规则和组合操作；receipts.json 保存恢复记录；Clipboard 文件夹保存历史及 PNG/RTF 附件。密码保存在 macOS 钥匙串。").font(.caption).foregroundStyle(.secondary)
             }
-            Section("安全备份") {
-                Text("正式更新安装前，安全安装器会完整备份资料、全部附件及偏好设置，并逐文件校验。备份保存在资料同级的 GaoCaoZuo-Backups 目录。")
+            Section("资料保护") {
+                Text("资料和附件保存在原目录，更新不会创建备份。无法读取、损坏或格式过新的资料会停止写入，不会用空白配置覆盖。密码仍由 macOS 钥匙串保护。")
                     .font(.callout)
-                Button("查看已有备份") {
-                    let url=store.data.directory.deletingLastPathComponent().appendingPathComponent("GaoCaoZuo-Backups")
-                    if FileManager.default.fileExists(atPath:url.path) { NSWorkspace.shared.open(url) }
-                    else { backupMessage="尚未生成安装备份。首次安全安装会记录资料状态。" }
-                }
-                if let backupMessage { Text(backupMessage).font(.caption).foregroundStyle(.secondary) }
-                Text("本版不提供覆盖式导入或一键重置。保留资料与安全备份后，再处理读取错误。").font(.caption).foregroundStyle(.secondary)
             }
             ReplacementMigrationView(store:store)
             if let failure=store.data.failure { Section("资料需要检查") { Text(L10n.text(failure)).foregroundStyle(.orange).textSelection(.enabled) } }

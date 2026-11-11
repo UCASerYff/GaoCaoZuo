@@ -199,7 +199,7 @@ final class ArchiveService: ObservableObject {
                                             options: options, publishingChildrenInto: directory).outputs
     }
 
-    /// Editing is rebuilt and verified in isolation. Saving over the original always creates a verified backup.
+    /// Editing is rebuilt and verified in isolation, then atomically replaces the original without retaining a backup.
     func edit(archive: URL, password: String?, adding: [URL], removing: [String], removeHidden: Bool,
               saveTo destination: URL, backupDirectory: URL, options: ArchiveCreationOptions = .init(),
               extraction: ArchiveExtractionOptions = .init(),originalValidation:(()throws->Void)? = nil,preserveEncryption:Bool=false) async throws -> (result: URL, backup: URL?) {
@@ -247,15 +247,9 @@ final class ArchiveService: ObservableObject {
         }
         let hash = try FileTools.fingerprint(rebuilt)
         guard try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
-        var backup: URL?
-        if destination.standardizedFileURL == archive.standardizedFileURL {
+        let replacesOriginal = destination.standardizedFileURL == archive.standardizedFileURL
+        if replacesOriginal {
             try originalValidation?()
-            try fm.createDirectory(at: backupDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let saved = backupDirectory.appendingPathComponent(UUID().uuidString + "." + format.rawValue)
-            try fm.copyItem(at: archive, to: saved)
-            guard try FileTools.fingerprint(saved) == before, try FileTools.fingerprint(archive) == before else { throw FileToolsError.changed(archive) }
-            backup = saved
-            lastEditBackup=saved
             // Rebuild is on a potentially different volume; copy beside original before atomic replacement.
             let candidate = archive.deletingLastPathComponent().appendingPathComponent(".gaocaozuo-edit-" + UUID().uuidString)
             defer { try? fm.removeItem(at: candidate) }
@@ -295,10 +289,10 @@ final class ArchiveService: ObservableObject {
                 throw error
             }
         }
-        guard try FileTools.fingerprint(destination) == hash else { throw ArchiveError.invalid("保存结果核验失败；原包安全备份已保留。") }
+        guard try FileTools.fingerprint(destination) == hash else { throw ArchiveError.invalid("保存结果核验失败，请核对原压缩包；不会创建备份。") }
         lastResultURL = destination
-        lastResultReceipts = backup == nil ? [.init(kind: .create, destination: destination, fingerprint: hash)] : []
-        return (destination, backup)
+        lastResultReceipts = replacesOriginal ? [] : [.init(kind: .create, destination: destination, fingerprint: hash)]
+        return (destination, nil)
     }
 
     /// to is a NEW directory. Existing directories are refused, including an empty one.

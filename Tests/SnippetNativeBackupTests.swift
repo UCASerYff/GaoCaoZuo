@@ -2,94 +2,113 @@ import AppKit
 import Foundation
 
 @MainActor func runSnippetNativeBackupTests() async throws {
-    var checks = 0
-    func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
-        checks += 1; guard try condition() else { throw DataFailure.message("Native snippet backup: " + message) }
-    }
-    func fails(_ action: () async throws -> Void, _ message: String) async throws {
-        var rejected = false; do { try await action() } catch { rejected = true }; try check(rejected, message)
-    }
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("GaoCaoZuo-native-snippet-backup-" + UUID().uuidString)
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("GaoCaoZuo-no-snippet-backup-" + UUID().uuidString + ".noindex")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
     let source = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("source"))
-    let rtf = Data("{\\rtf1\\ansi original rich}".utf8), body = Data("owned attachment bytes\n".utf8)
-    let attachment = try source.importAttachment(data: body, originalName: "原文件.txt", type: "public.plain-text")
-    let richBody = try source.importAttachment(data: rtf, originalName: "正文.rtf", type: "public.rtf")
-    let old = AdvancedSnippet(name: "原短语", text: "old content", format: .richText, shortcut: "old", attachments: [attachment], rtfAttachment: richBody)
-    try source.upsert(old)
-    var newer = old; newer.text = "new content\n{date}"; try source.upsert(newer)
-    try source.upsert(.init(name: "另一项", text: "other"))
-    let package = root.appendingPathComponent("manual.gaosnippets")
-    try await source.exportNativeBackup(to: package)
-    let loaded = try SnippetNativeBackupIO.read(at: package)
-    try check(loaded.current.snippets.count == 2 && loaded.files.keys.contains(attachment.filename), "current rich data and attachment exported")
-    try check(loaded.files.keys.filter { $0.hasPrefix("revision-") }.count >= 3, "all linked recovery revisions exported")
-    let manifestBefore = try Data(contentsOf: package.appendingPathComponent("manifest.json"))
-    try await fails({ try await source.exportNativeBackup(to: package) }, "existing output cannot be overwritten")
-    try check(try Data(contentsOf: package.appendingPathComponent("manifest.json")) == manifestBefore, "existing package bytes unchanged")
+    let snippet = AdvancedSnippet(name: "现用短语", text: "current content")
+    try source.upsert(snippet)
+    let before = try Data(contentsOf: source.directory.appendingPathComponent("library.json"))
+    let package = root.appendingPathComponent("removed.gaosnippets")
+    var refused = false
+    do { try await source.exportNativeBackup(to: package) } catch { refused = true }
+    guard refused, !fm.fileExists(atPath: package.path),
+          try Data(contentsOf: source.directory.appendingPathComponent("library.json")) == before,
+          source.snippets == [snippet] else { throw DataFailure.message("Disabled snippet backup changed current data or created output") }
+    refused = false
+    do { try SnippetNativeBackupIO.write(files: [:], to: package) } catch { refused = true }
+    guard refused, !fm.fileExists(atPath: package.path) else { throw DataFailure.message("Disabled native writer created a backup") }
+    print("短语备份移除专项通过：旧导出调用和底层写入拒绝，未创建输出，现用短语不变。")
+}
 
-    let target = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("target"))
-    try target.upsert(.init(name: "原短语", text: "target user edit", shortcut: "old"))
-    let before = target.snippets, preview = try await target.previewNativeBackup(at: package, policy: .keepBoth)
-    try check(target.snippets == before && preview.added == 2, "read-only native restore preview")
-    try target.restoreNativeBackup(preview)
-    try check(target.snippets.count == 3 && target.snippets.contains(where: { $0.text == "target user edit" }), "keep both retains edited current snippet")
-    let restored = target.snippets.first(where: { $0.rtfAttachment != nil })!
-    try check(restored.id != old.id || restored.name != old.name, "conflict copy has separate identity or name")
-    try check(restored.shortcut == nil, "import does not steal current shortcut")
-    try check(try target.verifiedAttachment(restored.rtfAttachment!) == rtf && target.verifiedAttachment(restored.attachments![0]) == body, "native raw RTF and file bytes round trip")
-    let restart = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("target"))
-    try check(restart.healthy && restart.snippets == target.snippets, "restored native library survives restart")
-    let secondPackage = root.appendingPathComponent("restored-again.gaosnippets")
-    try await restart.exportNativeBackup(to: secondPackage)
-    let secondRead = try SnippetNativeBackupIO.read(at: secondPackage)
-    try check((secondRead.current.importedRecoveryRevisions?.count ?? 0) > 0 && secondRead.files.count >= loaded.files.count, "imported recovery history re-exports completely")
-    try target.undoLastChange(); try check(target.snippets == before, "native restore can be rolled back")
-    try await fails({ try target.restoreNativeBackup(preview) }, "stale native preview rejected")
-
-    let overwriteTarget = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("overwrite"))
-    let original = AdvancedSnippet(name: "原短语", text: "must remain in recovery")
-    try overwriteTarget.upsert(original)
-    let overwrite = try await overwriteTarget.previewNativeBackup(at: package, policy: .overwrite)
-    try overwriteTarget.restoreNativeBackup(overwrite)
-    try check(overwriteTarget.snippets.first(where: { $0.id == original.id })?.text == newer.text, "explicit overwrite keeps target UUID")
-    try overwriteTarget.undoLastChange(); try check(overwriteTarget.snippets == [original], "overwrite old body recoverable")
-
-    let emptyTarget = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("empty"))
-    let emptyPreview = try await emptyTarget.previewNativeBackup(at: package, policy: .keepBoth)
-    try emptyTarget.restoreNativeBackup(emptyPreview)
-    try check(emptyTarget.healthy && emptyTarget.snippets.count == 2, "restore into pristine missing library is valid")
-
-    func variant(_ label: String) throws -> URL {
-        let url = root.appendingPathComponent(label + ".gaosnippets"); try FileManager.default.copyItem(at: package, to: url); return url
+func runScreenshotBackupRemovalTests() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("GaoCaoZuo-no-screenshot-backup-" + UUID().uuidString + ".noindex")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    let current = root.appendingPathComponent("Current.bin")
+    let bytes = Data("current screenshot attachment".utf8)
+    try bytes.write(to: current, options: .withoutOverwriting)
+    let destination = root.appendingPathComponent("RemovedBackup.noindex")
+    var refused = false
+    do { _ = try ScreenshotDataBackup.create(root: root, destination: destination) } catch { refused = true }
+    guard refused, !fm.fileExists(atPath: destination.path), try Data(contentsOf: current) == bytes,
+          try fm.contentsOfDirectory(atPath: root.path) == ["Current.bin"] else {
+        throw DataFailure.message("Disabled screenshot backup created output or changed current attachment")
     }
-    let corrupt = try variant("corrupt"), corruptFile = corrupt.appendingPathComponent(attachment.filename)
-    try Data("changed bytes".utf8).write(to: corruptFile)
-    let immutableTarget = SnippetLibraryStore(dataDirectory: root.appendingPathComponent("unchanged"))
-    try immutableTarget.upsert(.init(name: "safe", text: "do not modify"))
-    let currentURL = immutableTarget.directory.appendingPathComponent("library.json"), currentBytes = try Data(contentsOf: currentURL)
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: corrupt, policy: .overwrite) }, "corrupt attachment rejected before restore")
-    try check(try Data(contentsOf: currentURL) == currentBytes, "rejected backup leaves active library unchanged")
-    let future = try variant("future")
-    var futureManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: future.appendingPathComponent("manifest.json"))) as! [String: Any]
-    futureManifest["schema"] = 9
-    try JSONSerialization.data(withJSONObject: futureManifest).write(to: future.appendingPathComponent("manifest.json"))
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: future, policy: .keepBoth) }, "future schema rejected")
-    let extra = try variant("extra"); try Data("unexpected".utf8).write(to: extra.appendingPathComponent("extra.txt"))
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: extra, policy: .keepBoth) }, "unregistered extra members rejected")
-    let link = try variant("symlink"); try FileManager.default.removeItem(at: link.appendingPathComponent(attachment.filename))
-    try FileManager.default.createSymbolicLink(atPath: link.appendingPathComponent(attachment.filename).path, withDestinationPath: package.appendingPathComponent(attachment.filename).path)
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: link, policy: .keepBoth) }, "symlink member rejected")
-    let hard = try variant("hardlink"); try FileManager.default.removeItem(at: hard.appendingPathComponent(attachment.filename))
-    try FileManager.default.linkItem(at: hard.appendingPathComponent("library.json"), to: hard.appendingPathComponent(attachment.filename))
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: hard, policy: .keepBoth) }, "hardlink member rejected")
-    let missing = try variant("missing"); try FileManager.default.removeItem(at: missing.appendingPathComponent(attachment.filename))
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: missing, policy: .keepBoth) }, "missing attachment rejected")
-    let alias = root.appendingPathComponent("alias.gaosnippets"); try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: package.path)
-    try await fails({ _ = try await immutableTarget.previewNativeBackup(at: alias, policy: .keepBoth) }, "symlink package rejected")
-    let outputAlias = root.appendingPathComponent("output-alias"); try FileManager.default.createSymbolicLink(atPath: outputAlias.path, withDestinationPath: root.path)
-    try await fails({ try await source.exportNativeBackup(to: outputAlias.appendingPathComponent("unsafe.gaosnippets")) }, "symlink output parent rejected")
-    try check(try Data(contentsOf: currentURL) == currentBytes, "all invalid imports retained original bytes")
-    print("Native snippet backup targeted checks passed (\(checks)); no smoke test or application launch.")
+    let legacy = root.appendingPathComponent("SyntheticSource")
+    try fm.createDirectory(at: legacy, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let sourceSettings = legacy.appendingPathComponent("Settings.json")
+    let settingsBytes = try JSONEncoder().encode(ScreenshotAppSettings())
+    try settingsBytes.write(to: sourceSettings, options: .withoutOverwriting)
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sourceSettings.path)
+    let configuration = ScreenshotMigrationConfiguration(sourceRoot: legacy, targetRoot: root.appendingPathComponent("UncreatedTarget"),
+        archiveRoot: root.appendingPathComponent("UncreatedMigrationArchive.noindex"), auxiliaries: [])
+    let migrator = ScreenshotMigration(configuration: configuration)
+    let plan = try migrator.preview()
+    guard plan.conflicts.isEmpty else {throw DataFailure.message("Synthetic source preview unexpectedly conflicts")}
+    refused = false
+    do { _ = try migrator.apply(plan, approvedDigest: plan.approvalDigest) }
+    catch { refused = error.localizedDescription.contains("新迁移备份功能已移除") }
+    guard refused, !fm.fileExists(atPath: configuration.archiveRoot.path), !fm.fileExists(atPath: configuration.targetRoot.path),
+          try Data(contentsOf: sourceSettings) == settingsBytes else {
+        throw DataFailure.message("New migration was not refused, created an archive, or changed source data")
+    }
+    print("截图备份移除专项通过：导出与新迁移均拒绝，无归档/演练副本，现用附件与旧来源不变。")
+
+}
+
+@MainActor func runScreenshotHistoryNoBackupTests() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("GaoCaoZuo-history-no-backup-" + UUID().uuidString + ".noindex")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? fm.removeItem(at: root) }
+    let target = root.appendingPathComponent("Current")
+    let configuration = ScreenshotMigrationConfiguration(sourceRoot: root.appendingPathComponent("AbsentSource"), targetRoot: target,
+        archiveRoot: root.appendingPathComponent("UnusedArchive.noindex"), auxiliaries: [])
+    let store = ScreenshotLocalStore(root: target, backupRoot: root.appendingPathComponent("UnusedBackups.noindex"), migrationConfiguration: configuration)
+    try store.initializeFresh()
+    store.settings.historyEnabled = true
+    try store.saveSettings()
+    let history = target.appendingPathComponent("History")
+    try fm.createDirectory(at: history, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let expiredBytes = Data("synthetic expired history".utf8), currentBytes = Data("synthetic current history".utf8)
+    let expiredURL = history.appendingPathComponent("expired.png"), currentURL = history.appendingPathComponent("current.png")
+    try expiredBytes.write(to: expiredURL, options: .withoutOverwriting)
+    try currentBytes.write(to: currentURL, options: .withoutOverwriting)
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: expiredURL.path)
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: currentURL.path)
+    var expired = ScreenshotCaptureAsset(source: "Synthetic", pixelWidth: 1, pixelHeight: 1, colorSpace: "Synthetic", scale: 1,
+        outputPath: "History/expired.png", sha256: ScreenshotFileSafety.digest(expiredBytes))
+    expired.createdAt = Date().addingTimeInterval(-30*86400)
+    let current = ScreenshotCaptureAsset(source: "Synthetic", pixelWidth: 1, pixelHeight: 1, colorSpace: "Synthetic", scale: 1,
+        outputPath: "History/current.png", sha256: ScreenshotFileSafety.digest(currentBytes))
+    let indexURL = target.appendingPathComponent("History.json")
+    try JSONEncoder().encode(ScreenshotHistoryEnvelope(assets: [expired, current])).write(to: indexURL, options: .withoutOverwriting)
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: indexURL.path)
+    store.reloadAfterMigration()
+    guard store.writable else {throw DataFailure.message("Synthetic history did not load")}
+    try store.pruneExpiredHistory()
+    guard !fm.fileExists(atPath: expiredURL.path), try Data(contentsOf: currentURL) == currentBytes,
+          store.assets.map(\.id) == [current.id], !fm.fileExists(atPath: target.appendingPathComponent("DeletedHistory").path) else {
+        throw DataFailure.message("Expiry created a backup or removed current history")
+    }
+    store.reloadAfterMigration()
+    guard store.writable, store.assets.count == 1 else {throw DataFailure.message("Expiry did not persist the remaining history index")}
+    // An externally modified index must stop deletion before any current bytes are removed.
+    let validIndex = try Data(contentsOf: indexURL)
+    try Data("changed external index".utf8).write(to: indexURL)
+    var refused = false
+    do {try store.deleteHistory()} catch {refused = true}
+    guard refused, try Data(contentsOf: currentURL) == currentBytes else {throw DataFailure.message("Stale history index did not protect current attachment")}
+    try validIndex.write(to: indexURL)
+    store.reloadAfterMigration()
+    try store.deleteHistory()
+    store.reloadAfterMigration()
+    guard store.writable, store.assets.isEmpty, !fm.fileExists(atPath: currentURL.path),
+          !fm.fileExists(atPath: target.appendingPathComponent("DeletedHistory").path) else {
+        throw DataFailure.message("Explicit deletion created a backup or left a stale index")
+    }
+    print("截图历史专项通过：到期只清理过期条目，当前附件保留；索引冲突拒绝删除，明确删除不生成恢复副本。")
 }

@@ -15,7 +15,6 @@ struct ArchiveBrowserView: View {
     @State private var error: String?
     @State private var additions: [URL] = []
     @State private var result: URL?
-    @State private var backup: URL?
     init(store: OperationStore, controller: ArchiveEnhancementController, archiveURL: URL) {
         self.store = store; self.controller = controller; self.service = store.archive; self.archiveURL = archiveURL
     }
@@ -83,7 +82,6 @@ struct ArchiveBrowserView: View {
             }
             if let error { Text(L10n.text(error)).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal).padding(.bottom, 8) }
             if let result { HStack { Label("已保存：" + result.lastPathComponent, systemImage: "checkmark.circle"); Spacer(); Button("显示结果") { NSWorkspace.shared.activateFileViewerSelecting([result]) } }.padding(.horizontal).padding(.bottom, 8) }
-            if let backup { HStack { Text("编辑前原包已核验备份").font(.caption).foregroundStyle(.secondary); Button("显示原包备份") { NSWorkspace.shared.activateFileViewerSelecting([backup]) } }.padding(.bottom, 8) }
         }.onAppear { load() }.onDisappear { controller.clearPreviews() }
     }
     private func load() {
@@ -126,7 +124,7 @@ struct ArchiveBrowserView: View {
     }
     private func edit(removing: [String], cleanHidden: Bool) {
         let alert = NSAlert(); alert.messageText = L10n.text("保存压缩包修改？")
-        alert.informativeText = L10n.format("将添加 %@ 项、删除 %@ 项", String(describing: (additions.count)), String(describing: (removing.count))) + (cleanHidden ? L10n.text("，并清理包内隐藏文件") : "") + L10n.text("。完整性验证通过后保存，编辑前原包会保留在搞操作资料备份中。")
+        alert.informativeText = L10n.format("将添加 %@ 项、删除 %@ 项", String(describing: (additions.count)), String(describing: (removing.count))) + (cleanHidden ? L10n.text("，并清理包内隐藏文件") : "") + L10n.text("。完整性验证通过后替换原包，不另存备份。")
         alert.addButton(withTitle: L10n.text("保存")); alert.addButton(withTitle: L10n.text("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         run {
@@ -136,7 +134,7 @@ struct ArchiveBrowserView: View {
                     options: controller.preferences.creation, extraction: controller.preferences.extraction)
                 if let pw { password = pw }; return value
             }
-            result = changed.result; backup = changed.backup; additions = []; selected = []
+            result = changed.result; additions = []; selected = []
             entries = try await service.list(archive: archiveURL, password: password.isEmpty ? nil : password, options: controller.preferences.extraction)
         }
     }

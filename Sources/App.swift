@@ -129,7 +129,7 @@ final class OperationPanel: NSPanel {
         store.finderPreferences.publish(store:store)
         NSApp.servicesProvider=self
         NSUpdateDynamicServices()
-        mainWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1120,height:780),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+        mainWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1180,height:820),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
         mainWindow.title="搞操作 V\(store.version)";mainWindow.minSize=NSSize(width:960,height:680);mainWindow.isReleasedWhenClosed=false;mainWindow.delegate=self
         mainWindow.contentView=NSHostingView(rootView:GaoLocalizedContent { OperationRootView(store:self.store) });mainWindow.center();mainWindow.setFrameAutosaveName("GaoCaoZuo.main")
         if let i=args.firstIndex(of:"--migration"),args.count>i+1,args[i+1].hasPrefix("/") {do{try store.importReplacementSettings(URL(fileURLWithPath:args[i+1]))}catch{store.notify(error.localizedDescription,failed:true)}}

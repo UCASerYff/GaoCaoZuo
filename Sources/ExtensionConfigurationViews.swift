@@ -127,10 +127,9 @@ public struct AutoInputSettingsView: View {
                 }.frame(minHeight: 150, maxHeight: 280)
             }
             HStack {
-                Button(L10n.text("导出配置…"), action: exportConfiguration)
                 Button(L10n.text("导入配置并预览…"), action: importConfiguration)
             }
-            Text(L10n.text("可选择 iCloud Drive 保存配置备份；这里只做显式导出与导入，不自动同步。"))
+            Text(L10n.text("导入前先核验并预览配置，现用配置保存在本机。"))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -152,15 +151,6 @@ public struct AutoInputSettingsView: View {
         catch { status = error.localizedDescription; return false }
     }
     private func refresh() { sources = InputSourceCatalog.shared.availableKeyboardInputSources(); coordinator.refreshCurrentSource() }
-    private func exportConfiguration() {
-        do {
-            try configuration.validate()
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let bytes = try encoder.encode(configuration)
-            let panel = NSSavePanel(); panel.nameFieldStringValue = "搞操作-输入源配置.json"; panel.allowedContentTypes = [.json]
-            if panel.runModal() == .OK, let url = panel.url { try bytes.write(to: url, options: .atomic); status = "已导出输入源配置。" }
-        } catch { status = error.localizedDescription }
-    }
     private func importConfiguration() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -373,12 +363,6 @@ public struct SnippetsSettingsView: View {
     @State private var importPolicy = 0
     @State private var importPreview: SnippetImportPreview?
     @State private var showingImport = false
-    @State private var backupBusy = false
-    @State private var showingNativeRestore = false
-    @State private var nativeSource: URL?
-    @State private var nativePolicy = 0
-    @State private var nativePreview: SnippetNativeBackupPreview?
-    @State private var nativeGeneration: UInt64 = 0
     public init(library: SnippetLibraryStore) { self.library = library }
 
     public var body: some View {
@@ -412,8 +396,6 @@ public struct SnippetsSettingsView: View {
                 }.disabled(!library.canUndo)
             }.disabled(!library.healthy)
             HStack {
-                Button(L10n.text("保存原生备份…"), action: exportNativeBackup)
-                Button(L10n.text("从原生备份恢复并预览…"), action: chooseNativeBackup)
                 Button(L10n.text("在 Finder 显示附件导出副本")) {
                     let directory = library.namedAttachmentExportsDirectory
                     var isDirectory: ObjCBool = false
@@ -422,13 +404,10 @@ public struct SnippetsSettingsView: View {
                     }
                     NSWorkspace.shared.activateFileViewerSelecting([directory])
                 }
-                if backupBusy { ProgressView().controlSize(.small) }
-            }.disabled(!library.healthy || backupBusy)
+            }.disabled(!library.healthy)
             Text(L10n.text("附件导出副本最多 64 份／128 MiB，可能仍被剪贴板引用。应用不会自动删除；达到预算后由你明确清理。"))
                 .font(.caption).foregroundStyle(.secondary)
-            Text(L10n.text("原生 .gaosnippets 备份未加密，包含分组、标签、富文本、附件、历史恢复版本及路径引用。文件引用不含原文件内容。可手动存到 iCloud Drive；不会自动同步或后台合并。"))
-                .font(.caption).foregroundStyle(.secondary)
-            Text(L10n.text("CSV／XLSX 仅传输五列文本：名称、快捷码、分组、执行方式、内容。富文本、标签和附件保留在本地短语库及恢复版本；表格不是完整附件备份。导入拒绝宏、公式与外链。"))
+            Text(L10n.text("CSV／XLSX 仅传输五列文本：名称、快捷码、分组、执行方式、内容。富文本、标签和附件保留在本地短语库及恢复版本。导入拒绝宏、公式与外链。"))
                 .font(.caption).foregroundStyle(.secondary)
             if let status { Text(L10n.text(status)).font(.caption).textSelection(.enabled) }
         }.padding()
@@ -439,9 +418,6 @@ public struct SnippetsSettingsView: View {
             SnippetGroupEditor(library: library, group: group) { editingGroup = nil; status = "已保存分组。" }
         }
         .sheet(isPresented: $showingImport, onDismiss: { importData = nil; importPreview = nil }) { importSheet }
-        .sheet(isPresented: $showingNativeRestore, onDismiss: {
-            nativeSource = nil; nativePreview = nil; nativeGeneration &+= 1; backupBusy = false
-        }) { nativeRestoreSheet }
         .alert(L10n.text("删除这条短语？"), isPresented: Binding(get: { deletingSnippet != nil }, set: { if !$0 { deletingSnippet = nil } })) {
             Button(L10n.text("取消"), role: .cancel) { deletingSnippet = nil }
             Button(L10n.text("删除"), role: .destructive) {
@@ -579,71 +555,7 @@ public struct SnippetsSettingsView: View {
             }
         } catch { status = error.localizedDescription }
     }
-    private func exportNativeBackup() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "搞操作-短语备份.gaosnippets"
-        panel.message = L10n.text("选择新的 .gaosnippets 备份名称；不会覆盖已有备份。可自行选择 iCloud Drive。")
-        panel.canCreateDirectories = true; panel.isExtensionHidden = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        backupBusy = true; status = nil
-        Task { @MainActor in
-            defer { backupBusy = false }
-            do { try await library.exportNativeBackup(to: url); status = "已保存原生短语备份；本机资料未替换，也未开启自动同步。" }
-            catch { status = error.localizedDescription }
-        }
-    }
-    private func chooseNativeBackup() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = true
-        panel.treatsFilePackagesAsDirectories = false
-        panel.message = L10n.text("选择 .gaosnippets 原生短语备份目录包；先核验并预览，不立即恢复。")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        nativeSource = url; nativePolicy = 0; nativePreview = nil; status = nil; showingNativeRestore = true
-        loadNativePreview()
-    }
-    private var nativeSelectedPolicy: SnippetConflictPolicy {
-        switch nativePolicy { case 1: return .skip; case 2: return .overwrite; default: return .keepBoth }
-    }
-    private func loadNativePreview() {
-        guard let source = nativeSource else { return }
-        nativeGeneration &+= 1; let generation = nativeGeneration, policy = nativeSelectedPolicy
-        nativePreview = nil; backupBusy = true
-        Task { @MainActor in
-            do {
-                let preview = try await library.previewNativeBackup(at: source, policy: policy)
-                guard generation == nativeGeneration, showingNativeRestore else { return }
-                nativePreview = preview; status = nil
-            } catch { if generation == nativeGeneration, showingNativeRestore { status = error.localizedDescription } }
-            if generation == nativeGeneration { backupBusy = false }
-        }
-    }
-    private var nativeRestoreSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.text("原生短语备份恢复预览")).font(.headline)
-            Text(L10n.text("恢复前核验全部清单、正文、附件与恢复版本。默认保留两份；覆盖前保留当前库恢复版本。不会自动恢复缺失外部文件或启用输入监听。"))
-                .font(.caption).foregroundStyle(.secondary)
-            Picker(L10n.text("同名或相同 UUID 时"), selection: $nativePolicy) {
-                Text(L10n.text("保留两份并改名")).tag(0)
-                Text(L10n.text("跳过导入项")).tag(1)
-                Text(L10n.text("覆盖并保留当前恢复版本")).tag(2)
-            }.disabled(backupBusy).onChange(of: nativePolicy) { _, _ in loadNativePreview() }
-            if backupBusy { ProgressView(L10n.text("正在核验原生备份…")) }
-            if let preview = nativePreview {
-                Text(L10n.format("新增 %ld，修改 %ld，跳过 %ld。", preview.added, preview.updated, preview.skipped))
-                ForEach(preview.warnings, id: \.self) { Text(L10n.text($0)).font(.caption).foregroundStyle(.secondary) }
-            }
-            if let status { Text(L10n.text(status)).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-            HStack {
-                Button(L10n.text("取消")) { showingNativeRestore = false }
-                Button(L10n.text("按当前库重新预览"), action: loadNativePreview).disabled(backupBusy)
-                Spacer()
-                Button(L10n.text("确认恢复原生备份")) {
-                    guard let preview = nativePreview else { return }
-                    do { try library.restoreNativeBackup(preview); showingNativeRestore = false; status = "已恢复原生备份；可撤销上次修改。" }
-                    catch { status = error.localizedDescription }
-                }.buttonStyle(.borderedProminent).disabled(backupBusy || nativePreview == nil || !library.healthy)
-            }
-        }.padding(20).frame(width: 640)
-    }
+
 }
 
 private struct SnippetEditorView: View {

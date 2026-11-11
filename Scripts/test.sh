@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+/usr/bin/python3 -B "$PROJECT_DIR/../合并迁移-2026-11-02/build_lease.py" verify >/dev/null
 TEST_SWIFT_ONLY=false
 if [[ "${1:-}" == '--swift-only' ]]; then
   TEST_SWIFT_ONLY=true
@@ -19,7 +20,7 @@ Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoserie
 PY
 if [[ "$TEST_SWIFT_ONLY" == false ]]; then
 python3 -B "$PROJECT_DIR/Tests/InstallTests.py"
-python3 -B "$PROJECT_DIR/Tests/ProgramBackupTests.py"
+python3 -B "$PROJECT_DIR/Tests/WorkspaceLeaseTests.py"
 python3 -B "$PROJECT_DIR/Tests/ReplacementPreparationTests.py"
 python3 -B "$PROJECT_DIR/Tests/TemplateAssetTests.py"
 python3 -B "$PROJECT_DIR/Tests/FinderCallbackTests.py"

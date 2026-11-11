@@ -131,10 +131,7 @@ struct ScreenshotHistoryEnvelope: Codable { var schemaVersion = 1; var assets: [
     }
     func deleteHistory() throws {
         guard writable else { throw ScreenshotAppIssue.message("资料保护模式下不能删除历史。") }
-        let trash = root.appendingPathComponent("DeletedHistory/"+UUID().uuidString)
-        _ = try ScreenshotGaoPrivateIO.directory(trash,create:true,requirePrivate:true)
-        // A recovery copy is retained before changing the index. No original user file is removed.
-        for asset in assets { try FileManager.default.copyItem(at:root.appendingPathComponent(asset.outputPath),to:trash.appendingPathComponent(URL(fileURLWithPath:asset.outputPath).lastPathComponent)) }
+        // Commit the index before deleting owned history; no recovery copy is created.
         historyDigest = try persist(ScreenshotHistoryEnvelope(),name:"History.json",previous:historyDigest)
         for asset in assets { try FileManager.default.removeItem(at:root.appendingPathComponent(asset.outputPath)) }
         assets = []
@@ -144,9 +141,6 @@ struct ScreenshotHistoryEnvelope: Codable { var schemaVersion = 1; var assets: [
         let cutoff=Date().addingTimeInterval(-Double(settings.historyDays)*86400)
         let expired=assets.filter{$0.createdAt<cutoff}
         guard !expired.isEmpty else{return}
-        let recovery=root.appendingPathComponent("DeletedHistory/Expired-"+UUID().uuidString)
-        _ = try ScreenshotGaoPrivateIO.directory(recovery,create:true,requirePrivate:true)
-        for asset in expired{try FileManager.default.copyItem(at:root.appendingPathComponent(asset.outputPath),to:recovery.appendingPathComponent(URL(fileURLWithPath:asset.outputPath).lastPathComponent))}
         let next=assets.filter{$0.createdAt>=cutoff}
         historyDigest=try persist(ScreenshotHistoryEnvelope(assets:next),name:"History.json",previous:historyDigest);assets=next
         for asset in expired{try FileManager.default.removeItem(at:root.appendingPathComponent(asset.outputPath))}

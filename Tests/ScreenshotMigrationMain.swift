@@ -136,12 +136,10 @@ import Darwin
             try expect(try m.finalizeSourceRetirement(retirement, approvedDigest: retirement.approvalDigest, verificationEvidence: evidence) == receipt, "same retirement confirmation is idempotent after later live writes")
             try expect(try m.initialization()?.mode == "migrated", "receipt does not freeze mutable Settings or later attachments")
             try expect(try !ScreenshotMigrationIO.exists(f.archive), "self-contained calls never recreate a deleted archive root")
-            let backup = try ScreenshotDataBackup.create(root: f.target, destination: f.base.appendingPathComponent("CurrentBackup.noindex"))
-            let report = try ScreenshotDataBackup.verify(backup)
-            try expect(report.schemaVersion == 3 && report.retirementReceiptSHA256 != nil && report.migrationEvidence == nil, "retired current backup includes the receipt and no raw migration evidence")
-            try expect(try !ScreenshotMigrationIO.exists(backup.appendingPathComponent("MigrationEvidence.noindex")), "new backup never recreates a recoverable old archive")
-            try expect(try ScreenshotMigrationIO.read(backup.appendingPathComponent("Data/Later.bin")) == Data("later user write".utf8), "new current backup preserves post-retirement user data")
-            try expect(try ScreenshotMigrationIO.read(f.target.appendingPathComponent(ScreenshotMigration.retirementReceiptName)) == receiptBytes, "backup and later reentry keep the receipt immutable")
+            let destination = f.base.appendingPathComponent("CurrentBackup.noindex")
+            try rejected("removed backup never creates an output") { _ = try ScreenshotDataBackup.create(root: f.target, destination: destination) }
+            try expect(try !ScreenshotMigrationIO.exists(destination), "disabled backup leaves no output")
+            try expect(try ScreenshotMigrationIO.read(f.target.appendingPathComponent(ScreenshotMigration.retirementReceiptName)) == receiptBytes, "disabled backup leaves live retirement receipt unchanged")
         }
         do {
             let f = try retirementFixture(); defer { clean(f) }; let m = ScreenshotMigration(configuration: f.configuration), plan = try m.preview()
@@ -354,61 +352,13 @@ import Darwin
             try m.initializeFresh()
             try expect(try m.initialization()?.mode == "fresh", "fresh initialization is idempotent")
         }
-        // Full module backups include ONLY this marker's committed archive, and rehearse both byte-for-byte.
+        // Full backup creation is retired. Existing migration compatibility tests above
+        // continue to validate their own transactions without new backup exports.
         do {
             let f = try fixture(); defer { clean(f) }
-            let oldProgram = f.base.appendingPathComponent("GaoJieTu-Backups/OldBackup.noindex/Retained.app")
-            try put(Data("synthetic app executable fixture; never run".utf8), oldProgram.appendingPathComponent("Contents/MacOS/OldProgram"))
-            try put(try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.gaoseries.GaoJieTu", "CFBundleExecutable": "OldProgram"], format: .xml, options: 0), oldProgram.appendingPathComponent("Contents/Info.plist"))
-            let m = ScreenshotMigration(configuration: f.configuration), plan = try m.preview()
-            _ = try m.apply(plan, approvedDigest: plan.approvalDigest)
-            let markerBytes = try ScreenshotMigrationIO.read(f.target.appendingPathComponent(ScreenshotMigration.initializationName))
-            try put(Data("unrelated private transaction; must not be copied".utf8), f.archive.appendingPathComponent("Unrelated.noindex/other.dat"))
-            let requested = f.base.deletingLastPathComponent().appendingPathComponent("ScreenshotBackup-Fixture-" + UUID().uuidString)
-            let backup = try ScreenshotDataBackup.create(root: f.target, destination: requested)
-            defer { try? FileManager.default.removeItem(at: backup) }
-            let report = try ScreenshotDataBackup.verify(backup)
-            try expect(backup.lastPathComponent == requested.lastPathComponent + ".noindex", "unindexed backup destination is created before any retained App")
-            try expect(try !ScreenshotMigrationIO.exists(requested), "unsuffixed request path never exposes an App copy")
-            try expect(report.schemaVersion == 3 && report.restoreRehearsal, "complete report is written only after data plus evidence rehearsal")
-            guard let evidence = report.migrationEvidence else { throw TestFailure(message: "complete backup has no migration evidence") }
-            try expect(evidence.migrationID == plan.migrationID && evidence.originalArchivePath == f.archive.appendingPathComponent(plan.migrationID + ".noindex").path, "report binds migration identity and original archive path")
-            try expect(evidence.snapshot.inventory.keys.contains { $0.hasSuffix("Retained.app/Contents/MacOS/OldProgram") }, "full migration archive includes retained program bytes")
-            try expect(!evidence.snapshot.inventory.keys.contains { $0.contains("Unrelated") }, "backup follows one archive without recursing the host backup tree")
-            try expect(try ScreenshotMigrationIO.read(backup.appendingPathComponent("Data/" + ScreenshotMigration.initializationName)) == markerBytes, "backup preserves original absolute marker bytes without rebinding")
-            try rejected("an existing protected backup is never overwritten") { _ = try ScreenshotDataBackup.create(root: f.target, destination: requested) }
-            let offline = f.base.appendingPathComponent("OriginalArchiveOffline.noindex")
-            try FileManager.default.moveItem(at: URL(fileURLWithPath: evidence.originalArchivePath), to: offline)
-            _ = try ScreenshotDataBackup.verify(backup)
-            try expect(report.restoreBindingNotice?.contains("controlled rebind") == true, "report states cross-path restore requires a controlled transaction")
-            try rejected("backup verification does not automatically rebind a live module") { _ = try m.initialization() }
-            try expect(try ScreenshotMigrationIO.read(backup.appendingPathComponent("Data/" + ScreenshotMigration.initializationName)) == markerBytes, "offline-origin verification still leaves absolute marker unchanged")
-        }
-        for corruption in ["missingEvidence", "changedEvidence", "missingRecord"] {
-            let f = try fixture(); defer { clean(f) }
-            let m = ScreenshotMigration(configuration: f.configuration), plan = try m.preview()
-            _ = try m.apply(plan, approvedDigest: plan.approvalDigest)
-            let backup = try ScreenshotDataBackup.create(root: f.target, destination: f.base.appendingPathComponent("FullBackup.noindex"))
-            let report = try ScreenshotDataBackup.verify(backup)
-            let evidence = report.migrationEvidence!
-            switch corruption {
-            case "missingEvidence": try FileManager.default.removeItem(at: backup.appendingPathComponent("MigrationEvidence.noindex"))
-            case "changedEvidence": try put(Data("changed archive bytes".utf8), backup.appendingPathComponent(evidence.relativePath + "/Source/History/asset.png"))
-            case "missingRecord":
-                let file = backup.appendingPathComponent("Verification.json")
-                var value = try JSONSerialization.jsonObject(with: ScreenshotMigrationIO.read(file)) as! [String: Any]
-                value.removeValue(forKey: "migrationEvidence"); try object(value, file)
-            default: break
-            }
-            try rejected("\(corruption): intact Data alone cannot pass a migrated backup") { _ = try ScreenshotDataBackup.verify(backup) }
-        }
-        do {
-            let f = try fixture(); defer { clean(f) }
-            let config = ScreenshotMigrationConfiguration(sourceRoot: f.base.appendingPathComponent("NoSource"), targetRoot: f.target, archiveRoot: f.archive, auxiliaries: [])
-            try ScreenshotMigration(configuration: config).initializeFresh()
-            let backup = try ScreenshotDataBackup.create(root: f.target, destination: f.base.appendingPathComponent("FreshBackup.noindex"))
-            let report = try ScreenshotDataBackup.verify(backup)
-            try expect(report.migrationEvidence == nil, "fresh modules do not manufacture migration evidence")
+            let destination = f.base.appendingPathComponent("RemovedBackup.noindex")
+            try rejected("backup creation is unavailable") { _ = try ScreenshotDataBackup.create(root: f.target, destination: destination) }
+            try expect(try !ScreenshotMigrationIO.exists(destination), "disabled backup cannot create a rehearsal or data copy")
         }
         try runRetirementTests()
         try runScreenshotMigrationActivityTests()

@@ -403,21 +403,16 @@ final class ScreenshotMigration {
             return .init(migrationID: receipt.migrationID, archivePath: receipt.originalArchivePath, alreadyApplied: true,
                          retainedOnly: ["现用截图资料及ImportedActivity；来源已解除依赖，删除仅由Root执行。"])
         }
-        let lock = try lock(); defer { lock.close() }
         guard approvedDigest == plan.approvalDigest, plan.configuration == configuration else { throw invalid("迁移确认与预览不一致，请重新预览。") }
         let archive = archiveURL(plan.migrationID)
-        if try ScreenshotMigrationIO.exists(archive.appendingPathComponent("Journal.json")) {
-            let journal = try loadJournal(archive)
-            guard journal.plan == plan else { throw invalid("已有日志与本次预览不同，未覆盖日志或目标。") }
-            return try resume(journal, archive: archive)
+        // Reject before creating even a lock container. Only already-prepared
+        // transactions remain eligible for the original recovery protocol.
+        guard try ScreenshotMigrationIO.exists(archive.appendingPathComponent("Journal.json")) else {
+            throw invalid("新迁移备份功能已移除；现用资料保持原位，仅可恢复已存在的迁移事务。")
         }
-        let checked = try preview()
-        guard checked == plan else { throw invalid("来源、附件、备份或目标在预览后变化，请重新预览；未覆盖新资料。") }
-        guard plan.conflicts.isEmpty else { throw invalid(plan.conflicts.joined(separator: "\n")) }
-        try ScreenshotMigrationIO.createDirectory(archive)
-        let journal = ScreenshotMigrationJournal(phase: "prepared", plan: plan, expectedTarget: nil, createdAt: Self.now)
-        try saveJournal(journal, archive: archive, new: true)
-        try fault?(.afterPreparedJournal)
+        let lock = try lock(); defer { lock.close() }
+        let journal = try loadJournal(archive)
+        guard journal.plan == plan else { throw invalid("已有日志与本次预览不同，未覆盖日志或目标。") }
         return try resume(journal, archive: archive)
     }
 

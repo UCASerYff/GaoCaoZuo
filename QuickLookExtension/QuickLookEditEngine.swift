@@ -4,7 +4,7 @@ import Darwin
 enum QuickLookEditEngine {
     struct HelperFailure:LocalizedError {
         let response:QuickLookArchiveEditResponse
-        var errorDescription:String? {(response.message ?? L10n.text("压缩编辑失败，原包安全备份保留。"))+(response.backup.map{"\n"+L10n.text("安全备份：")+$0.path} ?? "")}
+        var errorDescription:String? {(response.message ?? L10n.text("压缩编辑失败，请核对原文件与未完成事务。"))+(response.backup.map{"\n"+L10n.text("安全备份：")+$0.path} ?? "")}
     }
     private final class ReplyBox:@unchecked Sendable {
         let lock=NSLock();var result:Result<Data,Error>?

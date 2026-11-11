@@ -1,6 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR=${0:A:h:h}
+/usr/bin/python3 -B "$PROJECT_DIR/../合并迁移-2026-11-02/build_lease.py" verify >/dev/null
 APP_VERSION=$(tr -d '\n' < "$PROJECT_DIR/VERSION")
 BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 [[ "$APP_VERSION" =~ '^[0-9]+\.[0-9]{2}$' && "$BUILD_NUMBER" =~ '^[0-9]+$' ]] || { print -u2 '版本或构建号无效'; exit 1; }

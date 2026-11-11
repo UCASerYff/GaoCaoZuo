@@ -4,6 +4,17 @@ import Darwin
 
 @main enum OperationTestMain {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--backup-removal-only") || CommandLine.arguments.contains("--no-backups-only") {
+            GaoLocale.shared.setLanguage(.zhHans)
+            try await runSnippetNativeBackupTests()
+            try runScreenshotBackupRemovalTests()
+            try runScreenshotHistoryNoBackupTests()
+            if CommandLine.arguments.contains("--no-backups-only") {
+                guard let index=CommandLine.arguments.firstIndex(of:"--engine"),CommandLine.arguments.count>index+1 else {throw DataFailure.message("Missing no-backup test engine")}
+                try await runArchiveOriginalCommitTests(engine:URL(fileURLWithPath:CommandLine.arguments[index+1]))
+            }
+            return
+        }
         if CommandLine.arguments.contains("--screenshot-retirement-host-only") {
             setbuf(stdout,nil)
             try await runScreenshotImportedOCRRestoreTests()

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Verified local install transactions. Never migrates, deletes, or restores user data."""
+"""Install verified candidates without copying data or retaining previous programs."""
 import argparse
 import contextlib
 import datetime
@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from xml.parsers.expat import ExpatError
 
 BUNDLE = "com.gaoseries.GaoCaoZuo"
 APP_NAME = "搞操作.app"
@@ -28,7 +27,7 @@ DEFAULT_TARGET = Path("/Applications") / APP_NAME
 PROJECT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = Path.home() / "Library/Application Support/GaoSeries/GaoCaoZuo"
 DEFAULT_PREFS = Path.home() / "Library/Preferences" / (BUNDLE + ".plist")
-DEFAULT_BACKUPS = DEFAULT_DATA.parent / "GaoCaoZuo-Backups"
+DEFAULT_RECEIPTS = Path("/private/tmp/gaocaozuo-install-receipts.noindex")
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 
@@ -100,7 +99,7 @@ def inventory(path, permit_symlinks=False):
         mode = stat.S_IMODE(details.st_mode)
         if stat.S_ISLNK(details.st_mode):
             if not permit_symlinks:
-                fail("资料含符号链接，无法保证全部附件备份，请先核验：" + str(item))
+                fail("资料含符号链接，无法核验全部附件，请先核验：" + str(item))
             entries[relative] = {"type": "symlink", "target": os.readlink(str(item)), "mode": mode}
         elif stat.S_ISDIR(details.st_mode):
             entries[relative] = {"type": "directory", "mode": mode}
@@ -111,7 +110,7 @@ def inventory(path, permit_symlinks=False):
         elif stat.S_ISREG(details.st_mode):
             entries[relative] = {"type": "file", "size": details.st_size, "sha256": digest_file(item), "mode": mode}
         else:
-            fail("不支持备份特殊文件，安装已停止：" + str(item))
+            fail("无法核验特殊文件，安装已停止：" + str(item))
 
     visit(path, ".")
     return {"state": "present", "entries": entries}
@@ -134,8 +133,30 @@ def app_info(path):
 
 def verify_signature(path, simulate):
     app_info(path)
+    finder = finder_extension(path)
+    quicklook = quicklook_extension(path)
+    # Validate every identity before invoking LaunchServices or removing an App.
+    objects = [(path, BUNDLE)]
+    if finder is not None:
+        objects.append((finder, EXTENSION_BUNDLE))
+    if quicklook is not None:
+        objects.append((quicklook, BUNDLE + ".QuickLook"))
+        broker = quicklook / "Contents/XPCServices/ArchiveBroker.xpc"
+        with (broker / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        if (broker.is_symlink() or not broker.is_dir()
+                or info.get("CFBundleIdentifier") != BUNDLE + ".QuickLook.ArchiveBroker"
+                or info.get("CFBundleExecutable") != "ArchiveBroker"
+                or not (broker / "Contents/MacOS/ArchiveBroker").is_file()):
+            fail("压缩代理身份不符，禁止安装或登记。")
+        objects.append((broker, BUNDLE + ".QuickLook.ArchiveBroker"))
     if not simulate:
+        if finder is None or quicklook is None:
+            fail("正式候选缺少 Finder 或 Quick Look 扩展。")
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(path)])
+        for component, identifier in objects:
+            requirement = 'identifier "' + identifier + '" and anchor apple generic and certificate leaf[subject.OU] = "5G96498KGJ"'
+            run(["/usr/bin/codesign", "--verify", "--strict", "--all-architectures", "--test-requirement", "=" + requirement, str(component)])
 
 
 def finder_extension(path):
@@ -233,22 +254,16 @@ def ensure_executable_not_running(executable, simulate):
 
 
 def copy_verified(source, destination, simulate, permit_symlinks=False):
+    """Copy only a candidate program, with inventories before and after copying."""
     before = inventory(source, permit_symlinks=permit_symlinks)
-    if before["state"] == "missing":
-        return before
-    if destination.exists():
-        fail("备份目标已存在，禁止覆盖：" + str(destination))
+    if before["state"] != "present" or destination.exists() or destination.is_symlink():
+        fail("候选来源缺失或暂存目标已存在，禁止覆盖。")
     if simulate:
-        if source.is_dir():
-            shutil.copytree(str(source), str(destination), symlinks=True)
-        else:
-            shutil.copy2(str(source), str(destination))
+        shutil.copytree(str(source), str(destination), symlinks=True)
     else:
         run(["/usr/bin/ditto", str(source), str(destination)])
-    if inventory(destination, permit_symlinks=permit_symlinks) != before:
-        fail("复制后逐文件校验失败：" + str(source))
-    if inventory(source, permit_symlinks=permit_symlinks) != before:
-        fail("备份期间原资料发生变化，安装已停止：" + str(source))
+    if inventory(destination, permit_symlinks=permit_symlinks) != before or inventory(source, permit_symlinks=permit_symlinks) != before:
+        fail("候选复制逐文件校验失败。")
     return before
 
 
@@ -257,336 +272,92 @@ def check_simulation_paths(paths):
     for path in paths:
         resolved = path.resolve()
         if not any(resolved == root or root in resolved.parents for root in roots):
-            fail("--simulate 仅允许隔离的系统临时目录，不可操作实际安装或真实资料：" + str(path))
+            fail("--simulate 仅允许隔离的系统临时目录，不可操作实际安装或真实资料。")
 
 
 @contextlib.contextmanager
-def installation_lock(backup_root):
-    if backup_root.is_symlink():
-        fail("安全备份目录不可为符号链接。")
-    backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    backup_root.chmod(0o700)
-    fd = os.open(str(backup_root / ".installation.lock"), os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd,"a") as stream:
-        os.fchmod(stream.fileno(),0o600)
+def installation_lock(receipt_root):
+    if receipt_root.is_symlink():
+        fail("安装记录目录不可为符号链接。")
+    receipt_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if receipt_root.resolve() != receipt_root or not receipt_root.name.endswith(".noindex"):
+        fail("安装记录必须位于规范化的 .noindex 目录。")
+    receipt_root.chmod(0o700)
+    descriptor = os.open(str(receipt_root / ".installation.lock"), os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         yield
 
 
-def protect_backup(path):
-    """Backup content stays owner-only even if a source has permissive modes."""
-    if path.is_symlink():
-        return
-    if not path.exists():
-        return
-    if path.is_dir():
-        path.chmod(0o700)
-        for child in path.iterdir():
-            protect_backup(child)
-    else:
-        path.chmod(0o600)
+def live_data_inventory(data_root, preferences):
+    # A missing source is explicit evidence, never an empty replacement store.
+    # Read failures, unsupported files and symlinks stop before App replacement.
+    return {"data": inventory(data_root), "preferences": inventory(preferences)}
+
+
+def verify_live_data(manifest):
+    current = live_data_inventory(Path(manifest["data_root"]), Path(manifest["preferences"]))
+    if current != manifest["data_inventory"]:
+        fail("用户资料或设置在核验期间发生变化；已停止，不修改资料、不恢复或创建备份。")
 
 
 def load_manifest(path):
+    if path.is_symlink() or not path.is_file():
+        fail("安装记录缺失或不是实际文件。")
     with path.open(encoding="utf-8") as stream:
         manifest = json.load(stream)
-    if manifest.get("bundle_id") != BUNDLE or manifest.get("format") != 1:
-        fail("不是搞操作的安装记录。")
-    target = Path(manifest["target_app"])
-    stage = Path(manifest["stage_dir"])
-    # Accept legacy receipts for rollback, but all new staging is non-indexed.
-    permitted_stage_names = {".gaocaozuo-install-" + manifest["nonce"], ".gaocaozuo-install-" + manifest["nonce"] + ".noindex"}
-    if target.name != APP_NAME or stage.parent != target.parent or stage.name not in permitted_stage_names:
+    if manifest.get("bundle_id") != BUNDLE or manifest.get("format") != 2:
+        fail("不是当前无备份安装流程的记录。")
+    target, stage = Path(manifest["target_app"]), Path(manifest["stage_dir"])
+    receipts = Path(manifest["receipt_root"])
+    if (target.name != APP_NAME or stage.parent != target.parent
+            or stage.name != ".gaocaozuo-install-" + manifest["nonce"] + ".noindex"
+            or manifest.get("manifest_path") != str(path)
+            or path.parent != receipts or not receipts.name.endswith(".noindex")
+            or any(item.is_symlink() or item != item.resolve() for item in (target, stage, receipts))):
         fail("安装记录中的路径校验失败。")
-    if Path(manifest["manifest_path"]) != path.resolve():
-        fail("安装记录已移位，禁止清理未核验路径。")
-    if stage.is_symlink() or target.is_symlink():
-        fail("安装路径不应为符号链接。")
     if manifest["simulate"]:
         check_simulation_paths([target, Path(manifest["data_root"]), Path(manifest["preferences"]), path])
     return manifest
 
 
-def verify_backup(manifest):
-    for key in ("data", "preferences"):
-        item = manifest["backups"][key]
-        if item["inventory"]["state"] == "present":
-            if inventory(Path(item["backup_path"])) != item.get("backup_inventory",item["inventory"]):
-                fail("安全备份校验失败，禁止删除旧程序：" + key)
-
-
-def program_backup_record(manifest, path):
-    """A recovery pointer can only name this transaction's private fixed path."""
-    record = manifest.get("program_backup")
-    if not isinstance(record, dict) or not manifest.get("had_previous"):
-        fail("缺少独立旧程序恢复记录，保留暂存并停止。")
-    container = path.parent / "Program.noindex"
-    backup = container / APP_NAME
-    if (record.get("state") not in ("planned", "retained")
-            or record.get("backup_path") != str(backup)
-            or record.get("inventory") != manifest.get("previous_inventory")
-            or not isinstance(record.get("inventory"), dict)
-            or record["inventory"].get("state") != "present"
-            or any(type(record.get(key)) is not int for key in ("device", "inode"))):
-        fail("旧程序恢复指针、库存或身份无效，禁止继续。")
-    for directory in (path.parent, container):
-        details = directory.lstat()
-        if (not stat.S_ISDIR(details.st_mode) or directory.is_symlink()
-                or details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            fail("程序恢复容器必须为当前用户私有实际目录：" + str(directory))
-    return record, backup
-
-
-def verify_program_backup(manifest, path):
-    record, backup = program_backup_record(manifest, path)
-    details = backup.lstat()
-    if (not stat.S_ISDIR(details.st_mode) or backup.is_symlink()
-            or (details.st_dev, details.st_ino) != (record["device"], record["inode"])):
-        fail("旧程序恢复原件身份发生变化，禁止清理或恢复。")
-    verify_signature(backup, manifest["simulate"])
-    if inventory(backup, permit_symlinks=True) != record["inventory"]:
-        fail("独立旧程序恢复原件校验失败，禁止清理或恢复。")
-    return backup
-
-
-def verify_program_pointer(manifest, path):
-    with path.open(encoding="utf-8") as stream:
-        durable = json.load(stream)
-    if (durable.get("program_backup") != manifest.get("program_backup")
-            or durable.get("previous_inventory") != manifest.get("previous_inventory")
-            or durable.get("nonce") != manifest.get("nonce")
-            or durable.get("bundle_id") != BUNDLE):
-        fail("旧程序恢复记录回读不符，保留所有程序并停止。")
-
-
-def preserve_previous_program(manifest, path):
-    """Retain the original inode before any stage cleanup; retry after interruption."""
-    if not manifest["had_previous"]:
-        if "program_backup" in manifest:
-            fail("首次安装不能含有旧程序恢复记录。")
-        return
-    stage = Path(manifest["stage_dir"])
-    previous = stage / "previous.app"
-    container = path.parent / "Program.noindex"
-    backup = container / APP_NAME
-    if "program_backup" not in manifest:
-        # Never infer an absent old program from an empty or already removed stage.
-        ensure_not_running(previous, manifest["simulate"])
-        verify_signature(previous, manifest["simulate"])
-        if inventory(previous, permit_symlinks=True) != manifest.get("previous_inventory"):
-            fail("旧程序暂存缺失或已改变，禁止确认安装。")
-        if container.is_symlink():
-            fail("程序恢复容器不可为符号链接。")
-        if not container.exists():
-            container.mkdir(mode=0o700)
-            sync_directory(container.parent)
-            sync_directory(container.parent.parent)
-        elif any(container.iterdir()):
-            fail("存在未归属的程序恢复实物，禁止覆盖。")
-        details = previous.stat()
-        if container.stat().st_dev != details.st_dev:
-            fail("程序恢复容器与旧程序不在同一卷，保留暂存；禁止跨卷移动。")
-        manifest["program_backup"] = {
-            "state": "planned", "backup_path": str(backup),
-            "inventory": manifest["previous_inventory"],
-            "device": details.st_dev, "inode": details.st_ino,
-        }
-        program_backup_record(manifest, path)
-        atomic_json(path, manifest)
-    record, _ = program_backup_record(manifest, path)
-    verify_program_pointer(manifest, path)
-    if previous.exists():
-        if backup.exists() or backup.is_symlink():
-            fail("暂存与独立恢复位置同时有旧程序，禁止覆盖或清理。")
-        ensure_not_running(previous, manifest["simulate"])
-        verify_signature(previous, manifest["simulate"])
-        details = previous.stat()
-        if ((details.st_dev, details.st_ino) != (record["device"], record["inode"])
-                or container.stat().st_dev != details.st_dev
-                or inventory(previous, permit_symlinks=True) != record["inventory"]):
-            fail("旧程序移动前身份、卷或库存改变，保留现场。")
-        previous.rename(backup)
-    # Also fsync on a retry after a move whose directory sync was interrupted.
-    if stage.exists():
-        sync_directory(stage)
-    sync_directory(container)
-    verify_program_backup(manifest, path)
-    register(backup, manifest["simulate"], remove=True)
-    record["state"] = "retained"
-    atomic_json(path, manifest)
-    verify_program_pointer(manifest, path)
-    verify_program_backup(manifest, path)
-
-
-def prepare_retained_restore(manifest, path):
-    """Restore through a disposable verified copy; never consume the retained App."""
-    backup = verify_program_backup(manifest, path)
-    verify_program_pointer(manifest, path)
-    ensure_not_running(backup, manifest["simulate"])
-    stage = Path(manifest["stage_dir"])
-    if not stage.name.endswith(".noindex"):
-        # Legacy receipts remain rollback-compatible without generating new Apps
-        # inside their historical indexable staging location.
-        stage = stage.with_name(stage.name + ".noindex")
-        manifest["rollback_stage_dir"] = str(stage)
-        atomic_json(path, manifest)
-    if stage.is_symlink():
-        fail("回滚暂存不可为符号链接。")
+def cleanup_stage(stage, expected, simulate):
+    """A stage may contain only the disposable, verified candidate App."""
     if not stage.exists():
-        stage.mkdir(mode=0o700)
-        sync_directory(stage.parent)
-    details = stage.lstat()
-    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != os.getuid()
-            or stat.S_IMODE(details.st_mode) & 0o077):
-        fail("回滚暂存必须为当前用户私有目录。")
-    previous = stage / "previous.app"
-    copying = stage / "recovery-copy.app"
-    if previous.exists():
-        fail("恢复目标已存在，禁止覆盖。")
-    if copying.exists() or copying.is_symlink():
-        if copying.is_symlink() or not copying.is_dir():
-            fail("恢复复制暂存无效，保留现场。")
-        # Only the fixed disposable copy may be retried, with the original still
-        # independently verified above. Never modify the long-lived recovery App.
-        executable = app_info(backup)["CFBundleExecutable"]
-        ensure_executable_not_running(str(copying / "Contents/MacOS" / executable), manifest["simulate"])
-        info_path = copying / "Contents/Info.plist"
-        if info_path.exists():
-            try:
-                with info_path.open("rb") as stream:
-                    info = plistlib.load(stream)
-            except (plistlib.InvalidFileException, ValueError, EOFError, ExpatError):
-                # A torn metadata copy is not a launchable App. This fixed private
-                # scratch path can be rebuilt from the independently verified App.
-                info = None
-            if info is not None:
-                if info.get("CFBundleIdentifier") != BUNDLE or info.get("CFBundleExecutable") != executable:
-                    fail("恢复复制暂存出现无关应用，禁止删除。")
-                if (copying / "Contents/MacOS" / executable).is_file():
-                    register(copying, manifest["simulate"], remove=True)
-        shutil.rmtree(str(copying))
-    copy_verified(backup, copying, manifest["simulate"], permit_symlinks=True)
-    verify_signature(copying, manifest["simulate"])
-    verify_program_backup(manifest, path)
-    copying.rename(previous)
-    sync_directory(stage)
-    return stage
-
-
-def rollback(manifest, path):
-    target = Path(manifest["target_app"])
-    original_stage = Path(manifest["stage_dir"])
-    stage = Path(manifest.get("rollback_stage_dir", manifest["stage_dir"]))
-    safe_stage = original_stage if original_stage.name.endswith(".noindex") else original_stage.with_name(original_stage.name + ".noindex")
-    if stage not in (original_stage, safe_stage) or stage.is_symlink():
-        fail("回滚暂存路径无效。")
-    previous = stage / "previous.app"
-    failed = stage / "failed-candidate.app"
-    simulate = manifest["simulate"]
-    ensure_not_running(target, simulate)
-    if "program_backup" in manifest:
-        _, retained = program_backup_record(manifest, path)
-        if not retained.exists() and not retained.is_symlink():
-            # A durable plan may have stopped before its move. Complete the
-            # retention before restoring, rather than leave a dangling pointer.
-            preserve_previous_program(manifest, path)
-        verify_program_backup(manifest, path)
-        verify_program_pointer(manifest, path)
-    # If a registration command failed after the old app was restored, a retry
-    # resumes that exact recovery rather than replacing the saved failed candidate.
-    # A prepared transaction may have stopped before moving the old program,
-    # including halfway through unregistering its pair. Match the whole saved
-    # inventory before treating that in-place program as the recovery copy.
-    old_in_place = (manifest["had_previous"] and not previous.exists() and target.exists()
-                    and inventory(target, permit_symlinks=True) == manifest.get("previous_inventory"))
-    restored = old_in_place
-    if restored:
-        verify_signature(target, simulate)
-        if inventory(target, permit_symlinks=True) != manifest.get("previous_inventory"):
-            fail("恢复后的旧程序发生变化，保留现场并停止回滚。")
-    else:
-        if target.exists() and failed.exists():
-            fail("已有待检查的失败程序，禁止覆盖：" + str(failed))
-        if manifest["had_previous"]:
-            if not previous.exists():
-                stage = prepare_retained_restore(manifest, path)
-                previous = stage / "previous.app"
-                failed = stage / "failed-candidate.app"
-                if failed.exists():
-                    fail("已有待检查的失败程序，禁止覆盖：" + str(failed))
-            ensure_not_running(previous, simulate)
-            verify_signature(previous, simulate)
-            if inventory(previous, permit_symlinks=True) != manifest.get("previous_inventory"):
-                fail("旧程序备份发生变化，禁止回滚。")
-            # Staging copies can have been rediscovered after the original move.
-            register(previous, simulate, remove=True)
-        if target.exists():
-            app_info(target)
-            register(target, simulate, remove=True)
-            target.rename(failed)
-        if manifest["had_previous"]:
-            previous.rename(target)
-            sync_directory(target.parent)
-            sync_directory(stage)
-    if failed.exists():
-        ensure_not_running(failed, simulate)
-        app_info(failed)
-        manifest["failed_candidate"] = {
-            "path": str(failed), "inventory": inventory(failed, permit_symlinks=True),
-            "recorded_at": datetime.datetime.now().astimezone().isoformat()
-        }
-        atomic_json(path, manifest)
-        register(failed, simulate, remove=True)
-    if manifest["had_previous"]:
-        register(target, simulate)
-    candidate = stage / "candidate.app"
-    if candidate.exists():
+        return
+    children = list(stage.iterdir())
+    if children:
+        candidate = stage / "candidate.app"
+        if children != [candidate] or inventory(candidate, permit_symlinks=True) != expected:
+            fail("安装暂存包含未知或变化内容，停止精确清理。")
         ensure_not_running(candidate, simulate)
-        verify_signature(candidate, simulate)
-        if inventory(candidate, permit_symlinks=True) != manifest.get("candidate_inventory"):
-            fail("未投递候选发生变化，保留现场并停止回滚。")
         register(candidate, simulate, remove=True)
-        manifest["undelivered_candidate"] = {"inventory": manifest["candidate_inventory"], "removed_after_registration": True}
-        atomic_json(path, manifest)
-        shutil.rmtree(str(candidate))
-    if failed.exists():
-        shutil.rmtree(str(failed))
-        manifest["failed_candidate"]["removed_after_registration"] = True
-    if stage.exists() and not any(stage.iterdir()):
-        stage.rmdir()
-    if original_stage != stage and original_stage.exists() and not any(original_stage.iterdir()):
-        original_stage.rmdir()
-    manifest["state"] = "rolled_back"
-    manifest["rolled_back_at"] = datetime.datetime.now().astimezone().isoformat()
-    atomic_json(path, manifest)
-    print("已恢复旧程序。用户资料、安全备份与失败候选核验记录均保留。" if manifest["had_previous"] else "已撤回首次安装。用户资料、安全备份与失败候选核验记录均保留。")
+    shutil.rmtree(str(stage))
+    sync_directory(stage.parent)
 
 
 def install(args):
-    source = Path(args.app).expanduser().resolve()
+    source = Path(args.app).expanduser().absolute()
     target = Path(args.target).expanduser().absolute()
     data_root = Path(args.data_root).expanduser().absolute()
     preferences = Path(args.preferences).expanduser().absolute()
-    backup_root = Path(args.backup_root).expanduser().absolute()
-    if target.name != APP_NAME or target == source:
-        fail("安装目标必须是独立的 搞操作.app，且不能与来源相同。")
-    if target.is_symlink() or data_root.is_symlink() or preferences.is_symlink() or backup_root.is_symlink():
-        fail("应用、资料根和设置路径不可使用符号链接。")
-    target = target.parent.resolve() / target.name
-    data_root = data_root.resolve()
-    preferences = preferences.resolve()
-    backup_root = backup_root.resolve()
-    if data_root == target or target in data_root.parents or data_root in target.parents:
-        fail("应用与资料路径不可互相包含。")
-    if data_root == backup_root or data_root in backup_root.parents or backup_root in data_root.parents:
-        fail("安全备份目录必须与用户资料目录分开。")
+    receipts = Path(args.receipt_root).expanduser().absolute()
+    paths = (source, target, data_root, preferences, receipts)
+    if any(path.is_symlink() or path.resolve() != path for path in paths):
+        fail("应用、资料、设置与安装记录必须使用实际规范化路径。")
+    if (target.name != APP_NAME or source == target or source in target.parents or target in source.parents
+            or not any(parent.name.endswith(".noindex") for parent in source.parents)):
+        fail("候选必须来自 .noindex 容器，目标必须是独立的 搞操作.app。")
+    for protected in (data_root, preferences):
+        for disposable in (source, target, receipts):
+            if protected == disposable or protected in disposable.parents or disposable in protected.parents:
+                fail("资料和设置不能与程序或安装记录路径互相包含。")
     if args.simulate:
-        check_simulation_paths([source, target, data_root, preferences, backup_root])
+        check_simulation_paths(paths)
     info = app_info(source)
-    version = str(info.get("CFBundleShortVersionString", ""))
-    build = str(info.get("CFBundleVersion", ""))
-    if len(version.split(".")) != 2 or len(version.split(".")[1]) != 2 or decimal.Decimal(version) < decimal.Decimal("1.00") or not build.isdigit():
-        fail("版本配置无效，应从 1.00 / build 1 开始。")
+    version, build = str(info.get("CFBundleShortVersionString", "")), str(info.get("CFBundleVersion", ""))
+    if not re.fullmatch(r"[0-9]+\.[0-9]{2}", version) or decimal.Decimal(version) < 1 or not build.isdigit():
+        fail("版本或构建号配置无效。")
     verify_signature(source, args.simulate)
     had_previous = target.exists()
     if had_previous:
@@ -596,217 +367,146 @@ def install(args):
             fail("禁止用较旧版本覆盖当前程序。")
     ensure_not_running(target, args.simulate)
     ensure_not_running(source, args.simulate)
+    # Hash all live files before creating candidate staging or removing the App.
+    data_inventory = live_data_inventory(data_root, preferences)
+    if had_previous:
+        data = data_inventory["data"]
+        settings = data["entries"].get("settings.json", {})
+        if data["state"] != "present" or settings.get("type") != "file":
+            fail("现有安装的资料目录或主设置 settings.json 缺失，停止升级；不按空资料覆盖。")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with installation_lock(backup_root):
-        for prior in backup_root.glob("安装-*/manifest.json"):
-            with prior.open(encoding="utf-8") as stream:
-                recorded = json.load(stream)
-            if recorded.get("bundle_id") == BUNDLE and recorded.get("state") in ("prepared", "installed_pending_verification", "rollback_in_progress"):
-                fail("存在未完成验收的安装，请先验证或回滚：" + str(prior))
+    with installation_lock(receipts):
+        for prior in receipts.glob("install-*.json"):
+            recorded = load_manifest(prior)
+            if recorded["state"] in ("preparing", "prepared", "installed_pending_verification"):
+                fail("存在未完成的安装记录，请先核验：" + str(prior))
         nonce = uuid.uuid4().hex
-        stamp = datetime.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
-        transaction = backup_root / ("安装-" + stamp + "-" + nonce[:8])
-        transaction.mkdir(mode=0o700)
-        path = transaction / "manifest.json"
+        path = receipts / ("install-" + nonce + ".json")
         stage = target.parent / (".gaocaozuo-install-" + nonce + ".noindex")
         stage.mkdir(mode=0o700)
         candidate = stage / "candidate.app"
-        previous = stage / "previous.app"
-        manifest = {
-            "format": 1, "bundle_id": BUNDLE, "nonce": nonce, "state": "preparing",
-            "version": version, "build": build, "source_app": str(source), "target_app": str(target),
-            "stage_dir": str(stage), "manifest_path": str(path.resolve()), "had_previous": had_previous,
-            "simulate": args.simulate, "data_root": str(data_root), "preferences": str(preferences),
-            "backup_root": str(backup_root), "backups": {}, "created_at": datetime.datetime.now().astimezone().isoformat(),
-            "defer_cleanup": bool(args.defer_cleanup)
-        }
+        manifest = {"format": 2, "bundle_id": BUNDLE, "nonce": nonce, "state": "preparing",
+                    "version": version, "build": build, "source_app": str(source), "target_app": str(target),
+                    "stage_dir": str(stage), "manifest_path": str(path), "receipt_root": str(receipts),
+                    "had_previous": had_previous, "simulate": args.simulate,
+                    "data_root": str(data_root), "preferences": str(preferences), "data_inventory": data_inventory,
+                    "created_at": datetime.datetime.now().astimezone().isoformat(),
+                    "backup_created": False, "rollback_available": False}
         atomic_json(path, manifest)
-        changed_target = False
-        unregistered_previous = False
         try:
-            for key, original in (("data", data_root), ("preferences", preferences)):
-                destination = transaction / ("用户资料" if key == "data" else "preferences.plist")
-                copied = copy_verified(original, destination, args.simulate)
-                protect_backup(destination)
-                manifest["backups"][key] = {"original_path": str(original), "backup_path": str(destination), "inventory": copied, "backup_inventory": inventory(destination)}
-                atomic_json(path, manifest)
-            copy_verified(source, candidate, args.simulate, permit_symlinks=True)
-            # Preserve the build's nested extension entitlements and identity.
-            # A verified byte-for-byte copy does not need to be re-signed.
+            manifest["candidate_inventory"] = copy_verified(source, candidate, args.simulate, permit_symlinks=True)
             verify_signature(candidate, args.simulate)
-            manifest["candidate_inventory"] = inventory(candidate, permit_symlinks=True)
+            finder_extension(candidate)
+            quicklook_extension(candidate)
+            verify_live_data(manifest)
+            ensure_not_running(target, args.simulate)
             if had_previous:
-                manifest["previous_inventory"] = inventory(target, permit_symlinks=True)
+                manifest["previous_inventory_sha256"] = hashlib.sha256(json.dumps(inventory(target, permit_symlinks=True), sort_keys=True).encode()).hexdigest()
             manifest["state"] = "prepared"
             atomic_json(path, manifest)
             if had_previous:
-                # register() consists of several external commands; even its first
-                # partial failure requires restoring this exact old pair.
-                unregistered_previous = True
+                # The user explicitly prohibits old-program copies and rollback.
+                # All candidate/data checks finish before this exact deletion.
                 register(target, args.simulate, remove=True)
-                target.rename(previous)
-                changed_target = True
+                shutil.rmtree(str(target))
+                sync_directory(target.parent)
             candidate.rename(target)
-            changed_target = True
+            sync_directory(target.parent)
             verify_signature(target, args.simulate)
             if inventory(target, permit_symlinks=True) != manifest["candidate_inventory"]:
-                fail("安装后的程序逐文件校验失败。")
-            for item in manifest["backups"].values():
-                if inventory(Path(item["original_path"])) != item["inventory"]:
-                    fail("安装期间用户资料或设置发生变化，停止安装并恢复旧程序。")
+                fail("安装后程序逐文件校验失败。")
+            verify_live_data(manifest)
             register(target, args.simulate)
+            cleanup_stage(stage, manifest["candidate_inventory"], args.simulate)
             manifest["state"] = "installed_pending_verification"
             atomic_json(path, manifest)
             print("MANIFEST=" + str(path))
-            print("已安装搞操作 V" + version + "，等待验收确认。旧程序、资料和设置备份均保留。")
-            print("验收后：Scripts/finalize-install.sh --manifest '" + str(path) + "' --verified")
-            print("验收失败：Scripts/finalize-install.sh --manifest '" + str(path) + "' --rollback")
+            print("已安装搞操作 V" + version + "；未启动应用，未创建资料或旧程序备份。")
         except Exception as error:
+            manifest["state"] = "failed"
             manifest["failure"] = str(error)
             atomic_json(path, manifest)
-            if changed_target or unregistered_previous:
-                try:
-                    rollback(manifest, path)
-                except Exception as rollback_error:
-                    manifest["rollback_failure"] = str(rollback_error)
-                    atomic_json(path, manifest)
-                    fail(str(error) + "\n自动恢复未完成：" + str(rollback_error) + "\n请保留安装记录：" + str(path))
-            else:
-                manifest["state"] = "preparation_failed"
-                atomic_json(path, manifest)
+            # No restoration or alternate program is created on failure.
+            # Dispose of the stage only when its exact contents are verified.
+            if "candidate_inventory" in manifest:
+                cleanup_stage(stage, manifest["candidate_inventory"], args.simulate)
+            elif stage.exists() and not any(stage.iterdir()):
+                stage.rmdir()
             raise
 
 
 def finalize(args):
-    path = Path(args.manifest).expanduser().resolve()
+    path = Path(args.manifest).expanduser().absolute()
     manifest = load_manifest(path)
-    with installation_lock(Path(manifest["backup_root"])):
-        if manifest["state"] == "rolled_back" or (manifest["state"] == "verified" and not args.rollback):
-            if manifest["state"] == "verified" and "program_backup" in manifest:
-                verify_program_backup(manifest, path)
-                verify_program_pointer(manifest, path)
-            print("安装事务已完成：" + manifest["state"])
-            return
-        if args.rollback:
-            if manifest["state"] == "verified":
-                # Historical verified receipts without a retained program are not
-                # treated as recoverable merely because they say "verified".
-                verify_program_backup(manifest, path)
-                verify_backup(manifest)
-                if inventory(Path(manifest["target_app"]), permit_symlinks=True) != manifest["candidate_inventory"]:
-                    fail("正式程序已不再是此事务的候选，禁止用旧事务覆盖后续安装。")
-                manifest["state"] = "rollback_in_progress"
-                atomic_json(path, manifest)
-            elif manifest["state"] not in ("prepared", "installed_pending_verification", "rollback_in_progress"):
-                fail("此安装事务没有可核验的已准备程序，禁止回滚。")
-            rollback(manifest, path)
+    with installation_lock(Path(manifest["receipt_root"])):
+        if manifest["state"] == "verified":
+            print("安装事务已完成：verified")
             return
         if manifest["state"] != "installed_pending_verification":
-            fail("此安装事务未处于待验收状态，禁止清理或覆盖。")
-        scope = getattr(args, "verification_scope", "manual")
-        evidence = getattr(args, "verification_evidence", None)
+            fail("此安装事务未处于待验收状态，禁止确认。")
+        scope = args.verification_scope
         if scope == "static-and-targeted":
-            if not evidence:
-                fail("静态与定向验证必须提供真实核验记录，不能隐含标记GUI已通过。")
-            evidence_path = Path(evidence).expanduser().resolve()
-            if not evidence_path.is_file() or evidence_path.stat().st_size > 1024 * 1024:
-                fail("核验记录缺失或过大，保留旧程序。")
-            with evidence_path.open("rb") as handle:
-                evidence_record = json.load(handle)
-            if (evidence_record.get("version") != manifest["version"]
-                    or str(evidence_record.get("build")) != str(manifest["build"])
-                    or evidence_record.get("candidateInventorySHA256") != hashlib.sha256(json.dumps(manifest["candidate_inventory"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-                    or evidence_record.get("verificationScope") != scope
-                    or evidence_record.get("smokeTestRun") is not False
-                    or evidence_record.get("passed") is not True):
-                fail("核验记录版本或实际范围不匹配，保留旧程序。")
+            if not args.verification_evidence:
+                fail("静态与定向验证必须提供核验记录。")
+            evidence_path = Path(args.verification_evidence).expanduser().absolute()
+            if evidence_path.is_symlink() or not evidence_path.is_file() or evidence_path.stat().st_size > 1024 * 1024:
+                fail("核验记录缺失、不是实际文件或过大。")
+            evidence = json.loads(evidence_path.read_text())
+            expected_inventory = hashlib.sha256(json.dumps(manifest["candidate_inventory"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if (evidence.get("version") != manifest["version"] or str(evidence.get("build")) != manifest["build"]
+                    or evidence.get("candidateInventorySHA256") != expected_inventory
+                    or evidence.get("verificationScope") != scope or evidence.get("smokeTestRun") is not False
+                    or evidence.get("passed") is not True):
+                fail("核验记录与候选版本、摘要或实际范围不匹配。")
             manifest["verification_evidence_sha256"] = digest_file(evidence_path)
-        verify_backup(manifest)
+            verify_live_data(manifest)
         target = Path(manifest["target_app"])
-        stage = Path(manifest["stage_dir"])
         verify_signature(target, manifest["simulate"])
         if inventory(target, permit_symlinks=True) != manifest["candidate_inventory"]:
-            fail("程序在安装后发生变化，不能删除旧程序，请核验或回滚。")
-        if (stage / "previous.app").exists():
-            app_info(stage / "previous.app")
-            if inventory(stage / "previous.app", permit_symlinks=True) != manifest["previous_inventory"]:
-                fail("旧程序备份发生变化，禁止清理。")
-        old_apps = []
-        if stage.exists():
-            old_apps = sorted(stage.iterdir())
-            allowed = {"previous.app", "candidate.app"}
-            if any(child.name not in allowed for child in old_apps):
-                fail("暂存目录包含未知文件，禁止自动清理。")
-            # Check every old identity and process before changing any registration.
-            # A staging app opened by LaunchServices must be quit by the user first.
-            for child in old_apps:
-                app_info(child)
-                finder_extension(child)
-                ensure_not_running(child, manifest["simulate"])
-                expected = manifest.get("previous_inventory" if child.name == "previous.app" else "candidate_inventory")
-                if expected is None or inventory(child, permit_symlinks=True) != expected:
-                    fail("暂存程序发生变化，禁止清理：" + str(child))
-        finder_extension(target)
-        for child in old_apps:
-            register(child, manifest["simulate"], remove=True)
-        # Re-register the installed pair after removing stale registrations, but
-        # before deleting the recovery copy. Any failed command leaves the pending
-        # transaction, stage and data backups intact and safely retryable.
+            fail("安装后的程序发生变化，禁止确认。")
         register(target, manifest["simulate"])
-        preserve_previous_program(manifest, path)
-        if stage.exists():
-            shutil.rmtree(str(stage))
-            sync_directory(stage.parent)
-        manifest["state"] = "verified"
-        manifest["verified_at"] = datetime.datetime.now().astimezone().isoformat()
-        manifest["verification_scope"] = scope
-        manifest["gui_verified"] = scope == "manual"
+        cleanup_stage(Path(manifest["stage_dir"]), manifest["candidate_inventory"], manifest["simulate"])
+        manifest.update(state="verified", verified_at=datetime.datetime.now().astimezone().isoformat(),
+                        verification_scope=scope, gui_verified=scope == "manual")
         atomic_json(path, manifest)
         if not manifest["simulate"]:
             cleanup_old_releases(manifest["version"])
-        print("安装核验已确认（" + ("静态与定向验证；未运行冒烟或GUI验收" if scope == "static-and-targeted" else "人工验收") + "），本次安装暂存已删除；旧程序原件在私有 Program.noindex 中长期保留。用户资料与安全备份保留。")
+        print("安装核验已确认（" + ("静态与定向；未运行冒烟或 GUI 验收" if scope == "static-and-targeted" else "人工验收") + "）；资料留在原路径，无备份或旧程序副本。")
 
 
 def cleanup_old_releases(current_version):
-    """Only older version-named packages owned by this project are eligible."""
     release = PROJECT / "Release"
     if release.is_symlink():
-        fail("Release 目录为符号链接，未执行旧发行包清理。")
+        fail("Release 目录为符号链接，停止清理。")
     if not release.is_dir():
         return
-    current_dmg = release / ("GaoCaoZuo-" + current_version + ".dmg")
-    current_checksum = current_dmg.with_name(current_dmg.name + ".sha256")
-    if not current_dmg.is_file() or not current_checksum.is_file():
-        print("最新版发行包或校验文件尚未就绪，保留旧发行包。")
+    current = release / ("GaoCaoZuo-" + current_version + ".dmg")
+    checksum = current.with_name(current.name + ".sha256")
+    if not current.is_file() or not checksum.is_file():
         return
-    expected = current_checksum.read_text().strip().split()[0]
-    if digest_file(current_dmg) != expected:
-        fail("最新版发行包校验不符，保留全部旧发行包。")
+    if digest_file(current) != checksum.read_text().strip().split()[0]:
+        fail("最新版发行包校验不符，停止旧包清理。")
     for item in release.iterdir():
-        match = re.fullmatch(r"GaoCaoZuo-(\d+\.\d{2})(?:\.dmg(?:\.sha256)?|-source\.zip(?:\.sha256)?)",item.name)
+        match = re.fullmatch(r"GaoCaoZuo-(\d+\.\d{2})(?:\.dmg(?:\.sha256)?|-source\.zip(?:\.sha256)?)", item.name)
         if match and not item.is_symlink() and item.is_file() and decimal.Decimal(match.group(1)) < decimal.Decimal(current_version):
             item.unlink()
-            print("已清理本应用旧发行包：" + item.name)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="搞操作本地安装与安全回滚")
+    parser = argparse.ArgumentParser(description="搞操作无备份安装与逐文件核验")
     commands = parser.add_subparsers(dest="command", required=True)
     install_parser = commands.add_parser("install")
     install_parser.add_argument("--app", required=True)
     install_parser.add_argument("--target", default=str(DEFAULT_TARGET))
     install_parser.add_argument("--data-root", default=str(DEFAULT_DATA))
     install_parser.add_argument("--preferences", default=str(DEFAULT_PREFS))
-    install_parser.add_argument("--backup-root", default=str(DEFAULT_BACKUPS))
-    install_parser.add_argument("--defer-cleanup", action="store_true", help="保留旧程序等待验收；所有安装均要求显式 finalize")
+    install_parser.add_argument("--receipt-root", default=str(DEFAULT_RECEIPTS))
     install_parser.add_argument("--simulate", action="store_true", help="仅临时目录模拟，不调用签名或系统登记")
     final_parser = commands.add_parser("finalize")
     final_parser.add_argument("--manifest", required=True)
-    final_parser.add_argument("--verification-scope", choices=("manual", "static-and-targeted"), default="manual")
+    final_parser.add_argument("--verification-scope", choices=("manual", "static-and-targeted"), default="static-and-targeted")
     final_parser.add_argument("--verification-evidence")
-    actions = final_parser.add_mutually_exclusive_group(required=True)
-    actions.add_argument("--verified", action="store_true")
-    actions.add_argument("--rollback", action="store_true")
+    final_parser.add_argument("--verified", action="store_true", required=True)
     args = parser.parse_args()
     try:
         install(args) if args.command == "install" else finalize(args)
