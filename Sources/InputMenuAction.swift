@@ -241,57 +241,92 @@ enum InputMenuPathResolver {
     @State private var selectedAppName = ""
     @State private var roots: [InputMenuAction.TreeNode] = []
     @State private var message: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Menu(L10n.text("选择正在运行的目标应用")) {
-                    ForEach(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
-                        .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }, id: \.processIdentifier) { app in
-                        Button(app.localizedName ?? app.bundleIdentifier ?? "") {
-                            selectedPID = app.processIdentifier; selectedAppName = app.localizedName ?? app.bundleIdentifier ?? ""
-                            roots = []; message = "已选择目标，点击读取菜单后再选择具体项目。"
-                        }
-                    }
-                }
-                Button(L10n.text("读取所选应用菜单"), action: readMenu).disabled(selectedPID <= 0)
-            }
+            targetControls
             if !selectedAppName.isEmpty { Text(selectedAppName).font(.caption).fontWeight(.medium) }
             if !roots.isEmpty {
-                List {
-                    OutlineGroup(roots, children: \.children) { node in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(node.title).foregroundStyle(node.enabled ? Color.primary : .secondary)
-                                Text(node.role + (node.shortcutLabel.isEmpty ? "" : " · " + node.shortcutLabel))
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if node.ambiguous { Text(L10n.text("同级重名，不能选择")).font(.caption).foregroundStyle(.orange) }
-                            else if !node.enabled { Text(L10n.text("当前不可用")).font(.caption).foregroundStyle(.secondary) }
-                            if let captured = node.evidence {
-                                Button(L10n.text("选择")) {
-                                    evidence = captured; path = captured.path; bundleID = captured.application.bundleID
-                                    message = "已保存应用身份、逐级角色、标题和快捷键线索；没有点按菜单。"
-                                }.disabled(!node.enabled)
-                            }
-                        }
-                    }
-                }.frame(minHeight: 160, maxHeight: 320)
+                menuTree
             }
-            Text(path.isEmpty ? L10n.text("尚未选择菜单项") : path.joined(separator: " → ")).textSelection(.enabled)
-            if !path.isEmpty, evidence == nil {
-                Text(L10n.text("旧规则只保存标题路径，执行已停止；请从实际菜单树重新选择。"))
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if let evidence {
-                Text(evidence.application.bundleID + " · " + (evidence.application.version ?? "") + " / " + (evidence.application.build ?? ""))
-                    .font(.caption).textSelection(.enabled)
-            }
+            selectionSummary
             if let message { Text(L10n.text(message)).font(.caption).foregroundStyle(.secondary) }
             Text(L10n.text("仅在你点击读取后访问 AX 菜单树，不启动或激活目标应用。禁用、重名、未公开菜单不可选；目标升级、角色或快捷键变化后需重新选择。系统接受点按不等于业务完成。"))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
+
+    private var targetControls: some View {
+        HStack {
+            Menu(L10n.text("选择正在运行的目标应用")) {
+                ForEach(targetApplications, id: \.processIdentifier) { app in
+                    let name = app.localizedName ?? app.bundleIdentifier ?? ""
+                    Button(name) {
+                        selectedPID = app.processIdentifier
+                        selectedAppName = app.localizedName ?? app.bundleIdentifier ?? ""
+                        roots = []
+                        message = "已选择目标，点击读取菜单后再选择具体项目。"
+                    }
+                }
+            }
+            Button(L10n.text("读取所选应用菜单"), action: readMenu).disabled(selectedPID <= 0)
+        }
+    }
+
+    private var targetApplications: [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
+            .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }
+    }
+
+    private var menuTree: some View {
+        List {
+            OutlineGroup(roots, children: \InputMenuAction.TreeNode.children) { node in
+                menuRow(node)
+            }
+        }.frame(minHeight: 160, maxHeight: 320)
+    }
+
+    private func menuRow(_ node: InputMenuAction.TreeNode) -> some View {
+        let titleColor: Color = node.enabled ? .primary : .secondary
+        let roleLabel = node.shortcutLabel.isEmpty ? node.role : "\(node.role) · \(node.shortcutLabel)"
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(node.title).foregroundStyle(titleColor)
+                Text(roleLabel).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if node.ambiguous {
+                Text(L10n.text("同级重名，不能选择")).font(.caption).foregroundStyle(.orange)
+            } else if !node.enabled {
+                Text(L10n.text("当前不可用")).font(.caption).foregroundStyle(.secondary)
+            }
+            if let captured = node.evidence {
+                Button(L10n.text("选择")) {
+                    evidence = captured
+                    path = captured.path
+                    bundleID = captured.application.bundleID
+                    message = "已保存应用身份、逐级角色、标题和快捷键线索；没有点按菜单。"
+                }.disabled(!node.enabled)
+            }
+        }
+    }
+
+    @ViewBuilder private var selectionSummary: some View {
+        let selectedPath = path.isEmpty ? L10n.text("尚未选择菜单项") : path.joined(separator: " → ")
+        Text(selectedPath).textSelection(.enabled)
+        if !path.isEmpty, evidence == nil {
+            Text(L10n.text("旧规则只保存标题路径，执行已停止；请从实际菜单树重新选择。"))
+                .font(.caption).foregroundStyle(.orange)
+        }
+        if let application = evidence?.application {
+            let version = application.version ?? ""
+            let build = application.build ?? ""
+            let label = "\(application.bundleID) · \(version) / \(build)"
+            Text(label).font(.caption).textSelection(.enabled)
+        }
+    }
+
     private func readMenu() {
         do {
             let snapshot = try InputMenuAction.capture(pid: selectedPID)
