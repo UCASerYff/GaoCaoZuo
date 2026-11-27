@@ -14,6 +14,7 @@ from gaocaozuo.desktop_win import WindowIdentity, _identity, physical_coordinate
 from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_text
 from gaocaozuo.native_win import bind, is_input_desktop, user
+from gaocaozuo.surface_win import DARK, TkSurface, hwnd_for, pointer_work_area, set_window_chrome, surface_colors
 
 MAX_PIXELS = 48_000_000
 
@@ -73,46 +74,85 @@ def choose_region(single_point=False) -> tuple[int, int, int, int]:
         selected = []
         start = []
         try:
+            window.withdraw()
             window.overrideredirect(True)
-            window.attributes("-topmost", True, "-alpha", 0.28)
+            window.attributes("-topmost", True, "-alpha", 0.32)
             window.geometry(f"{right-left}x{bottom-top}+0+0")
-            canvas = tk.Canvas(window, bg="#101018", cursor="crosshair", highlightthickness=0)
+            canvas = tk.Canvas(window, bg="#111a26", cursor="crosshair", highlightthickness=0)
             canvas.pack(fill="both", expand=True)
+            style = TkSurface(window, DARK)
+            px = style.px
+            mark = canvas.create_rectangle(0, 0, 0, 0, outline="#f1f6ff", width=px(2), fill="#74acf0", state="hidden")
+            outline = canvas.create_rectangle(0, 0, 0, 0, outline="#a3caff", width=px(2), state="hidden")
             instruction = native_text("点击要取色的像素，Esc 取消" if single_point else "拖动选择截图区域，Esc 取消")
-            canvas.create_text(30, 25, text=instruction, anchor="nw", fill="white", font=("Microsoft YaHei UI", 16))
-            mark = canvas.create_rectangle(0, 0, 0, 0, outline="#7dbdff", width=4, fill="#85bbf4")
+            tip = tk.Toplevel(window, background=DARK.border)
+            tip.withdraw()
+            tip.overrideredirect(True)
+            tip.attributes("-topmost", True)
+            monitor = pointer_work_area()
+            tip_left, tip_top = (monitor.left, monitor.top) if monitor else (left, top)
+            tip_width = (monitor.right - monitor.left) if monitor else right - left
+            move = user("SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)
+            tip_frame = hwnd_for(tip)
+            read_style = user("GetWindowLongPtrW", c.c_ssize_t, w.HWND, c.c_int)
+            write_style = user("SetWindowLongPtrW", c.c_ssize_t, w.HWND, c.c_int, c.c_ssize_t)
+            write_style(tip_frame, -20, read_style(tip_frame, -20) | 0x08000080)  # WS_EX_NOACTIVATE | TOOLWINDOW
+            move(tip_frame, w.HWND(-1), tip_left, tip_top, 0, 0, 0x0011)  # SWP_NOACTIVATE | NOSIZE
+            tip_style = TkSurface(tip, DARK)
+            tp = tip_style.px
+            hint = tk.Frame(tip, background=DARK.surface, padx=tp(14), pady=tp(9))
+            hint.pack(fill="both", expand=True, padx=1, pady=1)
+            tk.Label(hint, text=instruction, justify="left", anchor="w", background=DARK.surface, foreground=DARK.ink,
+                     font=tip_style.font(15, "bold"), wraplength=max(1, min(tp(460), tip_width-tp(64)))).pack(side="left")
+            measure = tk.Label(hint, background=DARK.surface, foreground=DARK.accent, anchor="w", font=tip_style.font(14, "bold"))
+            if not single_point:
+                measure.pack(side="left", padx=(tp(14), 0))
+
+            def pointer(event):
+                return event.x_root - left, event.y_root - top
 
             def begin(event):
-                start[:] = [event.x, event.y]
+                start[:] = pointer(event)
 
             def update(event):
-                if start:
-                    canvas.coords(mark, *start, event.x, event.y)
+                if not start or single_point:
+                    return
+                x, y = pointer(event)
+                x0, x1 = sorted((start[0], x))
+                y0, y1 = sorted((start[1], y))
+                canvas.coords(mark, x0, y0, x1, y1)
+                canvas.coords(outline, x0 - px(2), y0 - px(2), x1 + px(2), y1 + px(2))
+                canvas.itemconfigure(mark, state="normal")
+                canvas.itemconfigure(outline, state="normal")
+                measure.configure(text=f"{x1 - x0} × {y1 - y0} px")
 
             def finish(event):
                 if not start:
                     return
+                x, y = pointer(event)
                 if single_point:
-                    x, y = left + event.x, top + event.y
+                    x, y = left + x, top + y
                     selected.append((x, y, x + 1, y + 1))
                     window.quit()
                     return
-                x0, x1 = sorted((start[0], event.x))
-                y0, y1 = sorted((start[1], event.y))
+                x0, x1 = sorted((start[0], x))
+                y0, y1 = sorted((start[1], y))
                 if x1 - x0 >= 4 and y1 - y0 >= 4:
                     selected.append((left + x0, top + y0, left + x1, top + y1))
                     window.quit()
 
-            canvas.bind("<Button-1>", begin)
-            canvas.bind("<B1-Motion>", update)
-            canvas.bind("<ButtonRelease-1>", finish)
-            window.bind("<Escape>", lambda _event: window.quit())
+            for surface in (window, tip):
+                surface.bind("<Button-1>", begin)
+                surface.bind("<B1-Motion>", update)
+                surface.bind("<ButtonRelease-1>", finish)
+                surface.bind("<Escape>", lambda _event: window.quit())
             window.after(90_000, window.quit)
             window.update_idletasks()
-            frame = user("GetParent", w.HWND, w.HWND)(window.winfo_id()) or window.winfo_id()
-            user("SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)(
-                frame, w.HWND(-1), left, top, right - left, bottom - top, 0x0040
-            )
+            frame = hwnd_for(window)
+            window.deiconify()
+            move(frame, w.HWND(-1), left, top, right - left, bottom - top, 0x0040)
+            tip.deiconify()
+            move(tip_frame, w.HWND(-1), tip_left + tp(18), tip_top + tp(18), 0, 0, 0x0051)
             window.focus_force()
             window.mainloop()
         finally:
@@ -264,40 +304,99 @@ def scroll_down(bounds, identity: WindowIdentity, frame, anchor: ScrollAnchor) -
         raise AppError("目标窗口未确认处理滚动请求。请检查当前画面后手动续拍。", "scrollUnavailable")
 
 
-def _pick_sources(title: str, message: str, labels: list[str], multi=False) -> tuple[int, ...]:
+def _source_picker(root, title, message, labels, multi, dpi=None):
     import tkinter as tk
     from tkinter import ttk
 
-    root = tk.Tk()
+    colors = surface_colors()
+    style = TkSurface(root, colors, dpi)
+    px = style.px
     result = []
-    try:
-        root.title(native_text(title))
-        root.attributes("-topmost", True)
-        root.geometry("560x400")
-        ttk.Label(root, text=native_text(message), wraplength=525).pack(anchor="w", padx=15, pady=12)
-        options = tk.Listbox(root, exportselection=False, activestyle="dotbox", selectmode="extended" if multi else "browse")
-        options.pack(fill="both", expand=True, padx=15)
-        for label in labels:
-            options.insert("end", label)
+    title = native_text(title)
+    root.title("搞操作 · " + title)
+    set_window_chrome(root, colors)
+    root.configure(background=colors.background)
+    width = min(px(528), round(root.winfo_screenwidth() * .86))
+    height = min(px(385), round(root.winfo_screenheight() * .82))
+    root.geometry(f"{width}x{height}")
+    root.minsize(min(px(340), width), min(px(280), height))
+    frame = tk.Frame(root, background=colors.background, padx=px(20), pady=px(18))
+    frame.pack(fill="both", expand=True)
+    tk.Label(frame, text=title, font=style.font(21, "bold"), background=colors.background,
+             foreground=colors.ink).pack(anchor="w")
+    detail = tk.Label(frame, text=native_text(message), font=style.font(14), justify="left",
+                      background=colors.background, foreground=colors.subtle, wraplength=width-px(46))
+    detail.pack(anchor="w", pady=(px(4), px(13)))
+    frame.bind("<Configure>", lambda event: detail.configure(wraplength=max(1, event.width-px(46))))
+    list_frame = tk.Frame(frame, background=colors.background)
+    list_frame.pack(fill="both", expand=True)
+    list_frame.columnconfigure(0, weight=1)
+    list_frame.rowconfigure(0, weight=1)
+    options = tk.Listbox(list_frame, exportselection=False, activestyle="dotbox", selectmode="extended" if multi else "browse",
+                         background=colors.surface, foreground=colors.ink, selectbackground=colors.selected,
+                         selectforeground=colors.selected_ink, font=style.font(15), relief="flat", borderwidth=0,
+                         highlightthickness=px(2), highlightbackground=colors.border, highlightcolor=colors.accent)
+    options.grid(row=0, column=0, sticky="nsew")
+    vertical = ttk.Scrollbar(list_frame, orient="vertical", command=options.yview)
+    horizontal = ttk.Scrollbar(list_frame, orient="horizontal", command=options.xview)
+    vertical.grid(row=0, column=1, sticky="ns", padx=(px(4), 0))
+    horizontal.grid(row=1, column=0, sticky="ew", pady=(px(4), 0))
 
-        def select(_event=None):
-            indices = options.curselection()
-            if indices:
-                result.extend(indices)
-                root.quit()
+    def update_scrollbar(start, end):
+        horizontal.set(start, end)
+        if float(start) == 0 and float(end) == 1:
+            horizontal.grid_remove()
+        else:
+            horizontal.grid()
 
-        if not multi:
-            options.bind("<Double-Button-1>", select)
-            options.selection_set(0)
-        options.bind("<Return>", select)
-        ttk.Button(root, text=native_text("选择"), command=select).pack(pady=12)
-        root.bind("<Escape>", lambda _event: root.quit())
-        root.protocol("WM_DELETE_WINDOW", root.quit)
-        root.after(90_000, root.quit)
-        options.focus_set()
-        root.mainloop()
-    finally:
-        root.destroy()
+    options.configure(yscrollcommand=vertical.set, xscrollcommand=update_scrollbar)
+    for label in labels:
+        options.insert("end", label)
+
+    def select(_event=None):
+        indices = options.curselection()
+        if indices:
+            result.extend(indices)
+            root.quit()
+
+    if not multi:
+        options.bind("<Double-Button-1>", select)
+        options.selection_set(0)
+    options.bind("<Return>", select)
+    row = tk.Frame(frame, background=colors.background)
+    row.pack(side="bottom", fill="x", pady=(px(15), 0), before=list_frame)
+    cancel = ttk.Button(row, text=native_text("取消"), command=root.quit, style="Secondary.TButton")
+    confirm = ttk.Button(row, text=native_text("选择"), command=select, style="Action.TButton")
+    confirm.pack(side="right")
+    cancel.pack(side="right", padx=(0, px(8)))
+    for button in (cancel, confirm):
+        button.bind("<Return>", lambda event: event.widget.invoke())
+
+    def selection_changed(_event=None):
+        confirm.state(["!disabled"] if options.curselection() else ["disabled"])
+
+    options.bind("<<ListboxSelect>>", selection_changed)
+    selection_changed()
+    root.bind("<Escape>", lambda _event: root.quit())
+    root.protocol("WM_DELETE_WINDOW", root.quit)
+    options.focus_set()
+    return result
+
+
+def _pick_sources(title: str, message: str, labels: list[str], multi=False) -> tuple[int, ...]:
+    import tkinter as tk
+
+    with physical_coordinates():
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+            result = _source_picker(root, title, message, labels, multi)
+            root.after(90_000, root.quit)
+            root.deiconify()
+            root.mainloop()
+        finally:
+            root.destroy()
     if not result:
         raise AppError("已取消选择截图来源。", "cancelled")
     _flush_desktop()
@@ -442,6 +541,67 @@ def _capture_windows(handles: list[int]) -> Image.Image:
     return output
 
 
+def _pin_surface(root, image, title, close_label, colors, dpi=None):
+    import tkinter as tk
+    from tkinter import ttk
+
+    style = TkSurface(root, colors, dpi)
+    px = style.px
+    root.title(title)
+    set_window_chrome(root, colors)
+    root.configure(background=colors.background)
+    toolbar = tk.Frame(root, background=colors.background, padx=px(10), pady=px(5))
+    toolbar.pack(fill="x")
+    details = tk.Label(toolbar, text=f"{image.width} × {image.height} px", background=colors.background, foreground=colors.subtle,
+                       font=style.font(13, "bold"))
+    details.pack(side="left", padx=(px(4), px(10)))
+    close = ttk.Button(toolbar, text=close_label, command=root.quit, style="Secondary.TButton")
+    close.pack(side="right")
+    close.bind("<Return>", lambda _event: close.invoke())
+    root.bind("<Escape>", lambda _event: root.quit())
+    root.protocol("WM_DELETE_WINDOW", root.quit)
+    stage = tk.Frame(root, background=colors.surface, highlightthickness=1, highlightbackground=colors.border)
+    stage.pack(fill="both", expand=True, padx=px(8), pady=(0, px(8)))
+    picture = tk.Label(stage, background=colors.surface, borderwidth=0, padx=0, pady=0)
+    picture.place(relx=.5, rely=.5, anchor="center")
+    root.update_idletasks()
+    width_limit = max(1, round(root.winfo_screenwidth() * .75) - px(18))
+    height_limit = max(1, round(root.winfo_screenheight() * .70) - toolbar.winfo_reqheight() - px(10))
+    scale = min(1, width_limit / image.width, height_limit / image.height)
+    first_size = max(1, round(image.width * scale)), max(1, round(image.height * scale))
+    minimum = toolbar.winfo_reqwidth() + px(16)
+    width = max(minimum, first_size[0] + px(18))
+    height = max(px(108), first_size[1] + toolbar.winfo_reqheight() + px(10))
+    root.geometry(f"{width}x{height}")
+    root.minsize(minimum, px(108))
+    size, waiting = None, None
+
+    def paint(width, height):
+        nonlocal size, waiting
+        waiting = None
+        fit = min(1, width / image.width, height / image.height)
+        next_size = max(1, round(image.width * fit)), max(1, round(image.height * fit))
+        if next_size == size:
+            return
+        if next_size == image.size:
+            photo = ImageTk.PhotoImage(image, master=root)
+        else:
+            with image.resize(next_size, Image.Resampling.LANCZOS, reducing_gap=2) as preview:
+                photo = ImageTk.PhotoImage(preview, master=root)
+        picture.configure(image=photo)
+        picture.image = photo
+        size = next_size
+
+    def resize(event):
+        nonlocal waiting
+        if waiting is not None:
+            root.after_cancel(waiting)
+        waiting = root.after(45, paint, max(1, event.width-2), max(1, event.height-2))
+
+    paint(*first_size)
+    stage.bind("<Configure>", resize)
+
+
 def show_pin(image: Image.Image) -> None:
     import tkinter as tk
 
@@ -449,23 +609,23 @@ def show_pin(image: Image.Image) -> None:
     result = []
     ready = threading.Event()
     title = "搞操作 · " + native_text("贴图")
+    close_label = native_text("关闭")
+    colors = surface_colors()
 
     def display():
         try:
             with physical_coordinates():
                 root = tk.Tk()
-                root.title(title)
-                root.attributes("-topmost", True)
-                preview = image.copy()
-                preview.thumbnail((int(root.winfo_screenwidth() * 0.75), int(root.winfo_screenheight() * 0.70)))
-                photo = ImageTk.PhotoImage(preview, master=root)
-                tk.Label(root, image=photo, borderwidth=0).pack()
-                root.bind("<Escape>", lambda _event: root.destroy())
-                root.update_idletasks()
-                result.append(True)
-                ready.set()
-                root.mainloop()
-                del photo
+                root.withdraw()
+                try:
+                    root.attributes("-topmost", True)
+                    _pin_surface(root, image, title, close_label, colors)
+                    root.deiconify()
+                    result.append(True)
+                    ready.set()
+                    root.mainloop()
+                finally:
+                    root.destroy()
         except (RuntimeError, tk.TclError):
             ready.set()
 

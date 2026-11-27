@@ -1,7 +1,8 @@
 "use strict";
 
 const shotTabs = [
-  ["capture", "截图"], ["annotation", "标注"], ["ocr", "OCR"], ["record", "录屏与录音"], ["translation", "翻译"], ["history", "历史与交接"],
+  ["capture", "截图", "scan"], ["annotation", "标注", "image"], ["ocr", "OCR", "file"],
+  ["record", "录屏与录音", "play"], ["translation", "翻译", "clip"], ["history", "历史与交接", "history"],
 ];
 let shotTab = "capture";
 let shotImage = null;
@@ -9,6 +10,8 @@ let shotDocument = null;
 let shotLong = null;
 let shotLongOverlap = "";
 let shotHistory = null;
+let shotHistoryRequest = null;
+let shotHistoryError = "";
 let providerJobs = [];
 let translationDraft = "";
 let captureDelay = 0;
@@ -20,30 +23,41 @@ function changeShotTab(id, repaint = true) {
   shotTab = id;
   if (section !== "screenshots") go("screenshots");
   else if (repaint) render();
-  if (id === "history" && !shotHistory) getShotHistory().catch(report);
-  if (id === "ocr" && ocrLanguages === null) {
-    screenshotRequest("ocr/languages", {}).then(result => {
-      ocrLanguages = result.languages || [];
-      if (!shotBusy && section === "screenshots" && shotTab === "ocr" && !dialog?.open) render();
-    }).catch(() => { ocrLanguages = []; });
-  }
+}
+
+function refreshShotView(tab) {
+  if (section === "screenshots" && shotTab === tab && !dialog?.open) repaintShotControl(document.activeElement);
+}
+
+function shotPanel(classes, title, ...content) {
+  return box("panel shot-panel " + classes, title && el("h2", title), ...content);
+}
+function shotDetails(title, ...content) {
+  const details = el("details", "", "shot-details");
+  details.append(el("summary", title), box("stack shot-details-content", ...content));
+  return details;
 }
 function screenshotPage() {
-  const nav = box("segmented");
+  const nav = box("shot-tabs");
   nav.setAttribute("role", "tablist");
-  nav.setAttribute("aria-label", "截图工作台");
-  const current = shotTabs.find(([id]) => id === shotTab);
-  for (const [id, title] of shotTabs) {
-    const control = button(title, () => changeShotTab(id));
+  nav.setAttribute("aria-label", tr("截图工作台"));
+  for (const [index, [id, title, glyph]] of shotTabs.entries()) {
+    const control = button(title, () => {
+      changeShotTab(id);
+      document.getElementById("shot-tab-" + id)?.focus();
+    }, {glyph});
     control.id = "shot-tab-" + id;
     control.setAttribute("role", "tab");
     control.setAttribute("aria-selected", String(id === shotTab));
     control.setAttribute("aria-controls", "shot-workspace");
     control.tabIndex = id === shotTab ? 0 : -1;
     control.addEventListener("keydown", event => {
-      const index = shotTabs.findIndex(([value]) => value === id);
-      const target = {ArrowLeft: (index + shotTabs.length - 1) % shotTabs.length, ArrowRight: (index + 1) % shotTabs.length,
-        Home: 0, End: shotTabs.length - 1}[event.key];
+      const count = shotTabs.length;
+      const columns = [...nav.children].filter(tab => tab.offsetTop === nav.firstElementChild.offsetTop).length;
+      const target = {ArrowLeft: (index + count - 1) % count, ArrowRight: (index + 1) % count,
+        ArrowUp: columns < count ? (index + count - columns) % count : undefined,
+        ArrowDown: columns < count ? (index + columns) % count : undefined,
+        Home: 0, End: count - 1}[event.key];
       if (target === undefined) return;
       event.preventDefault();
       const next = shotTabs[target][0];
@@ -56,8 +70,8 @@ function screenshotPage() {
   const body = views[shotTab]();
   body.id = "shot-workspace";
   body.setAttribute("role", "tabpanel");
-  body.setAttribute("aria-labelledby", "shot-tab-" + current[0]);
-  return box("stack", nav, body);
+  body.setAttribute("aria-labelledby", "shot-tab-" + shotTab);
+  return box("shot-workbench", nav, body);
 }
 function screenshotAction(id) {
   const destination = {
@@ -89,37 +103,46 @@ function setImage(image) {
   annot.redo = [];
   annot.rendered = null;
   shotHistory = null;
+  shotHistoryError = "";
   shotTab = "annotation";
 }
 function capturePage() {
   const delay = input(captureDelay, { type: "range", min: 0, max: 60 });
-  delay.setAttribute("aria-label", "延时（秒）");
-  const delayLabel = el("span", captureDelay + " 秒");
-  delay.oninput = () => { captureDelay = +delay.value; delayLabel.textContent = captureDelay + " 秒"; };
-  const capture = [
-    ["区域截图", "region", "scan"], ["窗口截图", "window", "window"], ["屏幕截图", "display", "monitor"],
-  ];
-  const captureActions = capture.map(([title, mode, glyph]) => button(title, () => captureImage(mode), { cls: "primary", glyph, disabled: shotBusy }));
-  const longActions = shotLong?.active ? [
-    button("自动滚动拼接", () => longCapture("auto"), {cls:"primary", disabled: shotBusy}),
-    button("手动添加画面", () => longCapture("append"), {disabled: shotBusy}),
-    button("生成长截图", () => longCapture("finish"), {disabled: shotBusy || shotLong.frames < 2}),
-    button("取消", () => longCapture("cancel"), {disabled: shotBusy}),
-  ] : [button("长截图", () => longCapture("start"), {disabled: shotBusy})];
+  delay.setAttribute("aria-label", tr("延时（秒）"));
+  const delayText = () => mediaText("{seconds} 秒", {seconds: captureDelay});
+  const delayLabel = el("output", delayText(), "shot-delay-value");
+  delay.setAttribute("aria-valuetext", delayText());
+  delay.oninput = () => {
+    captureDelay = Number(delay.value);
+    delayLabel.textContent = delayText();
+    delay.setAttribute("aria-valuetext", delayText());
+  };
+  const capture = [["区域截图", "region", "scan"], ["窗口截图", "window", "window"],
+    ["屏幕截图", "display", "monitor"], ["多窗口合成", "windows", "desktops"]];
+  const captureActions = capture.map(([title, mode, glyph]) => button(title, () => captureImage(mode), {
+    cls: "shot-mode" + (mode === "region" ? " shot-mode-primary" : ""), glyph, disabled: shotBusy,
+  }));
   const manualOverlap = input(shotLongOverlap, {type:"number", min:0, step:1, placeholder:tr("自动检测")});
   manualOverlap.oninput = () => { shotLongOverlap = manualOverlap.value; };
-  const info = "捕获前通过当前按钮选择要采集的区域、窗口或屏幕。受保护区域和安全桌面由 Windows 控制。";
-  return box("shot-home", el("h2", "捕获所选内容"), note("截图后可以保存、复制或进入标注。"),
-    box("row capture-actions", ...captureActions),
-    box("row", button("多窗口合成", () => captureImage("windows"), {disabled: shotBusy}), ...longActions,
-      button("取色", sampleColor, {disabled: shotBusy}), button("打开图像…", chooseImage, {disabled: shotBusy}), button("贴图与交接", () => changeShotTab("history"))),
-    shotLong?.active && panel("长截图",
-      note("开始自动滚动后，3 秒内切回原窗口，把鼠标停在选区内。移动鼠标或按 Esc 可停止。"),
-      note("手动添加时，在 3 秒内切回并向下滚动，保留一段重叠内容。"),
-      field("手动续拍重叠像素", manualOverlap),
-      shotLong.automatic && note(shotLong.automatic.reason),
-      note(mediaText("已添加 {count} 帧 · {width} × {height} 像素", {count:shotLong.frames, width:shotLong.width, height:shotLong.height}))),
-    panel("捕获选项", box("row", el("span", "延时"), delay, delayLabel)), panel("权限与范围", note(info)));
+  return box("shot-view", box("shot-split",
+    shotPanel("shot-capture-modes", "捕获所选内容", box("shot-mode-grid", ...captureActions),
+      box("row shot-capture-tools",
+        !shotLong?.active && button("长截图", () => longCapture("start"), {glyph:"file", disabled: shotBusy}),
+        button("取色", sampleColor, {disabled: shotBusy}),
+        button("打开图像…", chooseImage, {glyph:"folder", disabled: shotBusy}))),
+    shotPanel("shot-capture-settings", "捕获选项", box("between", el("span", "延时"), delayLabel), delay,
+      shotDetails("权限与范围", note("捕获前通过当前按钮选择要采集的区域、窗口或屏幕。受保护区域和安全桌面由 Windows 控制。")))),
+  shotLong?.active && shotPanel("shot-long", "长截图",
+    el("strong", mediaText("已添加 {count} 帧 · {width} × {height} 像素", {
+      count:shotLong.frames, width:shotLong.width, height:shotLong.height,
+    }), "shot-metric"),
+    box("row", button("自动滚动拼接", () => longCapture("auto"), {cls:"primary", disabled: shotBusy}),
+      button("手动添加画面", () => longCapture("append"), {disabled: shotBusy}),
+      button("生成长截图", () => longCapture("finish"), {disabled: shotBusy || shotLong.frames < 2}),
+      button("取消", () => longCapture("cancel"), {disabled: shotBusy})),
+    note("开始自动滚动后，3 秒内切回原窗口，把鼠标停在选区内。移动鼠标或按 Esc 可停止。"),
+    note("手动添加时，在 3 秒内切回并向下滚动，保留一段重叠内容。"),
+    field("手动续拍重叠像素", manualOverlap), shotLong.automatic && note(shotLong.automatic.reason)));
 }
 async function sampleColor() {
   return screenshotWork("等待选择颜色…", async () => {
@@ -195,24 +218,25 @@ function showPreview(result) {
   }).catch(report);
 }
 function annotationPage() {
-  if (!shotImage) return panel("", empty("image", "没有待标注图像", "截图或打开已有图片后，即可编辑。"), box("row",
-    button("区域截图", () => captureImage("region"), {cls:"primary", glyph:"scan", disabled: shotBusy}), button("打开图像…", chooseImage, {disabled: shotBusy})));
+  if (!shotImage) return shotPanel("shot-annotation-empty", "", empty("image", "没有待标注图像"), box("row",
+    button("区域截图", () => captureImage("region"), {cls:"primary", glyph:"scan", disabled: shotBusy}),
+    button("打开图像…", chooseImage, {glyph:"folder", disabled: shotBusy})));
   const tools = [["rectangle", "矩形"], ["ellipse", "椭圆"], ["arrow", "箭头"], ["line", "直线"], ["pen", "画笔"],
     ["text", "文字"], ["number", "编号"], ["mosaic", "马赛克"], ["blur", "模糊"], ["redact", "遮盖"], ["highlight", "高亮"], ["crop", "裁剪"]];
   const tool = select(tools, annot.tool);
-  tool.setAttribute("aria-label", "标注工具");
+  tool.setAttribute("aria-label", tr("标注工具"));
   tool.onchange = () => { annot.tool = tool.value; };
   const color = input(annot.color, {type:"color"});
-  color.setAttribute("aria-label", "标注颜色");
+  color.setAttribute("aria-label", tr("标注颜色"));
   color.oninput = () => { annot.color = color.value; };
   const width = input(annot.width, {type:"range", min:1, max:24});
-  width.setAttribute("aria-label", "线宽");
+  width.setAttribute("aria-label", tr("线宽"));
   width.oninput = () => { annot.width = +width.value; };
-  const content = input(annot.text, {placeholder: "文字 / 编号"});
+  const content = input(annot.text);
   content.oninput = () => { annot.text = content.value; };
   const canvas = el("canvas");
   const context = canvas.getContext("2d");
-  canvas.setAttribute("aria-label", "标注画布");
+  canvas.setAttribute("aria-label", tr("标注画布"));
   canvas.tabIndex = 0;
   let image = null;
   let draft = null;
@@ -297,24 +321,29 @@ function annotationPage() {
     const result = await annotationResult();
     return handler(result);
   };
-  const toolbar = box("row", tool, color, width, content, undo, redo, button("向右旋转", () => transformImage({type: "rotate", degrees: 90})),
-    button("最终预览", withOutput(showPreview)));
   const exportImage = withOutput(result => saveImageDialog(result, false));
-  const actions = box("row",
-    button("复制", withOutput(async result => {
-      await screenshotRequest("copy", {id: result.id});
-      say("图像已复制");
-    })), button("贴图", withOutput(async result => {
+  const copyImage = withOutput(async result => {
+    await screenshotRequest("copy", {id: result.id});
+    say("图像已复制");
+  });
+  const toolbar = box("shot-annotation-tools",
+    box("shot-field-grid", field("标注工具", tool), field("标注颜色", color), field("线宽", width), field("文字 / 编号", content)),
+    box("between", box("row", undo, redo, button("向右旋转", () => transformImage({type: "rotate", degrees: 90})),
+      button("最终预览", withOutput(showPreview))),
+    box("row", button("复制", copyImage, {glyph:"clip"}), button("另存图像…", exportImage, {cls:"primary"}))));
+  const actions = box("row", button("保存编辑稿…", withOutput(result => saveImageDialog(result, true))),
+    button("贴图", withOutput(async result => {
       const pinned = await screenshotRequest("pin", {id: result.id, persistent: false});
       say(pinned.message || "贴图已打开");
-    })), button("OCR", withOutput(result => runOCR({id: result.id}))),
-    button("另存图像…", exportImage, {cls:"primary"}), button("保存编辑稿…", withOutput(result => saveImageDialog(result, true))),
+    }), {glyph:"pin"}), button("OCR", withOutput(result => runOCR({id: result.id}))),
     button("保存为持久贴图", withOutput(async result => {
       const pinned = await screenshotRequest("pin", {id: result.id, persistent: true});
       shotHistory = null;
+      shotHistoryError = "";
       say(pinned.message || "持久贴图已保存");
     })));
-  return panel("", toolbar, box("canvas-wrap", canvas), actions, el("small", shotImage.width + " × " + shotImage.height + " 像素"));
+  return shotPanel("shot-editor", "", toolbar, box("canvas-wrap", canvas),
+    box("shot-editor-footer", actions, el("small", shotImage.width + " × " + shotImage.height + " 像素", "shot-metric")));
 }
 function drawAnnotation(ctx, command) {
   const {type, x1, y1, x2, y2, color, width, text, points} = command;
@@ -399,6 +428,7 @@ async function annotationResult() {
     }));
     annot.rendered = await screenshotRequest("annotate", {id: shotImage.id, commands});
     shotHistory = null;
+    shotHistoryError = "";
   }
   return annot.rendered;
 }
@@ -420,17 +450,41 @@ function saveImageDialog(result, editable) {
 
 let ocrLanguage = "";
 let ocrLanguages = null;
+let ocrLanguageLoading = false;
+let ocrLanguageError = "";
+async function loadOCRLanguages() {
+  if (ocrLanguageLoading) return;
+  ocrLanguageLoading = true;
+  try {
+    const result = await screenshotRequest("ocr/languages", {});
+    ocrLanguages = result.languages || [];
+    ocrLanguageError = "";
+  } catch (error) {
+    ocrLanguages = [];
+    ocrLanguageError = error.message;
+  } finally {
+    ocrLanguageLoading = false;
+    if (!shotBusy) refreshShotView("ocr");
+  }
+}
 function ocrPage() {
+  if (ocrLanguages === null && !ocrLanguageLoading) void loadOCRLanguages();
   const language = select([["", "跟随 Windows 识别语言"], ...(ocrLanguages || [])], ocrLanguage);
   language.onchange = () => { ocrLanguage = language.value; };
-  const status = shotDocument ? ocrResult(shotDocument) :
-    empty("scan", "选择文件开始识别", "OCR 在本机运行。请核对复杂表格、手写内容和阅读顺序。");
-  return panel("本机 OCR", box("row", field("识别语言", language),
-    button("选择图像 / PDF 批次…", chooseOCRFiles, {cls:"primary", disabled: shotBusy}),
-    button("主动读取剪贴板图片", () => runOCR({clipboard: true}), {disabled: shotBusy}),
-    button("从当前图像识别", async () => runOCR({id: (await annotationResult()).id}), {disabled: !shotImage || shotBusy}),
-    button("从区域截图识别", () => captureImage("region", true), {disabled: shotBusy})),
-    status);
+  language.disabled = ocrLanguageLoading;
+  language.setAttribute("aria-busy", String(ocrLanguageLoading));
+  const languageStatus = ocrLanguageError && el("p", trError(ocrLanguageError), "error");
+  if (languageStatus) languageStatus.setAttribute("role", "alert");
+  return box("shot-view", box("shot-split",
+    shotPanel("shot-ocr-input", "本机 OCR",
+      box("row", button("选择图像 / PDF 批次…", chooseOCRFiles, {cls:"primary", glyph:"folder", disabled: shotBusy}),
+        button("从区域截图识别", () => captureImage("region", true), {glyph:"scan", disabled: shotBusy})),
+      box("row", button("主动读取剪贴板图片", () => runOCR({clipboard: true}), {glyph:"clip", disabled: shotBusy}),
+        button("从当前图像识别", async () => runOCR({id: (await annotationResult()).id}), {disabled: !shotImage || shotBusy}))),
+    shotPanel("shot-ocr-options", "", field("识别语言", language), languageStatus,
+      ocrLanguageError && button("刷新", loadOCRLanguages))),
+  shotDocument ? ocrResult(shotDocument) : shotPanel("shot-ocr-empty", "",
+    empty("scan", "选择文件开始识别", "OCR 在本机运行。请核对复杂表格、手写内容和阅读顺序。")));
 }
 async function chooseOCRFiles() {
   const paths = files.length && files.every(path => /\.(png|jpe?g|tiff?|webp|bmp|gif|heic|heif|pdf)$/i.test(path)) ? files : await pick("files", true);
@@ -464,10 +518,12 @@ function ocrResult(documentResult) {
       const paths = rememberOutputs(saved);
       say(paths.length ? "已导出 " + paths.map(basename).join("、") : "导出完成");
     }), {disabled: !successful.length}));
-  return box("stack", el("p", "成功 " + successful.length + " / " + pages.length + " 页"), ...failed, preview,
+  return shotPanel("shot-ocr-result", "", el("strong", "成功 " + successful.length + " / " + pages.length + " 页", "shot-metric"),
+    failed.length && box("stack shot-ocr-errors", ...failed), preview,
     box("row", button("复制文字", async () => { await perform("clipboard.copyplain", {text: bodyText}); say("已复制识别文字"); }, {disabled: !bodyText}),
       button("逐行校正…", () => correctOCR(documentResult), {disabled: !successful.some(page => page.lines?.length)}),
-      ...exports, button("翻译结果", () => {setTranslationDraft(bodyText); changeShotTab("translation");}, {disabled: !bodyText || !!localTranslation.active})));
+      button("翻译结果", () => {setTranslationDraft(bodyText); changeShotTab("translation");}, {disabled: !bodyText || !!localTranslation.active})),
+    box("row shot-output-actions", ...exports));
 }
 function correctOCR(result) {
   const content = box("stack dialog-result");
@@ -553,11 +609,15 @@ function translationPage() {
   const notice = capability?.available
     ? "原文和译文只在本机处理。缺少语言包时，可查看大小并主动确认下载。"
     : capability?.reason || "正在检查本机翻译组件…";
-  return panel("本机翻译", note(notice), box("columns", field("源语言", source), field("目标语言", target)), field("原文", draft),
-    box("row", button("使用剪贴板文字", inputTranslationClipboard, {disabled: active}),
-      button("截图识别文字", inputTranslationCapture, {disabled: active || shotBusy}), run,
-      active && button("取消", cancelLocalTranslation)), message,
-    result?.detected && note(tr("识别的原文语言") + " · " + translationLanguage(result.source)), field("译文", output), copy);
+  message.setAttribute("role", localTranslation.error ? "alert" : "status");
+  return shotPanel("shot-translation", "本机翻译", note(notice),
+    box("shot-translation-grid",
+      box("stack", field("源语言", source), field("原文", draft), box("row",
+        button("使用剪贴板文字", inputTranslationClipboard, {disabled: active}),
+        button("截图识别文字", inputTranslationCapture, {disabled: active || shotBusy}))),
+      box("stack", field("目标语言", target), field("译文", output), box("row", copy,
+        result?.detected && note(tr("识别的原文语言") + " · " + translationLanguage(result.source))))),
+    box("row shot-output-actions", run, active && button("取消", cancelLocalTranslation), message));
 }
 async function inputTranslationClipboard() {
   if (localTranslation.active) throw new Error("请先完成或取消本机翻译任务。");
@@ -668,19 +728,31 @@ async function cancelLocalTranslation() {
   if (operation.id) await screenshotRequest("translate/cancel", {jobId:operation.id});
 }
 async function getShotHistory(enabled) {
-  const [history, jobs] = await Promise.all([
+  if (shotHistoryRequest) return shotHistoryRequest;
+  const request = Promise.all([
     screenshotRequest("history", enabled === undefined ? {} : {enabled}),
     api("/api/ocr-provider/jobs", {}),
   ]);
-  shotHistory = history;
-  providerJobs = jobs.jobs || [];
-  if (section === "screenshots" && shotTab === "history" && !dialog?.open) render();
+  shotHistoryRequest = request;
+  try {
+    const [history, jobs] = await request;
+    shotHistory = history;
+    providerJobs = jobs.jobs || [];
+    shotHistoryError = "";
+  } catch (error) {
+    shotHistoryError = error.message;
+    throw error;
+  } finally {
+    shotHistoryRequest = null;
+    refreshShotView("history");
+  }
 }
 function openIncomingOCR(job) {
   changeShotTab("history");
   reviewProviderJob(job);
 }
 function screenshotHistoryPage() {
+  if (!shotHistory && !shotHistoryRequest && !shotHistoryError) void getShotHistory().catch(() => {});
   const items = shotHistory?.items || [];
   const pins = shotHistory?.pins || [];
   const open = (name, pin) => screenshotWork("正在读取图像…", async () => {
@@ -688,13 +760,26 @@ function screenshotHistoryPage() {
     setImage(image);
     say("已打开 " + basename(name));
   });
-  const history = panel("", box("between", el("h2", "截图历史"), toggle("保存截图历史", shotHistory?.enabled, async enabled => {
-    await getShotHistory(enabled);
-    say(enabled ? "截图历史已启用" : "截图历史已关闭");
-  }), button("刷新", () => getShotHistory(), {glyph:"history"})),
+  const historyToggle = toggle("保存截图历史", shotHistory?.enabled, async enabled => {
+    const restoreFocus = document.activeElement === historyToggle.firstChild;
+    historyToggle.firstChild.disabled = true;
+    try {
+      await getShotHistory(enabled);
+      say(enabled ? "截图历史已启用" : "截图历史已关闭");
+    } finally {
+      if (restoreFocus) document.getElementById("shot-save-history")?.focus();
+    }
+  });
+  historyToggle.firstChild.id = "shot-save-history";
+  historyToggle.firstChild.disabled = !!shotHistoryRequest || !shotHistory;
+  const status = shotHistoryError ? el("p", trError(shotHistoryError), "error") :
+    shotHistoryRequest && el("p", "正在读取截图历史", "shot-loading muted");
+  if (status) status.setAttribute("role", shotHistoryError ? "alert" : "status");
+  const history = shotPanel("shot-history", "", box("between", el("h2", "截图历史"),
+    button("刷新", () => getShotHistory(), {glyph:"history", disabled: !!shotHistoryRequest})), historyToggle, status,
     items.length ? box("list", ...items.map(item => box("list-row", icon("image"), box("fill", el("strong", item.name || basename(item.path), "row-title"),
       item.width && el("small", item.width + " × " + item.height + " 像素")), button("打开", () => open(item.name || basename(item.path), false))))) :
-      empty("history", shotHistory ? "暂无截图历史" : "正在读取截图历史"));
+      shotHistory && !status && empty("history", "暂无截图历史"));
   const restore = async names => {
     const result = await perform("screenshot.pins.restore", {confirm: true, names});
     const opened = Array.isArray(result.opened) ? result.opened.length : result.opened;
@@ -703,13 +788,12 @@ function screenshotHistoryPage() {
     }
     say("已恢复 " + (opened || 0) + " 张贴图", Boolean(result.failures?.length));
   };
-  const pinPanel = panel("", box("between", el("h2", "持久贴图"), pins.length && button("恢复全部贴图", () => restore())),
+  const pinPanel = shotPanel("shot-pins", "", box("between", el("h2", "持久贴图"), pins.length && button("恢复全部贴图", () => restore())),
     pins.length ? box("list", ...pins.map(item => {
     const name = typeof item === "string" ? basename(item) : item.name || basename(item.path);
     return box("list-row", icon("pin"), el("span", name, "fill"), button("恢复贴图", () => restore([name])), button("打开图像", () => open(name, true)));
   })) : note("还没有保存持久贴图。"));
-  const handoff = providerPanel();
-  return box("stack", history, pinPanel, handoff);
+  return box("shot-split shot-history-split", providerPanel(), box("stack", history, pinPanel));
 }
 const providerLabels = {
   pending: "待复核", completed: "已完成", partial: "部分完成", failed: "失败", interrupted: "已中断", expired: "已过期",
@@ -721,7 +805,7 @@ function providerPanel() {
       el("small", (job.items || []).map(item => item.name).slice(0, 4).join("、"))),
     button(job.status === "pending" ? "复核并识别…" : "查看…", () => reviewProviderJob(job)),
     job.resultCount > 0 && button("导出结果…", () => exportProviderJob(job))));
-  return panel("", box("between", el("h2", "跨应用交接"), button("打开 OCR 交接包…", async () => {
+  return shotPanel("shot-provider", "", box("between", el("h2", "跨应用交接"), button("打开 OCR 交接包…", async () => {
     const [path] = await pick("directory", false);
     if (!path) return;
     const job = await api("/api/ocr-provider/review", {path});
@@ -730,9 +814,9 @@ function providerPanel() {
     else providerJobs[index] = job;
     render();
     reviewProviderJob(job);
-  }, {glyph:"folder"})),
+  }, {glyph:"folder", cls:"primary"})),
     note("打开 .gaoaction 文件夹后，复核来源与附件并确认本机识别。"),
-    rows.length ? box("list", ...rows) : empty("file", "暂无 OCR 交接"));
+    rows.length ? box("list", ...rows) : !shotHistoryRequest && empty("file", "暂无 OCR 交接"));
 }
 function reviewProviderJob(job) {
   const details = [
@@ -772,7 +856,7 @@ const recording = {
 const recordingLimit = 512 * 1024 * 1024;
 const mediaTools = {
   source: null, start: 0, end: 5, fps: 10, size: 640, crop: false,
-  x: 0, y: 0, width: 1, height: 1, saturation: 1, contrast: 1, brightness: 0, prepared: null, writing: false,
+  x: 0, y: 0, width: 1, height: 1, saturation: 1, contrast: 1, brightness: 0, prepared: null, writing: false, expanded: false,
 };
 
 function recordingVisible() { return section === "screenshots" && shotTab === "record"; }
@@ -795,12 +879,18 @@ function recordingSeconds() {
   return ((recording.elapsed + (recording.resumedAt === null ? 0 : performance.now() - recording.resumedAt)) / 1000).toFixed(1);
 }
 
+function repaintShotControl(control) {
+  const focusID = document.activeElement === control && control?.id;
+  render();
+  if (focusID) document.getElementById(focusID)?.focus({preventScroll: true});
+}
 function recordingPage() {
   const modes = select([["screen", "屏幕 / 窗口"], ["audio", "仅录音"]], recording.mode);
+  modes.id = "shot-recording-source";
   modes.onchange = () => {
     recording.mode = modes.value;
     if (recording.mode === "audio" && !recording.systemAudio) recording.microphone = true;
-    render();
+    repaintShotControl(modes);
   };
   const fps = select([["15", "15 fps"], ["30", "30 fps"], ["60", "60 fps"]], recording.fps);
   fps.onchange = () => { recording.fps = fps.value; };
@@ -812,19 +902,27 @@ function recordingPage() {
   const active = ["starting", "recording", "paused", "stopping"].includes(recording.status);
   const exporting = Boolean(recording.exportTask) || mediaTools.writing;
   modes.disabled = fps.disabled = active || exporting;
-  const audio = toggle("共享音频", recording.systemAudio, value => { recording.systemAudio = value; render(); });
-  const mic = toggle("麦克风", recording.microphone, value => { recording.microphone = value; render(); });
+  const audio = toggle("共享音频", recording.systemAudio, value => {
+    recording.systemAudio = value;
+    repaintShotControl(audio.firstChild);
+  });
+  const mic = toggle("麦克风", recording.microphone, value => {
+    recording.microphone = value;
+    repaintShotControl(mic.firstChild);
+  });
+  audio.firstChild.id = "shot-recording-audio";
+  mic.firstChild.id = "shot-recording-microphone";
   audio.firstChild.disabled = mic.firstChild.disabled = active || exporting;
   const status = {idle: "未录制", starting: "等待系统授权", recording: "正在录制", paused: "已暂停", stopping: "正在生成文件", ready: "录制待保存", saved: "录制已保存", error: "录制已停止"};
   const result = recording.result;
   const target = result?.format?.toUpperCase();
-  const controls = box("row",
+  const controls = box("row shot-recording-controls",
     button("开始录制", beginRecording, {cls:"primary", glyph:"play", disabled: !hasSource || !canRecord || active || exporting || (Boolean(result) && !recording.saved)}),
-    button(recording.status === "paused" ? "继续" : "暂停", pauseRecording, {disabled: !["recording", "paused"].includes(recording.status)}),
-    button("停止并完成", () => stopRecording(false), {disabled: !["recording", "paused"].includes(recording.status)}),
-    button("取消录制…", () => confirmAction("取消录制？", "当前会话的未保存内容将被丢弃。", () => stopRecording(true), "取消录制"),
-      {disabled: !["recording", "paused"].includes(recording.status)}));
-  const saved = result && box("row",
+    active && button(recording.status === "paused" ? "继续" : "暂停", pauseRecording, {disabled: !["recording", "paused"].includes(recording.status)}),
+    active && button("停止并完成", () => stopRecording(false), {disabled: !["recording", "paused"].includes(recording.status)}),
+    active && button("取消录制…", () => confirmAction("取消录制？", "当前会话的未保存内容将被丢弃。", () => stopRecording(true), "取消录制"),
+      {cls:"plain danger", disabled: !["recording", "paused"].includes(recording.status)}));
+  const saved = result && box("row shot-output-actions",
     button(mediaText("生成 {format}", {format: target}), () => saveRecording(result.format, true), {cls:"primary", disabled: exporting}),
     result.audio && result.format !== "m4a" && button("导出 M4A…", () => saveRecording("m4a"), {disabled: exporting}),
     button("保存原始录制…", saveRawRecording, {disabled: exporting}),
@@ -835,19 +933,25 @@ function recordingPage() {
       recording.status = "idle";
       render();
     }, "关闭"), {cls:"plain danger", disabled: exporting}));
-  const elapsed = el("span", mediaText("{seconds} 秒", {seconds: recordingSeconds()}), "muted");
+  const elapsed = el("span", mediaText("{seconds} 秒", {seconds: recordingSeconds()}), "shot-metric");
   elapsed.dataset.recordingElapsed = "true";
+  const stateLabel = el("strong", status[recording.status] || status.idle, "shot-recording-state");
+  stateLabel.dataset.state = recording.status;
   const exportStatus = el("span", recording.exportTask?.status || "", "muted");
   exportStatus.dataset.mediaExportStatus = "true";
-  return box("stack", panel("录屏与独立录音", box("row", field("录制来源", modes)),
-    box("row", recording.mode === "screen" && field("画面帧率", fps), audio, mic),
+  exportStatus.setAttribute("role", "status");
+  const error = recording.error && el("p", trError(recording.error), "error");
+  if (error) error.setAttribute("role", "alert");
+  return box("shot-view", shotPanel("shot-recording", "",
+    box("between shot-recording-header", el("h2", "录屏与独立录音"), box("shot-recording-clock", stateLabel, elapsed)),
+    box("shot-recording-inputs", field("录制来源", modes), recording.mode === "screen" && field("画面帧率", fps),
+      box("row shot-recording-sources", audio, mic)),
     note("系统提示会让你选择画面和音源。仅录音时，为提供系统声音而选择的画面不会进入输出。两种音源同时使用时会混为一轨。"),
-    controls, box("row", el("strong", status[recording.status] || status.idle), elapsed),
     !canRecord && note("当前应用窗口无法调用浏览器的录制接口。"),
     !hasSource && note("请选择共享音频或麦克风。"),
-    recording.error && el("p", recording.error, "error"),
-    saved), mediaToolsPanel(active || exporting), recording.exportTask && box("row",
-      exportStatus, button("取消导出", () => recording.exportTask?.controller.abort())), mediaSavePanel(active || exporting));
+    error, controls, saved), recording.exportTask && shotPanel("shot-export-state", "", box("between",
+      exportStatus, button("取消导出", () => recording.exportTask?.controller.abort()))),
+    mediaSavePanel(active || exporting), mediaToolsPanel(active || exporting));
 }
 async function beginRecording() {
   if (recording.recorder || (recording.result && !recording.saved) || recording.exportTask || mediaTools.writing || recording.status === "starting") return;
@@ -1063,9 +1167,9 @@ async function writeMediaOutput(item) {
 function mediaSavePanel(disabled) {
   const prepared = mediaTools.prepared;
   if (!prepared) return null;
-  return box("row", el("strong", prepared.name),
+  return shotPanel("shot-export-ready", "", box("row", el("strong", prepared.name, "fill"),
     button("选择位置保存…", () => writeMediaOutput(prepared), {cls:"primary", disabled}),
-    button("关闭导出", () => { mediaTools.prepared = null; renderRecording(); }, {disabled}));
+    button("关闭导出", () => { mediaTools.prepared = null; renderRecording(); }, {disabled})));
 }
 
 function mediaToolsPanel(disabled) {
@@ -1085,21 +1189,29 @@ function mediaToolsPanel(disabled) {
     control.oninput = () => { mediaTools[key] = control.valueAsNumber; };
     return field(label, control);
   };
-  const crop = toggle("按归一化坐标裁剪", mediaTools.crop, value => { mediaTools.crop = value; renderRecording(); });
+  const crop = toggle("按归一化坐标裁剪", mediaTools.crop, value => {
+    mediaTools.crop = value;
+    mediaTools.expanded = true;
+    repaintShotControl(crop.firstChild);
+  });
+  crop.firstChild.id = "shot-gif-crop";
   crop.firstChild.disabled = disabled;
-  return panel("视频转 GIF 与音频导出", field("本机媒体文件", source),
-    mediaTools.source && box("row", el("span", mediaTools.source.name), button("清除所选文件", () => {
+  const options = shotDetails("高级选项",
+    box("shot-field-grid", number("开始秒", "start", 0, undefined, 0.1), number("结束秒", "end", 0.1, undefined, 0.1),
+      number("帧率", "fps", 1, 30), number("最长边（像素）", "size", 16, 1920)),
+    box("shot-field-grid", number("饱和度", "saturation", 0, 2, 0.1), number("对比度", "contrast", 0.5, 2, 0.1),
+      number("亮度", "brightness", -0.5, 0.5, 0.1), crop),
+    mediaTools.crop && box("shot-field-grid", number("X", "x", 0, 1, 0.01), number("Y", "y", 0, 1, 0.01),
+      number("宽", "width", 0.01, 1, 0.01), number("高", "height", 0.01, 1, 0.01)),
+    note("GIF 最多 256 色，不含音频。转换在本机完成。"));
+  options.open = mediaTools.expanded;
+  options.addEventListener("toggle", () => { if (options.isConnected) mediaTools.expanded = options.open; });
+  return shotPanel("shot-media-tools", "视频转 GIF 与音频导出", field("本机媒体文件", source),
+    mediaTools.source && box("row", el("span", mediaTools.source.name, "fill", true), button("清除所选文件", () => {
       mediaTools.source = null;
       renderRecording();
     }, {disabled})),
     !mediaTools.source && recordingVideo && note("当前录屏可直接用作来源。"),
-    box("row", number("开始秒", "start", 0, undefined, 0.1), number("结束秒", "end", 0.1, undefined, 0.1),
-      number("帧率", "fps", 1, 30), number("最长边（像素）", "size", 16, 1920)),
-    box("row", number("饱和度", "saturation", 0, 2, 0.1), number("对比度", "contrast", 0.5, 2, 0.1),
-      number("亮度", "brightness", -0.5, 0.5, 0.1), crop),
-    mediaTools.crop && box("row", number("X", "x", 0, 1, 0.01), number("Y", "y", 0, 1, 0.01),
-      number("宽", "width", 0.01, 1, 0.01), number("高", "height", 0.01, 1, 0.01)),
-    note("GIF 最多 256 色，不含音频。转换在本机完成。"),
     box("row", button("生成 GIF", () => prepareMediaOutput(async task => {
       const {makeGif} = await import("./media_export.js");
       const {start, end, fps, size, saturation, contrast, brightness} = mediaTools;
@@ -1116,7 +1228,7 @@ function mediaToolsPanel(disabled) {
       const blob = await convertRecording(mediaTools.source, "m4a", {signal: task.controller.signal,
         progress: rate => setMediaExportProgress(task, mediaText("正在导出 {format} · {percent}%", {format: "M4A", percent: Math.round(rate * 100)}))});
       return {blob, format: "m4a", name: "搞操作-音频.m4a"};
-    }), {disabled: disabled || !mediaTools.source})));
+    }), {disabled: disabled || !mediaTools.source})), options);
 }
 
 window.addEventListener("beforeunload", event => {

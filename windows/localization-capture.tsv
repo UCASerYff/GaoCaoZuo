@@ -1,4 +1,22 @@
 # zh-Hans|zh-Hant|en|ja|de|fr|es|it|ko|pt
+截图工作台|截圖工作台|Capture workspace|キャプチャ作業領域|Aufnahmebereich|Espace de capture|Área de captura|Area di acquisizione|캡처 작업 공간|Área de captura
+捕获所选内容|擷取所選內容|Capture content|キャプチャ|Inhalte erfassen|Capturer du contenu|Capturar contenido|Acquisisci contenuti|화면 캡처|Capturar conteúdo
+捕获选项|擷取選項|Capture options|キャプチャオプション|Aufnahmeoptionen|Options de capture|Opciones de captura|Opzioni di acquisizione|캡처 옵션|Opções de captura
+屏幕截图|螢幕截圖|Screen capture|画面のキャプチャ|Bildschirmaufnahme|Capture d’écran|Captura de pantalla|Cattura schermo|화면 캡처|Captura de tela
+延时|延遲|Delay|遅延|Verzögerung|Délai|Retraso|Ritardo|지연|Atraso
+延时（秒）|延遲（秒）|Delay (seconds)|遅延（秒）|Verzögerung (Sekunden)|Délai (secondes)|Retraso (segundos)|Ritardo (secondi)|지연(초)|Atraso (segundos)
+权限与范围|權限與範圍|Permissions and scope|権限と範囲|Berechtigungen und Umfang|Autorisations et périmètre|Permisos y alcance|Autorizzazioni e ambito|권한 및 범위|Permissões e escopo
+打开图像…|開啟圖片…|Open image…|画像を開く…|Bild öffnen…|Ouvrir une image…|Abrir imagen…|Apri immagine…|이미지 열기…|Abrir imagem…
+标注工具|標註工具|Annotation tool|注釈ツール|Anmerkungswerkzeug|Outil d’annotation|Herramienta de anotación|Strumento di annotazione|주석 도구|Ferramenta de anotação
+标注颜色|標註顏色|Annotation color|注釈の色|Anmerkungsfarbe|Couleur de l’annotation|Color de anotación|Colore dell’annotazione|주석 색상|Cor da anotação
+标注画布|標註畫布|Annotation canvas|注釈キャンバス|Anmerkungsfläche|Zone d’annotation|Lienzo de anotación|Area di annotazione|주석 캔버스|Área de anotação
+文字 / 编号|文字 / 編號|Text / number|文字 / 番号|Text / Nummer|Texte / numéro|Texto / número|Testo / numero|텍스트 / 번호|Texto / número
+识别语言|辨識語言|Recognition language|認識言語|Erkennungssprache|Langue de reconnaissance|Idioma de reconocimiento|Lingua di riconoscimento|인식 언어|Idioma de reconhecimento
+跟随 Windows 识别语言|跟隨 Windows 辨識語言|Use Windows OCR language|Windows の認識言語を使用|Windows-OCR-Sprache verwenden|Langue OCR de Windows|Usar el idioma OCR de Windows|Usa la lingua OCR di Windows|Windows OCR 언어 사용|Usar o idioma de OCR do Windows
+截图历史|截圖記錄|Capture history|キャプチャ履歴|Aufnahmeverlauf|Historique des captures|Historial de capturas|Cronologia acquisizioni|캡처 기록|Histórico de capturas
+正在读取截图历史|正在讀取截圖記錄|Loading capture history|キャプチャ履歴を読み込み中|Aufnahmeverlauf wird geladen|Chargement de l’historique des captures|Cargando el historial de capturas|Caricamento della cronologia acquisizioni|캡처 기록을 불러오는 중|Carregando o histórico de capturas
+持久贴图|持久釘選圖片|Saved pins|保存したピン留め画像|Gespeicherte Anheftungen|Images épinglées enregistrées|Imágenes fijadas guardadas|Immagini fissate salvate|저장된 고정 이미지|Imagens fixadas salvas
+高级选项|進階選項|Advanced options|詳細オプション|Erweiterte Optionen|Options avancées|Opciones avanzadas|Opzioni avanzate|고급 옵션|Opções avançadas
 当前 Windows 桌面不可采集。请返回普通桌面后重试。|目前的 Windows 桌面無法擷取。請返回一般桌面後再試。|This Windows desktop cannot be captured. Return to the regular desktop and try again.|現在の Windows デスクトップはキャプチャできません。通常のデスクトップに戻って再試行してください。|Dieser Windows-Desktop kann nicht erfasst werden. Kehren Sie zum normalen Desktop zurück und versuchen Sie es erneut.|Ce bureau Windows ne peut pas être capturé. Revenez au bureau habituel et réessayez.|No se puede capturar este escritorio de Windows. Vuelve al escritorio normal e inténtalo de nuevo.|Questo desktop di Windows non può essere acquisito. Torna al desktop normale e riprova.|현재 Windows 데스크톱은 캡처할 수 없습니다. 일반 데스크톱으로 돌아가 다시 시도하세요.|Não é possível capturar esta área de trabalho do Windows. Volte à área de trabalho normal e tente novamente.
 无法读取当前屏幕。|無法讀取目前的螢幕。|Unable to read the current screen.|現在の画面を読み取れません。|Der aktuelle Bildschirm kann nicht erfasst werden.|Impossible de lire l’écran actuel.|No se puede leer la pantalla actual.|Impossibile leggere lo schermo attuale.|현재 화면을 읽을 수 없습니다.|Não foi possível ler a tela atual.
 所选画面尺寸无效或超过 4800 万像素。|所選畫面尺寸無效或超過 4800 萬像素。|The selected dimensions are invalid or exceed 48 million pixels.|選択した画面の寸法が無効か、4800 万画素を超えています。|Die gewählten Abmessungen sind ungültig oder überschreiten 48 Millionen Pixel.|Les dimensions sélectionnées sont invalides ou dépassent 48 millions de pixels.|Las dimensiones seleccionadas no son válidas o superan los 48 millones de píxeles.|Le dimensioni selezionate non sono valide o superano 48 milioni di pixel.|선택한 화면 크기가 잘못되었거나 4,800만 픽셀을 초과합니다.|As dimensões selecionadas são inválidas ou excedem 48 milhões de pixels.

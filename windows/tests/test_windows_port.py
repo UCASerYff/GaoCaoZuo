@@ -50,7 +50,7 @@ class ScriptedWindow:
 
 
 def test_version_label():
-    assert VERSION_LABEL == "1.16+4"
+    assert VERSION_LABEL == "1.16+5"
 
 
 def test_settings_preserve_unknown_and_refuse_newer(tmp_path):

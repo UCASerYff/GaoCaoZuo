@@ -26,7 +26,7 @@ $version = & $Python -c 'from gaocaozuo.version import MARKETING_VERSION; print(
 Assert-LastExit "version"
 $buildNumber = & $Python -c 'from gaocaozuo.version import WINDOWS_BUILD; print(WINDOWS_BUILD)'
 Assert-LastExit "build number"
-$stem = "GaoCaoZuo-Windows-$version-x64-Setup"
+$stem = "GaoCaoZuo-Windows-$version-build$buildNumber-x64-Setup"
 $buildDir = Join-Path $PSScriptRoot "build"
 $distDir = [IO.Path]::GetFullPath($DistDirectory, $PSScriptRoot)
 $ocrHelper = Join-Path $buildDir 'ocr\GaoCaoZuo-WinOcr.exe'

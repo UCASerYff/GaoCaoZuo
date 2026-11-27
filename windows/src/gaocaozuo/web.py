@@ -15,6 +15,7 @@ from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_locale
 from gaocaozuo.features import validate_package
 from gaocaozuo.resources import asset_dir
+from gaocaozuo.surface_win import native_surface
 from gaocaozuo.version import VERSION_LABEL
 
 
@@ -124,7 +125,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with self.server.lock:
                 app = self.server.app
-                with native_locale((app.store.settings or {}).get("language", "system")):
+                settings = app.store.settings or {}
+                with native_locale(settings.get("language", "system")), native_surface(settings.get("appearance", "system")):
                     result = dispatch(app, parsed.path, payload)
                     state = app.snapshot()
             self._json({"ok": True, "result": result, "state": state})

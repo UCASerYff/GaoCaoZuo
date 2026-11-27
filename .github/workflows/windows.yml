@@ -42,5 +42,5 @@ jobs:
           name: GaoCaoZuo-Windows-1.16-x64
           if-no-files-found: error
           path: |
-            windows/dist/GaoCaoZuo-Windows-1.16-x64-Setup.exe
-            windows/dist/GaoCaoZuo-Windows-1.16-x64-Setup.exe.sha256
+            windows/dist/GaoCaoZuo-Windows-*-build*-x64-Setup.exe
+            windows/dist/GaoCaoZuo-Windows-*-build*-x64-Setup.exe.sha256

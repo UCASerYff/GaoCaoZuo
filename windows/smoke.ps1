@@ -1,9 +1,10 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+4", [switch]$LocalizationOnly)
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+5", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
+$marketingVersion, $expectedBuild = $ExpectedVersion -split '\+', 2
 if (-not $Installer) {
-    $Installer = Join-Path $PSScriptRoot 'dist\GaoCaoZuo-Windows-1.16-x64-Setup.exe'
+    $Installer = Join-Path $PSScriptRoot "dist\GaoCaoZuo-Windows-$marketingVersion-build$expectedBuild-x64-Setup.exe"
 }
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
 $sha = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash
@@ -67,7 +68,8 @@ try {
     if (!$uninstaller) { throw 'Controlled uninstall was not installed.' }
     Assert-X64 $cli
     Assert-X64 $gui
-    if ((Get-Item -LiteralPath $gui).VersionInfo.ProductVersion -ne '1.16') { throw 'Installed version mismatch.' }
+    $exeVersion = (Get-Item -LiteralPath $gui).VersionInfo
+    if ($exeVersion.ProductVersion -ne $marketingVersion -or $exeVersion.FileVersion -ne "$marketingVersion.$expectedBuild.0") { throw 'Installed version mismatch.' }
     if (!(Test-Path -LiteralPath (Join-Path $installDir 'Licenses\Third-Party.txt'))) { throw 'Dependency notices are missing.' }
 
     foreach ($key in @('PATH','PYTHONPATH','PYTHONHOME','TCL_LIBRARY','TK_LIBRARY','CONDA_PREFIX','PYTHONUTF8')) {

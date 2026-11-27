@@ -9,11 +9,13 @@ import time
 from dataclasses import dataclass
 from threading import Event, RLock, Thread
 
+from gaocaozuo.desktop_win import physical_coordinates
 from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_locale, native_text
-from gaocaozuo.native_win import is_input_desktop, is_session_active, kernel, user
+from gaocaozuo.native_win import bind, is_input_desktop, is_session_active, kernel, user
 from gaocaozuo.platform_win import last_input
 from gaocaozuo.rules_win import ALT, CTRL, SHIFT, WIN, Binding, direction_between
+from gaocaozuo.surface_win import surface_colors, window_dpi
 
 
 _VK_MODIFIERS = {0x10: SHIFT, 0x11: CTRL, 0x12: ALT, 0x5B: WIN, 0x5C: WIN}
@@ -21,6 +23,11 @@ _VK_MODIFIERS = {0x10: SHIFT, 0x11: CTRL, 0x12: ALT, 0x5B: WIN, 0x5C: WIN}
 
 class _MouseEvent(c.Structure):
     _fields_ = [("point", w.POINT), ("data", w.DWORD), ("flags", w.DWORD), ("time", w.DWORD), ("extra", c.c_size_t)]
+
+
+class _WarningPaint(c.Structure):
+    _fields_ = [("dc", w.HDC), ("erase", w.BOOL), ("rect", w.RECT), ("restore", w.BOOL), ("update", w.BOOL),
+                ("reserved", c.c_ubyte * 32)]
 
 
 @dataclass
@@ -34,47 +41,136 @@ class _Drag:
 
 
 class _IdleWarning:
-    def __init__(self, read_language):
+    def __init__(self, read_language, read_appearance):
         self.hwnd = 0
         self.label = None
+        self.subclass = None
         self.read_language = read_language
+        self.read_appearance = read_appearance
 
     def update(self, warning) -> bool:
         if warning is None:
             if self.hwnd:
                 user("DestroyWindow", w.BOOL, w.HWND)(self.hwnd)
                 self.hwnd = 0
+                self.subclass = None
             self.label = None
             return True
         action, remaining = warning
         key = "将在 {remaining} 秒后锁定屏幕。" if action == "lockScreen" else "将在 {remaining} 秒后启动屏保。"
         with native_locale(self.read_language()):
-            message = "搞操作 · " + native_text(key, remaining=remaining) + "\r\n\r\n" + native_text("移动鼠标或按键可取消。")
-        if message == self.label:
-            return bool(self.hwnd)
-        if not self.hwnd:
-            flags = 0x08000000 | 0x00000080 | 0x00000008  # WS_EX_NOACTIVATE | TOOLWINDOW | TOPMOST
-            style = 0x80000000 | 0x00800000 | 0x08000000 | 0x00000001  # POPUP | BORDER | DISABLED | SS_CENTER
-            hwnd = user("CreateWindowExW", w.HWND, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, c.c_int, c.c_int,
-                        c.c_int, c.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
-            metric = user("GetSystemMetrics", c.c_int, c.c_int)
-            inst = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
-            width, height = min(620, max(250, metric(0) - 48)), 106
-            self.hwnd = hwnd(flags, "STATIC", message, style, max(0, (metric(0) - width) // 2),
-                             max(0, (metric(1) - height) // 2), width, height, None, None, inst, None)
+            title = native_text(key, remaining=remaining)
+            hint = native_text("移动鼠标或按键可取消。")
+        label = title, hint, surface_colors(self.read_appearance())
+        if label != self.label:
+            message = f"搞操作 · {title}\r\n\r\n{hint}"
+            self.label = label
             if not self.hwnd:
-                return False
-            user("ShowWindow", w.BOOL, w.HWND, c.c_int)(self.hwnd, 4)
-        else:
-            user("SetWindowTextW", w.BOOL, w.HWND, w.LPCWSTR)(self.hwnd, message)
-        self.label = message
-        return bool(user("IsWindowVisible", w.BOOL, w.HWND)(self.hwnd))
+                with physical_coordinates():
+                    self._open(message)
+            else:
+                user("SetWindowTextW", w.BOOL, w.HWND, w.LPCWSTR)(self.hwnd, message)
+                user("InvalidateRect", w.BOOL, w.HWND, c.POINTER(w.RECT), w.BOOL)(self.hwnd, None, False)
+            if self.hwnd:
+                user("UpdateWindow", w.BOOL, w.HWND)(self.hwnd)
+        return bool(self.hwnd and user("IsWindowVisible", w.BOOL, w.HWND)(self.hwnd))
+
+    def _open(self, message):
+        flags = 0x08000000 | 0x00000080 | 0x00000008  # WS_EX_NOACTIVATE | TOOLWINDOW | TOPMOST
+        style = 0x80000000 | 0x00800000 | 0x08000000 | 0x00000001  # POPUP | BORDER | DISABLED | SS_CENTER
+        hwnd = user("CreateWindowExW", w.HWND, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, c.c_int, c.c_int,
+                    c.c_int, c.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
+        metric = user("GetSystemMetrics", c.c_int, c.c_int)
+        inst = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
+        screen_width, screen_height = metric(0), metric(1)
+        self.hwnd = hwnd(flags, "STATIC", message, style, screen_width // 2, screen_height // 2, 1, 1,
+                         None, None, inst, None)
+        if not self.hwnd:
+            return
+        scale = window_dpi(self.hwnd) / 96
+        width = min(round(490 * scale), max(1, screen_width - round(48 * scale)))
+        height = min(round((136 if width < 390 * scale else 108) * scale), max(1, screen_height))
+        position = user("SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)
+        if not position(self.hwnd, w.HWND(-1), (screen_width - width) // 2, (screen_height - height) // 2, width, height, 0x0010):
+            self.update(None)
+            return
+        self._style_window()
+        user("ShowWindow", w.BOOL, w.HWND, c.c_int)(self.hwnd, 4)  # SW_SHOWNOACTIVATE
+
+    def _style_window(self):
+        subclass_proc = c.WINFUNCTYPE(c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM, c.c_size_t, c.c_size_t)
+        default = bind("comctl32", "DefSubclassProc", c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
+
+        @subclass_proc
+        def draw(hwnd, message, wparam, lparam, _id, _data):
+            if self.label and message in {0x000F, 0x0318}:  # WM_PAINT | WM_PRINTCLIENT
+                try:
+                    if message == 0x0318 and wparam:
+                        self._draw(hwnd, wparam)
+                        return 0
+                    if self._paint(hwnd):
+                        return 0
+                except (OSError, RuntimeError, ValueError):
+                    pass
+            return default(hwnd, message, wparam, lparam)
+
+        subclass = bind("comctl32", "SetWindowSubclass", w.BOOL, w.HWND, subclass_proc, c.c_size_t, c.c_size_t)
+        if subclass(self.hwnd, draw, 1, 0):
+            self.subclass = draw
+
+    def _paint(self, hwnd):
+        state = _WarningPaint()
+        dc = user("BeginPaint", w.HDC, w.HWND, c.POINTER(_WarningPaint))(hwnd, c.byref(state))
+        if not dc:
+            return False
+        try:
+            self._draw(hwnd, dc)
+        finally:
+            user("EndPaint", w.BOOL, w.HWND, c.POINTER(_WarningPaint))(hwnd, c.byref(state))
+        return True
+
+    def _draw(self, hwnd, dc):
+        def color(value):
+            red, green, blue = bytes.fromhex(value[1:])
+            return red | (green << 8) | (blue << 16)
+
+        title, hint, colors = self.label
+        area = w.RECT()
+        user("GetClientRect", w.BOOL, w.HWND, c.POINTER(w.RECT))(hwnd, c.byref(area))
+        scale = window_dpi(hwnd) / 96
+        accent = w.RECT(0, 0, round(4 * scale), area.bottom)
+        delete = bind("gdi32", "DeleteObject", w.BOOL, w.HANDLE)
+        fill = user("FillRect", c.c_int, w.HDC, c.POINTER(w.RECT), w.HANDLE)
+        for box, shade in ((area, colors.surface), (accent, colors.accent)):
+            brush = bind("gdi32", "CreateSolidBrush", w.HANDLE, w.DWORD)(color(shade))
+            try:
+                fill(dc, c.byref(box), brush)
+            finally:
+                if brush:
+                    delete(brush)
+        bind("gdi32", "SetBkMode", c.c_int, w.HDC, c.c_int)(dc, 1)  # TRANSPARENT
+        draw_text = user("DrawTextW", c.c_int, w.HDC, w.LPCWSTR, c.c_int, c.POINTER(w.RECT), w.UINT)
+        create_font = bind("gdi32", "CreateFontW", w.HANDLE, *([c.c_int] * 5), *([w.DWORD] * 8), w.LPCWSTR)
+        select = bind("gdi32", "SelectObject", w.HANDLE, w.HDC, w.HANDLE)
+        padding, y = round(23 * scale), round(17 * scale)
+        for line, pixels, weight, ink in ((title, 21, 600, colors.ink), (hint, 15, 400, colors.subtle)):
+            font = create_font(-round(pixels * scale), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI")
+            previous = select(dc, font) if font else None
+            try:
+                bind("gdi32", "SetTextColor", w.DWORD, w.HDC, w.DWORD)(dc, color(ink))
+                box = w.RECT(padding, y, area.right - padding, area.bottom)
+                y += draw_text(dc, line, -1, c.byref(box), 0x00000810) + round(6 * scale)  # NOPREFIX | WORDBREAK
+            finally:
+                if previous:
+                    select(dc, previous)
+                if font:
+                    delete(font)
 
 
 class WindowsRuntime:
     """Run opt-in rules and idle policy while the app is active."""
 
-    def __init__(self, desktop, system, idle, invoke, busy=None, on_tick=None, read_language=None):
+    def __init__(self, desktop, system, idle, invoke, busy=None, on_tick=None, read_language=None, read_appearance=None):
         self.desktop = desktop
         self.system = system
         self.idle = idle
@@ -82,6 +178,7 @@ class WindowsRuntime:
         self.busy = busy or (lambda: False)
         self.on_tick = on_tick or (lambda: None)
         self.read_language = read_language or (lambda: "zh-Hans")
+        self.read_appearance = read_appearance or (lambda: "system")
         self._lock = RLock()
         self._stop = Event()
         self._rules: tuple[Binding, ...] = ()
@@ -208,7 +305,7 @@ class WindowsRuntime:
         self.idle.sample(last_input, safety, warning.update, execute)
 
     def _message_loop(self) -> None:
-        show_warning = _IdleWarning(self.read_language)
+        show_warning = _IdleWarning(self.read_language, self.read_appearance)
         peek = user("PeekMessageW", w.BOOL, c.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT)
         translate = user("TranslateMessage", w.BOOL, c.POINTER(w.MSG))
         dispatch = user("DispatchMessageW", c.c_ssize_t, c.POINTER(w.MSG))

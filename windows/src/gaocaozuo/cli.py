@@ -68,16 +68,20 @@ def main(argv: list[str] | None = None) -> int:
             from gaocaozuo.runtime_win import WindowsRuntime
             from gaocaozuo.localization import native_locale
             from gaocaozuo.shell_win import WorkbenchWindow
+            from gaocaozuo.surface_win import native_surface
             from gaocaozuo.tray_win import WindowsTray
 
             def read_language():
                 return (app.store.settings or {}).get("language", "system")
 
+            def read_appearance():
+                return (app.store.settings or {}).get("appearance", "system")
+
             def invoke(action_id, payload):
                 if not server.lock.acquire(blocking=False):
                     raise AppError("另一个搞操作任务正在运行。", "busy")
                 try:
-                    with native_locale(read_language()):
+                    with native_locale(read_language()), native_surface(read_appearance()):
                         result = app.perform(action_id, payload)
                     if result.get("show") and app.activation:
                         app.activation()
@@ -92,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                         server.lock.release()
 
             app.runtime = WindowsRuntime(app.desktop, app.system, app.idle, invoke, busy=server.lock.locked,
-                                         on_tick=on_tick, read_language=read_language)
+                                         on_tick=on_tick, read_language=read_language, read_appearance=read_appearance)
             try:
                 app.configure_runtime()
             except AppError as exc:

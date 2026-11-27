@@ -1,0 +1,194 @@
+.workflow-dialog[open] {
+  display: flex;
+  width: min(43rem, calc(100% - 1.75rem));
+  max-height: calc(100dvh - 1.75rem);
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  box-shadow: 0 16px 52px rgb(10 22 36 / 25%);
+}
+.workflow-dialog[data-size="wide"] { width: min(52rem, calc(100% - 1.75rem)); }
+.workflow-dialog[data-size="compact"] { width: min(32rem, calc(100% - 1.75rem)); }
+.workflow-dialog::backdrop { background: rgb(13 21 32 / 45%); }
+.workflow-dialog .dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+.workflow-dialog .dialog-title {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 13px 10px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--divider);
+}
+.workflow-dialog .dialog-title h2 {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 17px;
+}
+.workflow-dialog .dialog-title .plain { width: 32px; flex: none; }
+.workflow-dialog .danger-title > svg { color: var(--danger); }
+.workflow-dialog .dialog-body { min-height: 0; min-width: 0; padding: 16px 18px; overflow: auto; }
+.workflow-dialog .dialog-body > * { min-width: 0; }
+.workflow-dialog .dialog-body .stack { min-width: 0; }
+.workflow-dialog :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
+.workflow-dialog .dialog-actions {
+  flex: none;
+  padding: 10px 18px;
+  margin: 0;
+  background: var(--canvas);
+  border-top: 1px solid var(--divider);
+}
+.workflow-dialog .dialog-actions > button { min-width: 70px; white-space: normal; }
+.workflow-dialog .dialog-actions > button.primary.danger {
+  background: color-mix(in srgb, var(--danger) 13%, var(--surface));
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.workflow-dialog .modal-error, .workflow-feedback {
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--divider));
+  border-radius: 7px;
+  overflow-wrap: anywhere;
+}
+.workflow-dialog .modal-error { margin: 0 18px 10px; max-height: 22dvh; overflow: auto; }
+.workflow-dialog .dialog-result { max-height: none; overflow: visible; }
+.workflow-dialog button.is-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.workflow-dialog button.is-pending::before {
+  content: "";
+  width: .8em;
+  height: .8em;
+  border: 1px solid currentColor;
+  border-inline-end-color: transparent;
+  border-radius: 50%;
+  animation: workflow-progress 650ms linear infinite;
+}
+@keyframes workflow-progress { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .workflow-dialog button.is-pending::before { animation: none; }
+}
+
+.archive-identity, .workflow-callout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+  background: var(--accent-faint);
+}
+.archive-identity > svg, .workflow-callout > svg { color: var(--accent); }
+.archive-identity strong, .archive-identity small { display: block; }
+.archive-identity small { margin-top: 2px; }
+.archive-member-panel { border: 1px solid var(--divider); border-radius: 8px; }
+.archive-tools { padding: 8px 10px; border-bottom: 1px solid var(--divider); }
+.archive-tools button { min-height: 28px; }
+.archive-members { list-style: none; padding: 0; }
+.archive-member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+.archive-member:last-child { border-bottom: 0; }
+.archive-member label { align-items: baseline; overflow-wrap: anywhere; }
+.archive-member input { flex: none; }
+.archive-size { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.archive-edit-fields { display: grid; gap: 12px; }
+.archive-remove-plan, .archive-add-plan { display: grid; gap: 7px; padding: 10px 12px; border: 1px solid var(--divider); border-radius: 8px; }
+.archive-remove-plan h3 { color: var(--danger); }
+.archive-removals { padding-inline-start: 1.25em; }
+.archive-add-plan p { overflow-wrap: anywhere; }
+
+.clipboard-workspace, .rules-workspace { container-type: inline-size; gap: 14px; min-width: 0; }
+.workflow-head h2 { font-size: 16px; }
+.workflow-head, .clipboard-tools { min-width: 0; }
+.workflow-callout { flex-wrap: wrap; }
+.workflow-callout .fill { min-width: min(13rem, 100%); overflow-wrap: anywhere; }
+.workflow-callout .fill > p { margin-top: 3px; }
+.clipboard-filters { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.clipboard-filters .filter { min-width: 0; }
+.clipboard-filters .filter input::placeholder { color: var(--muted); opacity: 1; }
+.clipboard-group { min-width: 0; max-width: 15rem; }
+.clipboard-group select { min-width: 0; max-width: 100%; }
+.clipboard-list, .rule-list { border-block: 1px solid var(--divider); }
+.clipboard-row, .rule-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  padding-block: 10px;
+}
+.workflow-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--accent-faint);
+  color: var(--accent);
+}
+.workflow-icon svg { width: 16px; height: 16px; }
+.clipboard-preview {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.clipboard-item small, .rule-content > small { margin-top: 3px; }
+.clipboard-row-actions, .rule-actions { justify-content: flex-end; gap: 5px; }
+.clipboard-row-actions button, .rule-actions button { min-height: 29px; }
+.clipboard-row-actions button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.clipboard-item-full { padding: 11px 12px; border: 1px solid var(--divider); border-radius: 8px; background: var(--input); font: inherit; }
+.snippet-form { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(0, 2fr) auto; align-items: end; gap: 8px; }
+.snippet-form .field input { min-width: 0; }
+
+.rule-support { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.rule-support .panel button { justify-self: start; }
+.rule-content { display: grid; gap: 4px; }
+.rule-key-combination { display: inline-flex; flex-wrap: wrap; max-width: 100%; gap: 3px; }
+.rule-key-combination kbd { font: inherit; font-size: 12px; line-height: 1.4; font-variant-numeric: tabular-nums; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); overflow-wrap: anywhere; }
+.rule-content .rule-meta { gap: 6px; }
+.rule-content .rule-status.rule-ready { color: var(--accent); }
+.rule-content .rule-status.rule-issue { color: var(--danger); }
+.rule-fields, .rule-hotkey { display: grid; align-items: end; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.rule-hotkey { grid-template-columns: minmax(0, 1fr) max-content; }
+.rule-scope { align-items: start; }
+.rule-scope .option { align-self: end; min-height: 32px; }
+.rule-trigger-fields { padding: 11px; border: 1px solid var(--divider); border-radius: 8px; background: var(--canvas); }
+.rule-hotkey button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+@container (max-width: 39rem) {
+  .clipboard-row, .rule-row { grid-template-columns: auto minmax(0, 1fr); }
+  .clipboard-row-actions, .rule-actions { grid-column: 2; justify-content: flex-start; }
+  .rule-support { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 26rem) {
+  .clipboard-filters, .snippet-form { grid-template-columns: minmax(0, 1fr); }
+  .snippet-form > button { justify-self: end; }
+}
+@media (max-width: 460px) {
+  .workflow-dialog[open] { width: calc(100% - 1rem); max-height: calc(100dvh - 1rem); }
+  .workflow-dialog .dialog-title, .workflow-dialog .dialog-body, .workflow-dialog .dialog-actions { padding-inline: 12px; }
+  .workflow-dialog .modal-error { margin-inline: 12px; }
+  .archive-member { gap: 6px; padding-inline: 8px; }
+  .rule-fields, .rule-hotkey { grid-template-columns: minmax(0, 1fr); }
+  .rule-hotkey > button { justify-self: start; }
+}
