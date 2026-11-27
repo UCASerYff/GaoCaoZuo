@@ -6,10 +6,11 @@ import ctypes as c
 import ctypes.wintypes as w
 import os
 import threading
+from dataclasses import dataclass
 
 from PIL import Image, ImageGrab, ImageTk
 
-from gaocaozuo.desktop_win import physical_coordinates
+from gaocaozuo.desktop_win import WindowIdentity, _identity, physical_coordinates
 from gaocaozuo.errors import AppError
 from gaocaozuo.native_win import bind, is_input_desktop, user
 
@@ -131,7 +132,14 @@ def window_at_center(bounds: tuple[int, int, int, int]) -> int:
 
 
 def _root_at(x: int, y: int) -> int:
-    hwnd = user("WindowFromPoint", w.HWND, w.POINT)(w.POINT(x, y))
+    return _root_window(_window_at(x, y))
+
+
+def _window_at(x: int, y: int) -> int:
+    return int(user("WindowFromPoint", w.HWND, w.POINT)(w.POINT(x, y)) or 0)
+
+
+def _root_window(hwnd: int) -> int:
     return int(user("GetAncestor", w.HWND, w.HWND, w.UINT)(hwnd, 2) or hwnd or 0)
 
 
@@ -148,14 +156,110 @@ def region_has_target(bounds: tuple[int, int, int, int], hwnd: int) -> bool:
         return all(_root_at(x, y) == hwnd for x in (x0, (x0 + x1) // 2, x1 - 1) for y in (y0, (y0 + y1) // 2, y1 - 1))
 
 
-def window_identity(hwnd: int) -> tuple[int, int]:
-    pid = w.DWORD()
-    thread = user("GetWindowThreadProcessId", w.DWORD, w.HWND, w.LPDWORD)(hwnd, c.byref(pid))
-    return int(pid.value), int(thread)
+def window_identity(hwnd: int) -> WindowIdentity | None:
+    return _identity(hwnd)
+
+
+def window_frame(hwnd: int) -> tuple[int, int, int, int] | None:
+    if os.name != "nt":
+        return None
+    with physical_coordinates():
+        box = w.RECT()
+        if user("GetWindowRect", w.BOOL, w.HWND, c.POINTER(w.RECT))(hwnd, c.byref(box)):
+            return box.left, box.top, box.right, box.bottom
+    return None
 
 
 def foreground_window() -> int:
     return int(user("GetForegroundWindow", w.HWND)() or 0)
+
+
+@dataclass(frozen=True)
+class ScrollAnchor:
+    point: tuple[int, int]
+    receiver: WindowIdentity
+
+
+def _visible_region(bounds: tuple[int, int, int, int], hwnd: int) -> bool:
+    if not region_has_target(bounds, hwnd):
+        return False
+    x0, y0, x1, y1 = bounds
+    get_window = user("GetWindow", w.HWND, w.HWND, w.UINT)
+    visible = user("IsWindowVisible", w.BOOL, w.HWND)
+    minimized = user("IsIconic", w.BOOL, w.HWND)
+    attribute = bind("dwmapi", "DwmGetWindowAttribute", c.c_long, w.HWND, w.DWORD, w.LPVOID, w.DWORD)
+    other = get_window(hwnd, 3)  # GW_HWNDPREV, the windows above the target in Z order.
+    visited = {hwnd}
+    while other and other not in visited and len(visited) < 4096:
+        visited.add(other)
+        if visible(other) and not minimized(other):
+            cloaked = w.DWORD()
+            if attribute(other, 14, c.byref(cloaked), c.sizeof(cloaked)) or not cloaked.value:
+                frame = window_frame(other)
+                if frame is None:
+                    return False
+                left, top, right, bottom = frame
+                if max(x0, left) < min(x1, right) and max(y0, top) < min(y1, bottom):
+                    return False
+        other = get_window(other, 3)
+    return not other
+
+
+def verify_scroll_anchor(bounds, identity: WindowIdentity, frame, anchor: ScrollAnchor | None = None) -> ScrollAnchor:
+    _interactive()
+    hwnd = identity.hwnd
+    with physical_coordinates():
+        if identity.pid == os.getpid():
+            raise AppError("请选择外部窗口中的滚动区域。", "scrollUnavailable")
+        if foreground_window() != hwnd or window_identity(hwnd) != identity or window_frame(hwnd) != frame or not _visible_region(bounds, hwnd):
+            raise AppError("目标窗口已改变、移动或被遮挡。请返回原窗口后手动续拍。", "targetChanged")
+        affinity = w.DWORD()
+        if user("GetWindowDisplayAffinity", w.BOOL, w.HWND, w.LPDWORD)(hwnd, c.byref(affinity)) and affinity.value:
+            raise AppError("目标窗口启用了 Windows 内容捕获保护。", "unavailable")
+        pointer = w.POINT()
+        x0, y0, x1, y1 = bounds
+        if not user("GetPhysicalCursorPos", w.BOOL, c.POINTER(w.POINT))(c.byref(pointer)) or not (
+            x0 <= pointer.x < x1 and y0 <= pointer.y < y1
+        ):
+            raise AppError("鼠标不在选区内，已停止自动滚动。", "pointerLeft")
+        point = pointer.x, pointer.y
+        if anchor is not None and point != anchor.point:
+            raise AppError("鼠标已移动，已停止自动滚动。", "pointerLeft")
+        get_key = user("GetAsyncKeyState", c.c_short, c.c_int)
+        if any(get_key(key) & 0x8000 for key in (1, 2, 4, 5, 6, 0x10, 0x11, 0x12, 0x1B, 0x5B, 0x5C)):
+            raise AppError("检测到鼠标按键、修饰键或 Esc，已停止自动滚动。", "inputHeld")
+        receiver = window_identity(_window_at(*point))
+        if receiver is None or receiver.pid != identity.pid or _root_window(receiver.hwnd) != hwnd:
+            raise AppError("无法核验选区内的滚动控件，请改用手动续拍。", "targetChanged")
+        if anchor is not None and receiver != anchor.receiver:
+            raise AppError("指针下的滚动控件已改变，请改用手动续拍。", "targetChanged")
+        return ScrollAnchor(point, receiver)
+
+
+def _send_scroll_notch(receiver: int, point: tuple[int, int]) -> bool:
+    # WM_MOUSEWHEEL carries signed screen coordinates in two 16-bit fields.
+    if not receiver or not all(-32768 <= value <= 32767 for value in point):
+        return False
+    x, y = point
+    coordinates = ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+    if coordinates >= 0x80000000:
+        coordinates -= 0x100000000
+    send = user("SendMessageTimeoutW", c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT,
+                c.POINTER(c.c_size_t))
+    result = c.c_size_t()
+    return bool(send(receiver, 0x020A, (-120 & 0xFFFF) << 16, coordinates, 0x0023, 320, c.byref(result)))
+
+
+def scroll_down(bounds, identity: WindowIdentity, frame, anchor: ScrollAnchor) -> None:
+    verify_scroll_anchor(bounds, identity, frame, anchor)
+    point = w.POINT(*anchor.point)
+    convert = user("PhysicalToLogicalPointForPerMonitorDPI", w.BOOL, w.HWND, c.POINTER(w.POINT))
+    if not convert(anchor.receiver.hwnd, c.byref(point)):
+        raise AppError("无法换算目标窗口的滚动坐标，请改用手动续拍。", "scrollUnavailable")
+    if foreground_window() != identity.hwnd or window_identity(anchor.receiver.hwnd) != anchor.receiver:
+        raise AppError("发送滚动前目标窗口已改变。", "targetChanged")
+    if not _send_scroll_notch(anchor.receiver.hwnd, (point.x, point.y)):
+        raise AppError("目标窗口未确认处理滚动请求。请检查当前画面后手动续拍。", "scrollUnavailable")
 
 
 def _pick_sources(title: str, message: str, labels: list[str], multi=False) -> tuple[int, ...]:

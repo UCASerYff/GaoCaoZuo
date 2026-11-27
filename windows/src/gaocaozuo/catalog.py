@@ -98,8 +98,6 @@ SYSTEM_PRESETS = [
 
 # 这些动作在目录中可见，调用时返回原因，不伪造成功。
 UNAVAILABLE = {
-    "screenshot.translate.clipboard": "Windows 版没有 macOS 本机翻译，也不会联网翻译。",
-    "screenshot.translate.capture": "Windows 版没有 macOS 本机翻译。",
     "system.brightnessUp": "逐显示器硬件亮度不在本版范围，不写显示设置。",
     "system.brightnessDown": "逐显示器硬件亮度不在本版范围，不写显示设置。",
     "system.keyboardBrightnessUp": "Windows 版不写键盘背光。",

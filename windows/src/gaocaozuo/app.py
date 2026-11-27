@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gaocaozuo.archive import ExtractBatch, archive_digest, archive_parts, create_7z, create_zip, extract_archive, inspect_archive, split_file
+from gaocaozuo.archive_editor import ArchiveEditor
 from gaocaozuo.catalog import GROUPS, find_action, search_actions
 from gaocaozuo.clipboard import ClipboardBook, NativeClipboardBook
 from gaocaozuo.errors import AppError
@@ -33,6 +34,8 @@ from gaocaozuo.layout import LayoutTransaction, Rect, matches, restore_focus, sn
 from gaocaozuo.qr import encode as encode_qr
 from gaocaozuo.qr import to_png
 from gaocaozuo.screenshot import ScreenshotSession
+from gaocaozuo.rules_cloud import RuleCloud
+from gaocaozuo.translation import LocalTranslation
 from gaocaozuo.store import MANAGED_KEYS, Store
 from gaocaozuo.system import FakeSystem, IdlePolicy, SystemGateway, UnavailableSystem
 from gaocaozuo.version import VERSION_LABEL
@@ -57,6 +60,9 @@ class App:
     def __init__(self, directory: Path, system=None, window_lister=None, vault=None, interactive=False):
         self.store = Store(directory)
         self.directory = Path(directory)
+        self.archive_editor = ArchiveEditor()
+        self.translation = LocalTranslation(self.directory)
+        self.rule_cloud = RuleCloud(self.read_rule_document, self.write_rule_document)
         self.desktop = None
         self.native_clipboard = None
         self.runtime = None
@@ -330,8 +336,8 @@ class App:
             return self.screenshots.ocr(True, image_id=captured["id"], languages=payload.get("languages"))
         if action_id in {"ocr.files", "file.ocr"}:
             return self.screenshots.ocr(payload.get("confirm") is True, paths=_paths(payload), languages=payload.get("languages"))
-        if action_id.startswith("screenshot.translate"):
-            self.screenshots.translate()
+        if action_id.startswith("screenshot.translate."):
+            return {"section": "screenshots", "show": True}
         if action_id in {"panel.show", "clipboard.show", "workflow.show", "screenshot.workspace", "screenshot.recording", "finder.popup"}:
             return {"section": (action or {}).get("section", "home"), "show": True}
         if action_id == "screenshot.pins.restore":
@@ -682,17 +688,34 @@ class App:
         return {"action": action, "screen": frame.as_dict(), "applied": False}
 
     def rules(self) -> list[dict]:
+        return self.read_rule_document()["rules"]
+
+    def read_rule_document(self) -> dict:
         path = self.directory / "Input" / "rules.json"
         if not path.exists():
-            return []
+            return {"schema": 1, "rules": []}
         import json
 
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-        if parsed.get("schema") != 1:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise AppError("输入规则无法读取，已停止写入。", "corrupt") from exc
+        if not isinstance(parsed, dict) or parsed.get("schema") != 1:
             raise AppError("输入规则版本不受支持，已停止写入。", "newer")
-        return list(parsed.get("rules") or [])
+        if not isinstance(parsed.get("rules"), list) or any(not isinstance(rule, dict) for rule in parsed["rules"]):
+            raise AppError("输入规则格式无效，已停止写入。", "corrupt")
+        return parsed
 
     def save_rules(self, rules: list[dict]) -> dict:
+        doc = self.read_rule_document()
+        awaiting = {row.get("id"): row for row in doc["rules"] if row.get("needsReview")}
+        rules = [{**rule, "needsReview": True, "enabled": False,
+                  "cloudWantsEnabled": awaiting[rule.get("id")].get("cloudWantsEnabled", False)} if rule.get("id") in awaiting else rule for rule in rules]
+        self.write_rule_document({**doc, "rules": rules})
+        return {"rules": rules}
+
+    def write_rule_document(self, document: dict):
+        rules = document["rules"]
         conflicts = shortcut_conflicts(rules)
         if conflicts:
             raise AppError("快捷键与现有规则冲突，未保存。", "conflict")
@@ -701,21 +724,10 @@ class App:
         from gaocaozuo.atomic import atomic_replace
 
         path = self.directory / "Input" / "rules.json"
-        preserved: dict = {}
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise AppError("输入规则无法读取，已停止写入。", "corrupt") from exc
-            if not isinstance(existing, dict) or existing.get("schema") != 1:
-                raise AppError("输入规则版本不受支持，已停止写入。", "newer")
-            preserved = {key: value for key, value in existing.items() if key not in {"schema", "rules"}}
         path.parent.mkdir(parents=True, exist_ok=True)
-        document = {"schema": 1, "rules": rules, **preserved}
         atomic_replace(path, (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode())
         if self.runtime:
             self.configure_runtime()
-        return {"rules": rules}
 
     def import_input(self, remote: list[dict], tombstones: list[str] | None = None) -> dict:
         return import_rules(self.rules(), remote, tombstones or [])

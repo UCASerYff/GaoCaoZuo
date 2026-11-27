@@ -1,0 +1,18 @@
+GaoCaoZuo Windows browser media export libraries
+
+Mediabunny 1.66.5 is distributed under the Mozilla Public License 2.0.
+Unmodified executable form: dist/bundles/mediabunny.min.mjs from the npm archive.
+Asset SHA-256: 42d6f069c9a96836f97be3a93a5c4fdceb3695217e04a07bf345ae597c0dc9c4
+Corresponding Source Code Form (includes src/, build scripts and license):
+https://github.com/Vanilagy/mediabunny/tree/52ca0157194bad6ae3f2a4238cf7cffaa7b8449a
+Exact npm source and binary archive:
+https://registry.npmjs.org/mediabunny/-/mediabunny-1.66.5.tgz
+See Mediabunny-LICENSE.txt.
+
+gifenc 1.0.3 is distributed under the MIT License.
+Unmodified executable form: dist/gifenc.esm.js from the npm archive.
+Asset SHA-256: 217761244379253ba5815510d3048a4fb1f4c4dbe9fb51a5cfbfe26f34eec093
+Source revision and exact archive:
+https://github.com/mattdesl/gifenc/tree/15e2c3e65ed03c977b42fec48de59b05ee9b9f54
+https://registry.npmjs.org/gifenc/-/gifenc-1.0.3.tgz
+See gifenc-LICENSE.txt.

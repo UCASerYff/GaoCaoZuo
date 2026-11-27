@@ -7,6 +7,7 @@ let shotTab = "capture";
 let shotImage = null;
 let shotDocument = null;
 let shotLong = null;
+let shotLongOverlap = "";
 let shotHistory = null;
 let providerJobs = [];
 let translationDraft = "";
@@ -69,6 +70,8 @@ function screenshotAction(id) {
   if (id === "screenshot.ocr.capture") captureImage("region", true).catch(report);
   if (id === "screenshot.ocr.clipboard") runOCR({clipboard: true}).catch(report);
   if (id === "screenshot.ocr.files") chooseOCRFiles().catch(report);
+  if (id === "screenshot.translate.clipboard") inputTranslationClipboard().catch(report);
+  if (id === "screenshot.translate.capture") inputTranslationCapture().catch(report);
 }
 function screenshotRequest(path, payload) { return api("/api/screenshot/" + path, payload); }
 async function screenshotWork(message, handler) {
@@ -98,16 +101,23 @@ function capturePage() {
   ];
   const captureActions = capture.map(([title, mode, glyph]) => button(title, () => captureImage(mode), { cls: "primary", glyph, disabled: shotBusy }));
   const longActions = shotLong?.active ? [
-    button("添加画面", () => longCapture("append"), {cls:"primary", disabled: shotBusy}),
+    button("自动滚动拼接", () => longCapture("auto"), {cls:"primary", disabled: shotBusy}),
+    button("手动添加画面", () => longCapture("append"), {disabled: shotBusy}),
     button("生成长截图", () => longCapture("finish"), {disabled: shotBusy || shotLong.frames < 2}),
     button("取消", () => longCapture("cancel"), {disabled: shotBusy}),
   ] : [button("长截图", () => longCapture("start"), {disabled: shotBusy})];
+  const manualOverlap = input(shotLongOverlap, {type:"number", min:0, step:1, placeholder:"自动检测"});
+  manualOverlap.oninput = () => { shotLongOverlap = manualOverlap.value; };
   const info = "捕获前通过当前按钮选择要采集的区域、窗口或屏幕。受保护区域和安全桌面由 Windows 控制。";
   return box("shot-home", el("h2", "捕获所选内容"), note("截图后可以保存、复制或进入标注。"),
     box("row capture-actions", ...captureActions),
     box("row", button("多窗口合成", () => captureImage("windows"), {disabled: shotBusy}), ...longActions,
       button("取色", sampleColor, {disabled: shotBusy}), button("打开图像…", chooseImage, {disabled: shotBusy}), button("贴图与交接", () => changeShotTab("history"))),
-    shotLong?.active && panel("长截图", note("在目标窗口手动向下滚动，每次保留一段重叠内容。点击“添加画面”后有 3 秒钟切回并滚动。"),
+    shotLong?.active && panel("长截图",
+      note("开始自动滚动后，3 秒内切回原窗口，把鼠标停在选区内。移动鼠标或按 Esc 可停止。"),
+      note("手动添加时，在 3 秒内切回并向下滚动，保留一段重叠内容。"),
+      field("手动续拍重叠像素", manualOverlap),
+      shotLong.automatic && note(shotLong.automatic.reason),
       note("已添加 " + shotLong.frames + " 帧 · " + shotLong.width + " × " + shotLong.height + " 像素")),
     panel("捕获选项", box("row", el("span", "延时"), delay, delayLabel)), panel("权限与范围", note(info)));
 }
@@ -148,16 +158,20 @@ async function chooseImage() {
   });
 }
 async function longCapture(command) {
-  const status = {start: "请选择长截图区域…", append: "3 秒内切回目标窗口并滚动…", finish: "正在拼接画面…", cancel: "正在取消…"};
+  const status = {start: "请选择长截图区域…", append: "3 秒内切回目标窗口并滚动…", auto: "3 秒内切回原窗口，把鼠标停在选区内…", finish: "正在拼接画面…", cancel: "正在取消…"};
   return screenshotWork(status[command], async () => {
-    const result = await screenshotRequest("long", {command, confirm: true, delay: command === "append" ? 3 : 0});
+    const overlap = command === "append" && shotLongOverlap !== "" ? Number(shotLongOverlap) : undefined;
+    if (overlap !== undefined && (!Number.isInteger(overlap) || overlap < 0)) throw new Error("重叠像素须为非负整数。");
+    const result = await screenshotRequest("long", {command, confirm: true, delay: ["append", "auto"].includes(command) ? 3 : 0, overlap});
+    if (["start", "finish", "cancel"].includes(command)) shotLongOverlap = "";
     if (command === "finish" && result.id) {
       setImage(result);
       shotLong = null;
       say("长截图已生成");
     } else {
       shotLong = command === "cancel" ? null : result;
-      say(command === "cancel" ? "已取消长截图" : "长截图已添加 " + result.frames + " 帧");
+      const message = result.automatic ? `自动滚动新增 ${result.automatic.added} 帧。${result.automatic.reason}` : "长截图已添加 " + result.frames + " 帧";
+      say(command === "cancel" ? "已取消长截图" : message);
     }
   });
 }
@@ -452,7 +466,7 @@ function ocrResult(documentResult) {
   return box("stack", el("p", "成功 " + successful.length + " / " + pages.length + " 页"), ...failed, preview,
     box("row", button("复制文字", async () => { await perform("clipboard.copyplain", {text: bodyText}); say("已复制识别文字"); }, {disabled: !bodyText}),
       button("逐行校正…", () => correctOCR(documentResult), {disabled: !successful.some(page => page.lines?.length)}),
-      ...exports, button("翻译结果", () => {translationDraft = bodyText; changeShotTab("translation");}, {disabled: !bodyText})));
+      ...exports, button("翻译结果", () => {setTranslationDraft(bodyText); changeShotTab("translation");}, {disabled: !bodyText || !!localTranslation.active})));
 }
 function correctOCR(result) {
   const content = box("stack dialog-result");
@@ -477,20 +491,180 @@ function correctOCR(result) {
       if (section === "screenshots" && shotTab === "ocr" && !dialog?.open) render();
     }});
 }
+const localTranslation = {catalog: null, loading: false, source:"auto", target:"en", output:null, active:null, status:"", error:""};
+function repaintTranslation() {
+  if (section === "screenshots" && shotTab === "translation" && !dialog?.open) render();
+}
+function setTranslationDraft(text) {
+  if (localTranslation.active) throw new Error("请先完成或取消本机翻译任务。");
+  translationDraft = text;
+  localTranslation.output = null;
+  localTranslation.status = "";
+  localTranslation.error = "";
+}
+async function loadTranslationCatalog() {
+  if (localTranslation.loading) return;
+  localTranslation.loading = true;
+  try { localTranslation.catalog = await screenshotRequest("translate/catalog", {}); }
+  catch (error) { localTranslation.catalog = {available:false, reason:error.message}; }
+  finally { localTranslation.loading = false; repaintTranslation(); }
+}
+function translationLanguage(code) {
+  const language = localTranslation.catalog?.languages?.find(item => item.code === code);
+  if (language && typeof Intl.DisplayNames === "function") {
+    try {
+      const tag = {zt:"zh-Hant", zh:"zh-Hans"}[code] || code;
+      return new Intl.DisplayNames([document.documentElement.lang || "zh-CN"], {type:"language"}).of(tag) || language.name;
+    } catch { return language.name; }
+  }
+  return language?.name || code;
+}
 function translationPage() {
+  if (!localTranslation.catalog && !localTranslation.loading) void loadTranslationCatalog();
+  const capability = localTranslation.catalog;
+  const active = !!localTranslation.active;
   const draft = area(translationDraft, "输入或粘贴要翻译的文字");
-  draft.oninput = () => { translationDraft = draft.value; };
-  const capability = state.screenshot?.translation || state.screenshots?.translation;
-  if (!capability?.available) return panel("本机翻译", note(capability?.reason || "当前 Windows 版没有本机翻译引擎。"), field("原文", draft));
-  const source = input("auto", { placeholder: "源语言" });
-  const target = input("zh-CN", {placeholder: "目标语言"});
-  const output = area("", "翻译结果");
+  draft.maxLength = 100000;
+  draft.disabled = active;
+  const result = localTranslation.output;
+  const output = area(result?.text || "", "翻译结果");
   output.readOnly = true;
-  return panel("本机翻译", box("columns", field("源语言", source), field("目标语言", target)), field("原文", draft),
-    box("row", button("翻译", async () => {
-      const result = await screenshotRequest("translate", {text: draft.value, source: source.value, target: target.value});
-      output.value = result.text || "";
-    }, {cls:"primary"})), field("译文", output));
+  const run = button("翻译", prepareTranslation, {cls:"primary", disabled: active || !capability?.available || !translationDraft.trim()});
+  const clear = () => { output.value = ""; localTranslation.output = null; localTranslation.status = ""; localTranslation.error = ""; };
+  const message = el("p", localTranslation.error || localTranslation.status, localTranslation.error ? "error" : "muted");
+  const copy = button("复制译文", async () => {
+    await perform("clipboard.copyplain", {text: localTranslation.output.text});
+    say("已复制译文");
+  }, {disabled: !result});
+  draft.oninput = () => {
+    translationDraft = draft.value;
+    clear();
+    message.textContent = "";
+    copy.disabled = true;
+    run.disabled = !capability?.available || !translationDraft.trim();
+  };
+  const languages = (capability?.languages || []).map(language => [language.code, translationLanguage(language.code)]);
+  const source = select([["auto", "自动检测"], ...languages], localTranslation.source);
+  const target = select(languages, localTranslation.target);
+  source.disabled = target.disabled = active || !capability?.available;
+  source.onchange = () => {localTranslation.source = source.value; clear(); repaintTranslation();};
+  target.onchange = () => {localTranslation.target = target.value; clear(); repaintTranslation();};
+  const notice = capability?.available
+    ? "原文和译文只在本机处理。缺少语言包时，可查看大小并主动确认下载。"
+    : capability?.reason || "正在检查本机翻译组件…";
+  return panel("本机翻译", note(notice), box("columns", field("源语言", source), field("目标语言", target)), field("原文", draft),
+    box("row", button("使用剪贴板文字", inputTranslationClipboard, {disabled: active}),
+      button("截图识别文字", inputTranslationCapture, {disabled: active || shotBusy}), run,
+      active && button("取消", cancelLocalTranslation)), message,
+    result?.detected && note(tr("识别的原文语言") + " · " + translationLanguage(result.source)), field("译文", output), copy);
+}
+async function inputTranslationClipboard() {
+  if (localTranslation.active) throw new Error("请先完成或取消本机翻译任务。");
+  const result = await screenshotRequest("translate/input", {mode:"clipboard", confirm:true});
+  if (!result.text) throw new Error("剪贴板没有可翻译的文字。");
+  setTranslationDraft(result.text);
+  changeShotTab("translation");
+}
+async function inputTranslationCapture() {
+  if (localTranslation.active) throw new Error("请先完成或取消本机翻译任务。");
+  return screenshotWork("等待截图与离线识别…", async () => {
+    const capture = await perform("screenshot.capture", {confirm:true, mode:"region", delay:captureDelay});
+    if (!capture.id) throw new Error("未取得画面。");
+    shotDocument = await screenshotRequest("ocr", {id:capture.id, confirm:true});
+    if (!shotDocument.text) throw new Error("截图没有可翻译的识别文字。");
+    setTranslationDraft(shotDocument.text);
+    shotTab = "translation";
+  });
+}
+async function prepareTranslation() {
+  if (localTranslation.active) return;
+  const request = {text:translationDraft, source:localTranslation.source, target:localTranslation.target};
+  const operation = {cancelled:false, id:null};
+  localTranslation.active = operation;
+  localTranslation.output = null;
+  localTranslation.error = "";
+  localTranslation.status = "正在检查语言组合…";
+  repaintTranslation();
+  try {
+    const plan = await screenshotRequest("translate/plan", request);
+    if (operation.cancelled) return;
+    const damaged = plan.packs.find(pack => pack.status === "damaged");
+    if (damaged) throw new Error("本机语言包文件不完整，请检查 TranslationModels 目录后重试。");
+    const packs = plan.packs.filter(pack => pack.status !== "installed");
+    if (!packs.length) return await runLocalTranslation(operation, request, []);
+    localTranslation.active = null;
+    localTranslation.status = "待下载语言包。";
+    const packageNames = packs.map(pack => el("li", translationLanguage(pack.source) + " → " + translationLanguage(pack.target) +
+      " · " + (pack.size / (1024 * 1024)).toFixed(1) + " MiB"));
+    const packageList = el("ul", "", "result-list");
+    packageList.append(...packageNames);
+    showModal("下载本机翻译语言包", box("stack", note("将从 Argos Open Tech 下载固定版本的语言包。此次下载只请求语言包文件。"),
+      packageList,
+      plan.pivot && note("该组合通过英语中转。"),
+      box("row", button("取消", () => dialog.close()), button("确认下载并翻译", () => {
+        dialog.close();
+        return runLocalTranslation(operation, request, packs);
+      }, {cls:"primary"}))), {closed: repaintTranslation});
+  } catch (error) {
+    if (!operation.cancelled) localTranslation.error = error.message;
+  } finally {
+    if (localTranslation.active === operation) localTranslation.active = null;
+    if (operation.cancelled) localTranslation.status = "已取消。";
+    repaintTranslation();
+  }
+}
+async function runLocalTranslation(operation, request, packs) {
+  localTranslation.active = operation;
+  try {
+    for (const pack of packs) {
+      if (operation.cancelled) return;
+      localTranslation.status = "正在下载语言包…";
+      repaintTranslation();
+      const download = await screenshotRequest("translate/download", {packId:pack.id, confirm:true});
+      await pollTranslationJob(operation, download);
+    }
+    if (operation.cancelled) return;
+    localTranslation.status = "正在本机翻译…";
+    repaintTranslation();
+    const job = await screenshotRequest("translate", request);
+    const result = await pollTranslationJob(operation, job);
+    if (result && !operation.cancelled) {
+      localTranslation.output = result;
+      localTranslation.status = "本机翻译已完成。";
+    }
+  } catch (error) {
+    if (!operation.cancelled) { localTranslation.error = error.message; localTranslation.status = ""; }
+  } finally {
+    if (operation.cancelled) localTranslation.status = "已取消。";
+    if (localTranslation.active === operation) localTranslation.active = null;
+    repaintTranslation();
+  }
+}
+async function pollTranslationJob(operation, job) {
+  operation.id = job.jobId;
+  if (operation.cancelled) await screenshotRequest("translate/cancel", {jobId:operation.id});
+  try {
+    while (["running", "cancelling"].includes(job.status)) {
+      if (job.kind === "download" && !operation.cancelled) {
+        localTranslation.status = tr("正在下载语言包…") + " " + Math.floor(job.completedBytes / job.totalBytes * 100) + "%";
+        repaintTranslation();
+      }
+      await new Promise(resolve => setTimeout(resolve, 400));
+      job = await screenshotRequest("translate/job", {jobId:operation.id});
+    }
+    if (job.status === "error") throw new Error(job.error || "本机翻译任务失败。");
+    return job.result;
+  } finally {
+    operation.id = null;
+  }
+}
+async function cancelLocalTranslation() {
+  const operation = localTranslation.active;
+  if (!operation) return;
+  operation.cancelled = true;
+  localTranslation.status = "正在取消…";
+  repaintTranslation();
+  if (operation.id) await screenshotRequest("translate/cancel", {jobId:operation.id});
 }
 async function getShotHistory(enabled) {
   const [history, jobs] = await Promise.all([
@@ -586,62 +760,114 @@ function exportProviderJob(job) {
   });
 }
 
-const recorderMimeTypes = [
-  "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm",
-];
+const recordingOutputFormats = {
+  mov: "QuickTime MOV", m4a: "MPEG-4 Audio", gif: "GIF",
+};
 const recording = {
-  mode: "screen", systemAudio: false, microphone: false, fps: "30", status: "idle",
-  streams: [], recorder: null, chunks: [], bytes: 0, result: null, error: "", started: null,
+  mode: "screen", systemAudio: true, microphone: false, fps: "30", status: "idle",
+  streams: [], recorder: null, chunks: [], bytes: 0, result: null, saved: false, error: "", started: null,
+  exportTask: null, elapsed: 0, resumedAt: null, clock: null,
 };
 const recordingLimit = 512 * 1024 * 1024;
+const mediaTools = {
+  source: null, start: 0, end: 5, fps: 10, size: 640, crop: false,
+  x: 0, y: 0, width: 1, height: 1, saturation: 1, contrast: 1, brightness: 0, prepared: null, writing: false,
+};
+
+function recordingVisible() { return section === "screenshots" && shotTab === "record"; }
+function renderRecording() { if (recordingVisible()) render(); }
+function mediaText(key, values) {
+  return tr(key).replace(/\{([a-z]+)\}/g, (placeholder, name) => values[name] ?? placeholder);
+}
+
+function recorderMimeType(video, audio) {
+  const candidates = video ?
+    [audio ? "video/mp4;codecs=avc1,mp4a.40.2" : "video/mp4;codecs=avc1",
+      audio ? "video/mp4;codecs=avc1.640034,mp4a.40.2" : "video/mp4;codecs=avc1.640034",
+      audio ? "video/webm;codecs=vp9,opus" : "video/webm;codecs=vp9",
+      audio ? "video/webm;codecs=vp8,opus" : "video/webm;codecs=vp8", "video/webm"] :
+    ["audio/mp4;codecs=mp4a.40.2", "audio/webm;codecs=opus", "audio/webm"];
+  return candidates.find(mime => MediaRecorder.isTypeSupported(mime));
+}
+
+function recordingSeconds() {
+  return ((recording.elapsed + (recording.resumedAt === null ? 0 : performance.now() - recording.resumedAt)) / 1000).toFixed(1);
+}
+
 function recordingPage() {
-  const modes = select([["screen", "屏幕 / 窗口"], ["microphone", "仅录音"]], recording.mode);
-  modes.onchange = () => { recording.mode = modes.value; render(); };
+  const modes = select([["screen", "屏幕 / 窗口"], ["audio", "仅录音"]], recording.mode);
+  modes.onchange = () => {
+    recording.mode = modes.value;
+    if (recording.mode === "audio" && !recording.systemAudio) recording.microphone = true;
+    render();
+  };
   const fps = select([["15", "15 fps"], ["30", "30 fps"], ["60", "60 fps"]], recording.fps);
   fps.onchange = () => { recording.fps = fps.value; };
+  const screenNeeded = recording.mode === "screen" || recording.systemAudio;
   const canRecord = typeof MediaRecorder === "function" &&
-    (recording.mode === "microphone" ? navigator.mediaDevices?.getUserMedia : navigator.mediaDevices?.getDisplayMedia);
+    (!screenNeeded || Boolean(navigator.mediaDevices?.getDisplayMedia)) &&
+    (!recording.microphone || Boolean(navigator.mediaDevices?.getUserMedia));
+  const hasSource = recording.mode === "screen" || recording.systemAudio || recording.microphone;
   const active = ["starting", "recording", "paused", "stopping"].includes(recording.status);
-  modes.disabled = fps.disabled = active;
-  const audio = toggle("共享音频", recording.systemAudio, value => { recording.systemAudio = value; });
-  const mic = toggle("麦克风", recording.microphone, value => { recording.microphone = value; });
-  audio.firstChild.disabled = mic.firstChild.disabled = active;
-  const status = {idle: "未录制", starting: "等待系统授权", recording: "正在录制", paused: "已暂停", stopping: "正在生成文件", ready: "录制待保存", error: "录制已停止"};
+  const exporting = Boolean(recording.exportTask) || mediaTools.writing;
+  modes.disabled = fps.disabled = active || exporting;
+  const audio = toggle("共享音频", recording.systemAudio, value => { recording.systemAudio = value; render(); });
+  const mic = toggle("麦克风", recording.microphone, value => { recording.microphone = value; render(); });
+  audio.firstChild.disabled = mic.firstChild.disabled = active || exporting;
+  const status = {idle: "未录制", starting: "等待系统授权", recording: "正在录制", paused: "已暂停", stopping: "正在生成文件", ready: "录制待保存", saved: "录制已保存", error: "录制已停止"};
+  const result = recording.result;
+  const target = result?.format?.toUpperCase();
   const controls = box("row",
-    button("开始录制", beginRecording, {cls:"primary", glyph:"play", disabled: !canRecord || active || Boolean(recording.result)}),
+    button("开始录制", beginRecording, {cls:"primary", glyph:"play", disabled: !hasSource || !canRecord || active || exporting || (Boolean(result) && !recording.saved)}),
     button(recording.status === "paused" ? "继续" : "暂停", pauseRecording, {disabled: !["recording", "paused"].includes(recording.status)}),
     button("停止并完成", () => stopRecording(false), {disabled: !["recording", "paused"].includes(recording.status)}),
     button("取消录制…", () => confirmAction("取消录制？", "当前会话的未保存内容将被丢弃。", () => stopRecording(true), "取消录制"),
       {disabled: !["recording", "paused"].includes(recording.status)}));
-  const saved = recording.result && box("row", button("保存录制…", saveRecording, {cls:"primary"}),
-    button("丢弃未保存录制…", () => confirmAction("丢弃录制？", "当前录制尚未写入文件。", () => {
+  const saved = result && box("row",
+    button(mediaText("生成 {format}", {format: target}), () => saveRecording(result.format, true), {cls:"primary", disabled: exporting}),
+    result.audio && result.format !== "m4a" && button("导出 M4A…", () => saveRecording("m4a"), {disabled: exporting}),
+    button("保存原始录制…", saveRawRecording, {disabled: exporting}),
+    button(recording.saved ? "关闭录制副本…" : "丢弃未保存录制…", () => confirmAction("关闭当前录制？",
+      recording.saved ? "已保存的文件会保留，工作台将关闭当前录制副本。" : "当前录制尚未写入文件。", () => {
       recording.result = null;
+      recording.saved = false;
       recording.status = "idle";
       render();
-    }, "丢弃"), {cls:"plain danger"}));
-  const videoOptions = recording.mode === "screen" && box("row", field("画面帧率", fps), audio, mic);
-  return box("stack", panel("录屏与录音", box("row", field("录制来源", modes)),
-    videoOptions, note("点击开始后，使用系统或浏览器提示选择屏幕、窗口和麦克风。共享音频取决于所选择的来源。"),
-    controls, el("strong", status[recording.status] || status.idle),
+    }, "关闭"), {cls:"plain danger", disabled: exporting}));
+  const elapsed = el("span", mediaText("{seconds} 秒", {seconds: recordingSeconds()}), "muted");
+  elapsed.dataset.recordingElapsed = "true";
+  const exportStatus = el("span", recording.exportTask?.status || "", "muted");
+  exportStatus.dataset.mediaExportStatus = "true";
+  return box("stack", panel("录屏与独立录音", box("row", field("录制来源", modes)),
+    box("row", recording.mode === "screen" && field("画面帧率", fps), audio, mic),
+    note("系统提示会让你选择画面和音源。仅录音时，为提供系统声音而选择的画面不会进入输出。两种音源同时使用时会混为一轨。"),
+    controls, box("row", el("strong", status[recording.status] || status.idle), elapsed),
     !canRecord && note("当前应用窗口无法调用浏览器的录制接口。"),
+    !hasSource && note("请选择共享音频或麦克风。"),
     recording.error && el("p", recording.error, "error"),
-    saved));
+    saved), mediaToolsPanel(active || exporting), recording.exportTask && box("row",
+      exportStatus, button("取消导出", () => recording.exportTask?.controller.abort())), mediaSavePanel(active || exporting));
 }
 async function beginRecording() {
-  if (recording.recorder || recording.result || recording.status === "starting") return;
-  const voiceOnly = recording.mode === "microphone";
+  if (recording.recorder || (recording.result && !recording.saved) || recording.exportTask || mediaTools.writing || recording.status === "starting") return;
+  const voiceOnly = recording.mode === "audio";
   const sharedAudio = recording.systemAudio;
-  const wantsMic = recording.microphone || voiceOnly;
+  const wantsMic = recording.microphone;
+  if (voiceOnly && !sharedAudio && !wantsMic) return;
+  recording.result = null;
+  recording.saved = false;
   recording.status = "starting";
   recording.error = "";
   recording.chunks = [];
   recording.bytes = 0;
+  recording.elapsed = 0;
+  recording.resumedAt = null;
   const streams = [];
   let audioContext;
   try {
     let screen;
     let microphone;
-    if (!voiceOnly) {
+    if (!voiceOnly || sharedAudio) {
       screen = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: {ideal: Number(recording.fps), max: Number(recording.fps)} }, audio: sharedAudio,
       });
@@ -652,7 +878,8 @@ async function beginRecording() {
       streams.push(microphone);
     }
     if (screen?.getVideoTracks().every(track => track.readyState === "ended")) throw new Error("共享画面已经结束。");
-    const combined = new MediaStream(screen?.getVideoTracks() || []);
+    const displayAudio = Boolean(screen?.getAudioTracks().length);
+    const combined = new MediaStream(voiceOnly ? [] : screen?.getVideoTracks() || []);
     const audioInputs = [screen, microphone].filter(stream => stream?.getAudioTracks().length);
     if (audioInputs.length === 2) {
       audioContext = new AudioContext();
@@ -662,8 +889,10 @@ async function beginRecording() {
       combined.addTrack(mixed.stream.getAudioTracks()[0]);
       streams.push(mixed.stream);
     } else if (audioInputs.length) combined.addTrack(audioInputs[0].getAudioTracks()[0]);
-    const mime = (voiceOnly ? ["audio/webm;codecs=opus", "audio/webm"] : recorderMimeTypes).find(type => MediaRecorder.isTypeSupported(type));
-    if (!mime) throw new Error("当前浏览器无法编码 WebM。");
+    const hasAudio = Boolean(combined.getAudioTracks().length);
+    if (voiceOnly && !hasAudio) throw new Error("所选来源未提供音频。请选择可共享声音的来源，或开启麦克风。");
+    const mime = recorderMimeType(!voiceOnly, hasAudio);
+    if (!mime) throw new Error("当前浏览器没有可用的录制编码器。");
     const recorder = new MediaRecorder(combined, {mimeType: mime});
     recording.recorder = recorder;
     recording.streams = streams;
@@ -682,9 +911,10 @@ async function beginRecording() {
     });
     recorder.addEventListener("error", () => { recording.error = "浏览器编码失败。"; });
     recorder.addEventListener("stop", () => {
-      const blob = recording.chunks.length && !recording.cancelled ? new Blob(recording.chunks, {type: mime}) : null;
+      finishRecordingClock();
+      const blob = recording.chunks.length && !recording.cancelled ? new Blob(recording.chunks, {type: recorder.mimeType || mime}) : null;
       if (blob?.size) {
-        recording.result = blob;
+        recording.result = {blob, audio: hasAudio, video: !voiceOnly, format: voiceOnly && !displayAudio ? "m4a" : "mov"};
         recording.status = "ready";
         say(recording.error || "录制已完成，可保存文件", Boolean(recording.error));
       } else {
@@ -697,13 +927,18 @@ async function beginRecording() {
       recording.chunks = [];
       recording.streams = [];
       recording.bytes = 0;
-      if (section === "screenshots" && shotTab === "record") render();
+      renderRecording();
     });
-    const trackEnds = voiceOnly ? combined.getAudioTracks() : combined.getVideoTracks();
+    const trackEnds = [screen, microphone].filter(Boolean).flatMap(stream => stream.getTracks());
     trackEnds.forEach(track => track.addEventListener("ended", () => {
       if (recorder.state !== "inactive") stopRecording(false);
     }, {once:true}));
     recorder.start(1000);
+    recording.resumedAt = performance.now();
+    recording.clock = setInterval(() => {
+      const label = document.querySelector("[data-recording-elapsed]");
+      if (label) label.textContent = mediaText("{seconds} 秒", {seconds: recordingSeconds()});
+    }, 250);
     say(sharedAudio && screen && !screen.getAudioTracks().length ? "正在录制。当前共享来源没有提供音频。" : "正在录制");
   } catch (error) {
     streams.flatMap(stream => stream.getTracks()).forEach(track => track.stop());
@@ -714,16 +949,25 @@ async function beginRecording() {
     recording.error = error.name === "NotAllowedError" ? "录制授权已取消或被 Windows 拒绝。" : error.message;
     say(recording.error, true);
   }
-  if (section === "screenshots" && shotTab === "record") render();
+  renderRecording();
+}
+function pauseRecordingClock() {
+  if (recording.resumedAt !== null) recording.elapsed += performance.now() - recording.resumedAt;
+  recording.resumedAt = null;
+}
+function finishRecordingClock() {
+  pauseRecordingClock();
+  clearInterval(recording.clock);
+  recording.clock = null;
 }
 function pauseRecording() {
   const recorder = recording.recorder;
   if (recorder?.state === "recording") {
-    recorder.pause(); recording.status = "paused"; say("录制已暂停");
+    recorder.pause(); pauseRecordingClock(); recording.status = "paused"; say("录制已暂停");
   } else if (recorder?.state === "paused") {
-    recorder.resume(); recording.status = "recording"; say("录制已继续");
+    recorder.resume(); recording.resumedAt = performance.now(); recording.status = "recording"; say("录制已继续");
   }
-  if (section === "screenshots" && shotTab === "record") render();
+  renderRecording();
 }
 function stopRecording(cancel) {
   const recorder = recording.recorder;
@@ -731,37 +975,151 @@ function stopRecording(cancel) {
   recording.cancelled = cancel;
   recording.status = "stopping";
   recorder.stop();
+  renderRecording();
 }
-async function saveRecording() {
-  const recorded = recording.result;
-  if (!recorded) return;
+
+function recordingName(clip, extension, audioExport = false) {
   const stamp = recording.started.toISOString().slice(0, 19).replaceAll(":", "-").replace("T", "_");
-  const name = "搞操作-" + (recorded.type.startsWith("audio") ? "录音-" : "录屏-") + stamp + ".webm";
-  if (window.showSaveFilePicker) {
-    try {
-      const handle = await window.showSaveFilePicker({suggestedName: name, types: [
-        {description: "WebM", accept: {[recorded.type.startsWith("audio") ? "audio/webm" : "video/webm"]: [".webm"]}},
-      ]});
-      const writer = await handle.createWritable();
-      try { await writer.write(recorded); await writer.close(); }
-      catch (error) { await writer.abort(); throw error; }
-      if (recording.result === recorded) {
-        recording.result = null;
-        recording.status = "idle";
-      }
-      say("录制已保存");
-    } catch (error) {
-      if (error.name === "AbortError") return;
-      throw error;
-    }
-  } else {
-    downloadBlob(recorded, name);
-    say("已交给浏览器保存录制文件");
-  }
-  if (section === "screenshots" && shotTab === "record") render();
+  return `搞操作-${clip.video && !audioExport ? "录屏" : "录音"}-${stamp}.${extension}`;
 }
+
+function setMediaExportProgress(task, status) {
+  task.status = status;
+  const label = document.querySelector("[data-media-export-status]");
+  if (label) label.textContent = status;
+}
+
+async function prepareMediaOutput(build) {
+  if (recording.exportTask || mediaTools.writing) return;
+  const task = {controller: new AbortController(), status: "正在准备导出…"};
+  recording.exportTask = task;
+  renderRecording();
+  try {
+    mediaTools.prepared = await build(task);
+    say("导出已生成，请选择保存位置。");
+  } catch (error) {
+    if (task.controller.signal.aborted || error.name === "AbortError") say("已取消导出。");
+    else say(error.message || "媒体导出失败。", true);
+  } finally {
+    recording.exportTask = null;
+    renderRecording();
+  }
+}
+
+function saveRecording(format, primary = false) {
+  const clip = recording.result;
+  if (!clip) return;
+  return prepareMediaOutput(async task => {
+    const {convertRecording} = await import("./media_export.js");
+    const blob = await convertRecording(clip.blob, format, {
+      signal: task.controller.signal,
+      progress: rate => setMediaExportProgress(task, mediaText("正在导出 {format} · {percent}%", {format: format.toUpperCase(), percent: Math.round(rate * 100)})),
+    });
+    return {blob, format, name: recordingName(clip, format, format === "m4a"), primary: primary ? clip : null};
+  });
+}
+
+function saveRawRecording() {
+  const clip = recording.result;
+  if (!clip) return;
+  const format = clip.blob.type.includes("mp4") ? (clip.video ? "mp4" : "m4a") : "webm";
+  return writeMediaOutput({blob: clip.blob, format, name: recordingName(clip, format), primary: clip});
+}
+
+async function writeMediaOutput(item) {
+  if (!item || recording.exportTask || mediaTools.writing) return;
+  const {blob, format, name, primary} = item;
+  const description = recordingOutputFormats[format] || format.toUpperCase();
+  try {
+    if (!window.showSaveFilePicker) {
+      downloadBlob(blob, name);
+      say("已请求浏览器下载。请核对下载结果。");
+      return;
+    }
+    mediaTools.writing = true;
+    const picking = window.showSaveFilePicker({suggestedName: name, types: [
+      {description, accept: {[blob.type.split(";")[0]]: [`.${format}`]}},
+    ]});
+    renderRecording();
+    const handle = await picking;
+    const writer = await handle.createWritable();
+    try { await writer.write(blob); await writer.close(); }
+    catch (error) { await writer.abort().catch(() => {}); throw error; }
+    if (primary && recording.result === primary) {
+      recording.saved = true;
+      recording.status = "saved";
+    }
+    if (mediaTools.prepared === item) mediaTools.prepared = null;
+    say(mediaText("已保存 {name}", {name: handle.name || name}));
+  } catch (error) {
+    if (error.name !== "AbortError") say(error.message || "无法保存导出文件。", true);
+  } finally {
+    mediaTools.writing = false;
+    renderRecording();
+  }
+}
+
+function mediaSavePanel(disabled) {
+  const prepared = mediaTools.prepared;
+  if (!prepared) return null;
+  return box("row", el("strong", prepared.name),
+    button("选择位置保存…", () => writeMediaOutput(prepared), {cls:"primary", disabled}),
+    button("关闭导出", () => { mediaTools.prepared = null; renderRecording(); }, {disabled}));
+}
+
+function mediaToolsPanel(disabled) {
+  const recordingVideo = recording.result?.video ? recording.result.blob : null;
+  const video = mediaTools.source || recordingVideo;
+  const source = document.createElement("input");
+  source.type = "file";
+  source.accept = "video/*,audio/*,.mov,.mp4,.m4a,.mkv,.webm";
+  source.disabled = disabled;
+  source.onchange = () => {
+    if (source.files.length) mediaTools.source = source.files[0];
+    renderRecording();
+  };
+  const number = (label, key, min, max, step = 1) => {
+    const control = input(mediaTools[key], {type:"number", min, max, step});
+    control.disabled = disabled;
+    control.oninput = () => { mediaTools[key] = control.valueAsNumber; };
+    return field(label, control);
+  };
+  const crop = toggle("按归一化坐标裁剪", mediaTools.crop, value => { mediaTools.crop = value; renderRecording(); });
+  crop.firstChild.disabled = disabled;
+  return panel("视频转 GIF 与音频导出", field("本机媒体文件", source),
+    mediaTools.source && box("row", el("span", mediaTools.source.name), button("清除所选文件", () => {
+      mediaTools.source = null;
+      renderRecording();
+    }, {disabled})),
+    !mediaTools.source && recordingVideo && note("当前录屏可直接用作来源。"),
+    box("row", number("开始秒", "start", 0, undefined, 0.1), number("结束秒", "end", 0.1, undefined, 0.1),
+      number("帧率", "fps", 1, 30), number("最长边（像素）", "size", 16, 1920)),
+    box("row", number("饱和度", "saturation", 0, 2, 0.1), number("对比度", "contrast", 0.5, 2, 0.1),
+      number("亮度", "brightness", -0.5, 0.5, 0.1), crop),
+    mediaTools.crop && box("row", number("X", "x", 0, 1, 0.01), number("Y", "y", 0, 1, 0.01),
+      number("宽", "width", 0.01, 1, 0.01), number("高", "height", 0.01, 1, 0.01)),
+    note("GIF 最多 256 色，不含音频。转换在本机完成。"),
+    box("row", button("生成 GIF", () => prepareMediaOutput(async task => {
+      const {makeGif} = await import("./media_export.js");
+      const {start, end, fps, size, saturation, contrast, brightness} = mediaTools;
+      const {blob, frames} = await makeGif(video, {start, end, fps, size, saturation, contrast, brightness,
+        crop: mediaTools.crop ? [mediaTools.x, mediaTools.y, mediaTools.width, mediaTools.height] : null}, {
+        signal: task.controller.signal,
+        progress: (done, total) => setMediaExportProgress(task, mediaText("正在转换 GIF · {done}/{total} 帧", {done, total})),
+      });
+      say(mediaText("已生成 {frames} 帧 GIF", {frames}));
+      return {blob, format: "gif", name: "搞操作-动图.gif"};
+    }), {disabled: disabled || !video}),
+    button("从本机文件导出 M4A", () => prepareMediaOutput(async task => {
+      const {convertRecording} = await import("./media_export.js");
+      const blob = await convertRecording(mediaTools.source, "m4a", {signal: task.controller.signal,
+        progress: rate => setMediaExportProgress(task, mediaText("正在导出 {format} · {percent}%", {format: "M4A", percent: Math.round(rate * 100)}))});
+      return {blob, format: "m4a", name: "搞操作-音频.m4a"};
+    }), {disabled: disabled || !mediaTools.source})));
+}
+
 window.addEventListener("beforeunload", event => {
-  if (!recording.recorder && !recording.result) return;
+  if (!recording.recorder && (!recording.result || recording.saved) && !recording.exportTask && !mediaTools.prepared) return;
   event.preventDefault();
   event.returnValue = "";
 });

@@ -1,0 +1,84 @@
+# zh-Hans|zh-Hant|en|ja|de|fr|es|it|ko|pt
+工作台|工作台|Workbench|ワークベンチ|Arbeitsplatz|Espace de travail|Espacio de trabajo|Area di lavoro|작업대|Área de trabalho
+日常工具|日常工具|Everyday tools|日常ツール|Alltagswerkzeuge|Outils du quotidien|Herramientas de uso diario|Strumenti quotidiani|일상 도구|Ferramentas do dia a dia
+桌面与窗口|桌面與視窗|Desktop & windows|デスクトップとウィンドウ|Desktop und Fenster|Bureau et fenêtres|Escritorio y ventanas|Scrivania e finestre|데스크톱 및 창|Área de trabalho e janelas
+实用工具|實用工具|Utilities|ユーティリティ|Dienstprogramme|Utilitaires|Utilidades|Utilità|유틸리티|Utilitários
+桌面总览|桌面總覽|Desktop overview|デスクトップの概要|Desktopübersicht|Vue d’ensemble du bureau|Vista general del escritorio|Panoramica della scrivania|데스크톱 개요|Visão geral da área de trabalho
+压缩与解压|壓縮與解壓縮|Compress & extract|圧縮と展開|Komprimieren und entpacken|Compression et extraction|Comprimir y extraer|Comprimi ed estrai|압축 및 풀기|Compactar e extrair
+截图与录制|截圖與錄製|Capture & recording|スクリーンショットと録画|Bildschirmfotos und Aufnahmen|Captures et enregistrements|Capturas y grabaciones|Istantanee e registrazioni|캡처 및 녹화|Capturas e gravações
+录屏与录音|螢幕錄製與錄音|Screen & audio recording|画面と音声の収録|Bildschirm- und Audioaufnahme|Enregistrement d’écran et audio|Grabación de pantalla y audio|Registrazione di schermo e audio|화면 및 오디오 녹화|Gravação de tela e áudio
+历史与交接|歷史與交接|History & handoff|履歴と引き継ぎ|Verlauf und Übergabe|Historique et transfert|Historial y transferencia|Cronologia e passaggio|기록 및 전달|Histórico e transferência
+系统与权限|系統與權限|System & permissions|システムと権限|System und Berechtigungen|Système et autorisations|Sistema y permisos|Sistema e permessi|시스템 및 권한|Sistema e permissões
+锁屏策略|鎖定螢幕策略|Lock screen policy|画面ロックの設定|Sperrbildschirmrichtlinie|Règle de verrouillage|Política de bloqueo|Criteri di blocco|잠금 화면 정책|Política de bloqueio
+跟随系统|跟隨系統|Use system setting|システム設定に従う|Systemeinstellung verwenden|Suivre le système|Usar ajustes del sistema|Usa impostazioni di sistema|시스템 설정 사용|Usar ajuste do sistema
+界面语言|介面語言|Interface language|表示言語|Anzeigesprache|Langue d’interface|Idioma de la interfaz|Lingua dell’interfaccia|인터페이스 언어|Idioma da interface
+设置已保存|設定已儲存|Settings saved|設定を保存しました|Einstellungen gespeichert|Réglages enregistrés|Ajustes guardados|Impostazioni salvate|설정이 저장되었습니다|Ajustes salvos
+资源管理器|檔案總管|File Explorer|エクスプローラー|Datei-Explorer|Explorateur de fichiers|Explorador de archivos|Esplora file|파일 탐색기|Explorador de Arquivos
+预览压缩包|預覽壓縮檔|Preview archive|アーカイブのプレビュー|Archivvorschau|Aperçu de l’archive|Vista previa del archivo|Anteprima archivio|압축 파일 미리보기|Prévia do arquivo compactado
+选择新增文件…|選擇新增檔案…|Choose files to add…|追加するファイルを選択…|Dateien zum Hinzufügen auswählen…|Choisir les fichiers à ajouter…|Elegir archivos para añadir…|Scegli file da aggiungere…|추가할 파일 선택…|Escolher arquivos para adicionar…
+另存新副本…|另存新副本…|Save new copy…|新規コピーを保存…|Neue Kopie speichern…|Enregistrer une nouvelle copie…|Guardar una copia nueva…|Salva nuova copia…|새 복사본 저장…|Salvar nova cópia…
+保存到原包…|儲存至原壓縮檔…|Save to original archive…|元のアーカイブに保存…|Im Originalarchiv speichern…|Enregistrer dans l’archive originale…|Guardar en el archivo original…|Salva nell’archivio originale…|원본 압축 파일에 저장…|Salvar no arquivo original…
+移除勾选项|移除勾選項目|Remove selected items|選択した項目を削除|Ausgewählte Elemente entfernen|Retirer les éléments sélectionnés|Eliminar los elementos seleccionados|Rimuovi elementi selezionati|선택 항목 제거|Remover itens selecionados
+清理隐藏成员|清除隱藏成員|Remove hidden entries|隠し項目を削除|Versteckte Einträge entfernen|Retirer les éléments masqués|Eliminar entradas ocultas|Rimuovi elementi nascosti|숨은 항목 제거|Remover itens ocultos
+iCloud Drive 规则同步|iCloud Drive 規則同步|iCloud Drive rule sync|iCloud Drive ルール同期|Regelsynchronisierung über iCloud Drive|Synchronisation des règles via iCloud Drive|Sincronización de reglas en iCloud Drive|Sincronizzazione regole iCloud Drive|iCloud Drive 규칙 동기화|Sincronização de regras pelo iCloud Drive
+选择 iCloud Drive 目录…|選擇 iCloud Drive 目錄…|Choose iCloud Drive folder…|iCloud Drive フォルダーを選択…|iCloud Drive-Ordner auswählen…|Choisir un dossier iCloud Drive…|Elegir carpeta de iCloud Drive…|Scegli cartella iCloud Drive…|iCloud Drive 폴더 선택…|Escolher pasta do iCloud Drive…
+立即同步|立即同步|Sync now|今すぐ同期|Jetzt synchronisieren|Synchroniser maintenant|Sincronizar ahora|Sincronizza ora|지금 동기화|Sincronizar agora
+停止同步|停止同步|Stop syncing|同期を停止|Synchronisierung beenden|Arrêter la synchronisation|Detener sincronización|Interrompi sincronizzazione|동기화 중지|Parar sincronização
+保留本机改动|保留本機變更|Keep local changes|ローカルの変更を保持|Lokale Änderungen behalten|Conserver les modifications locales|Conservar los cambios locales|Mantieni modifiche locali|로컬 변경 사항 유지|Manter alterações locais
+在本机复核…|在本機複核…|Review on this device…|このデバイスで確認…|Auf diesem Gerät prüfen…|Vérifier sur cet appareil…|Revisar en este dispositivo…|Verifica su questo dispositivo…|이 기기에서 검토…|Revisar neste dispositivo…
+保持停用|保持停用|Keep disabled|無効のまま|Deaktiviert lassen|Laisser désactivé|Mantener desactivado|Mantieni disattivato|비활성화 유지|Manter desativada
+自动长截图…|自動長截圖…|Automatic scrolling capture…|自動スクロール撮影…|Automatische Scrollaufnahme…|Capture défilante automatique…|Captura con desplazamiento automático…|Acquisizione a scorrimento automatica…|자동 스크롤 캡처…|Captura de rolagem automática…
+手动长截图…|手動長截圖…|Manual scrolling capture…|手動スクロール撮影…|Manuelle Scrollaufnahme…|Capture défilante manuelle…|Captura con desplazamiento manual…|Acquisizione a scorrimento manuale…|수동 스크롤 캡처…|Captura de rolagem manual…
+本机离线翻译|本機離線翻譯|Offline translation|オフライン翻訳|Offlineübersetzung|Traduction hors ligne|Traducción sin conexión|Traduzione offline|오프라인 번역|Tradução offline
+下载语言包…|下載語言套件…|Download language pack…|言語パックをダウンロード…|Sprachpaket herunterladen…|Télécharger le module linguistique…|Descargar paquete de idioma…|Scarica pacchetto lingua…|언어 팩 다운로드…|Baixar pacote de idioma…
+设置|設定|Settings|設定|Einstellungen|Réglages|Ajustes|Impostazioni|설정|Ajustes
+外观|外觀|Appearance|外観|Erscheinungsbild|Apparence|Apariencia|Aspetto|모양|Aparência
+截图|截圖|Capture|スクリーンショット|Bildschirmfoto|Capture|Captura|Istantanea|스크린샷|Captura
+标注|標註|Annotation|注釈|Anmerkung|Annotation|Anotación|Annotazione|주석|Anotação
+贴图|貼圖|Pinned image|ピン留め画像|Angeheftetes Bild|Image épinglée|Imagen fijada|Immagine fissata|고정 이미지|Imagem fixada
+活动|活動|Activity|アクティビティ|Aktivität|Activité|Actividad|Attività|활동|Atividade
+打开|開啟|Open|開く|Öffnen|Ouvrir|Abrir|Apri|열기|Abrir
+查看|檢視|View|表示|Anzeigen|Afficher|Ver|Visualizza|보기|Ver
+预览|預覽|Preview|プレビュー|Vorschau|Aperçu|Vista previa|Anteprima|미리보기|Prévia
+内容|內容|Contents|内容|Inhalt|Contenu|Contenido|Contenuto|내용|Conteúdo
+路径|路徑|Path|パス|Pfad|Chemin|Ruta|Percorso|경로|Caminho
+文件名|檔案名稱|File name|ファイル名|Dateiname|Nom de fichier|Nombre de archivo|Nome file|파일 이름|Nome do arquivo
+导出|匯出|Export|書き出す|Exportieren|Exporter|Exportar|Esporta|내보내기|Exportar
+确认|確認|Confirm|確認|Bestätigen|Confirmer|Confirmar|Conferma|확인|Confirmar
+失败|失敗|Failed|失敗|Fehlgeschlagen|Échec|Error|Non riuscito|실패|Falhou
+就绪|就緒|Ready|準備完了|Bereit|Prêt|Listo|Pronto|준비됨|Pronto
+转换|轉換|Convert|変換|Konvertieren|Convertir|Convertir|Converti|변환|Converter
+文字|文字|Text|テキスト|Text|Texte|Texto|Testo|텍스트|Texto
+绘制|繪製|Draw|描画|Zeichnen|Dessiner|Dibujar|Disegna|그리기|Desenhar
+画笔|畫筆|Pen|ペン|Stift|Crayon|Lápiz|Penna|펜|Caneta
+直线|直線|Line|直線|Linie|Ligne|Línea|Linea|선|Linha
+箭头|箭頭|Arrow|矢印|Pfeil|Flèche|Flecha|Freccia|화살표|Seta
+矩形|矩形|Rectangle|長方形|Rechteck|Rectangle|Rectángulo|Rettangolo|사각형|Retângulo
+椭圆|橢圓|Ellipse|楕円|Ellipse|Ellipse|Elipse|Ellisse|타원|Elipse
+裁剪|裁剪|Crop|切り抜く|Zuschneiden|Recadrer|Recortar|Ritaglia|자르기|Recortar
+高亮|醒目提示|Highlight|強調表示|Hervorheben|Surligner|Resaltar|Evidenzia|강조|Realçar
+遮盖|遮蔽|Redact|マスク|Schwärzen|Masquer|Ocultar|Oscura|가리기|Ocultar
+模糊|模糊|Blur|ぼかし|Weichzeichnen|Flouter|Desenfocar|Sfoca|흐리게|Desfocar
+马赛克|馬賽克|Pixelate|モザイク|Verpixeln|Pixelliser|Pixelar|Pixella|모자이크|Pixelar
+取色|取色|Pick a color|色を選択|Farbe auswählen|Prélever une couleur|Seleccionar un color|Preleva colore|색상 추출|Escolher uma cor
+线宽|線寬|Stroke width|線の幅|Linienstärke|Épaisseur du trait|Grosor del trazo|Spessore del tratto|선 너비|Espessura do traço
+重做|重做|Redo|やり直す|Wiederholen|Rétablir|Rehacer|Ripeti|다시 실행|Refazer
+长截图|長截圖|Scrolling capture|スクロール撮影|Scrollaufnahme|Capture défilante|Captura con desplazamiento|Acquisizione a scorrimento|스크롤 캡처|Captura de rolagem
+区域截图|區域截圖|Capture region|範囲を撮影|Bereich aufnehmen|Capturer une zone|Capturar área|Cattura area|영역 캡처|Capturar área
+窗口截图|視窗截圖|Capture window|ウィンドウを撮影|Fenster aufnehmen|Capturer une fenêtre|Capturar ventana|Cattura finestra|창 캡처|Capturar janela
+窗口控制|視窗控制|Window controls|ウィンドウ操作|Fenstersteuerung|Contrôle des fenêtres|Control de ventanas|Controllo finestre|창 제어|Controle de janelas
+屏幕捕获|螢幕擷取|Screen capture|画面キャプチャ|Bildschirmaufnahme|Capture d’écran|Captura de pantalla|Acquisizione schermo|화면 캡처|Captura de tela
+目标窗口|目標視窗|Target window|対象ウィンドウ|Zielfenster|Fenêtre cible|Ventana de destino|Finestra di destinazione|대상 창|Janela de destino
+任务视图|工作檢視|Task View|タスク ビュー|Aufgabenansicht|Affichage des tâches|Vista de tareas|Visualizzazione attività|작업 보기|Visão de tarefas
+虚拟桌面|虛擬桌面|Virtual desktop|仮想デスクトップ|Virtueller Desktop|Bureau virtuel|Escritorio virtual|Desktop virtuale|가상 데스크톱|Área de trabalho virtual
+保持唤醒|保持喚醒|Keep awake|スリープを防ぐ|Wach halten|Maintenir éveillé|Mantener activo|Mantieni attivo|절전 방지|Manter ativo
+解压位置|解壓縮位置|Extraction location|展開先|Entpackziel|Emplacement d’extraction|Ubicación de extracción|Posizione di estrazione|압축 풀기 위치|Local de extração
+解压结果|解壓縮結果|Extraction results|展開結果|Entpackergebnisse|Résultats de l’extraction|Resultados de extracción|Risultati di estrazione|압축 풀기 결과|Resultados da extração
+保存位置|儲存位置|Save location|保存先|Speicherort|Emplacement d’enregistrement|Ubicación de guardado|Posizione di salvataggio|저장 위치|Local de salvamento
+选择全部|選取全部|Select all|すべて選択|Alle auswählen|Tout sélectionner|Seleccionar todo|Seleziona tutto|모두 선택|Selecionar tudo
+编辑压缩包|編輯壓縮檔|Edit archive|アーカイブを編集|Archiv bearbeiten|Modifier l’archive|Editar archivo comprimido|Modifica archivio|압축 파일 편집|Editar arquivo compactado
+另存新副本|另存新副本|Save new copy|新規コピーを保存|Neue Kopie speichern|Enregistrer une nouvelle copie|Guardar copia nueva|Salva nuova copia|새 복사본 저장|Salvar nova cópia
+启用闲置策略|啟用閒置策略|Enable idle policy|アイドル時のポリシーを有効化|Leerlaufrichtlinie aktivieren|Activer la règle d’inactivité|Activar política de inactividad|Attiva criteri di inattività|유휴 정책 사용|Ativar política de inatividade
+等待本机复核|等待本機複核|Awaiting local review|このデバイスでの確認待ち|Wartet auf lokale Prüfung|En attente de vérification locale|Pendiente de revisión local|In attesa di verifica locale|이 기기의 검토 대기 중|Aguardando revisão local
+同步已关闭|同步已關閉|Sync is off|同期は無効です|Synchronisierung ist aus|Synchronisation désactivée|Sincronización desactivada|Sincronizzazione disattivata|동기화 꺼짐|Sincronização desativada
+发现规则冲突|發現規則衝突|Rule conflict detected|ルールの競合が見つかりました|Regelkonflikt gefunden|Conflit de règles détecté|Conflicto de reglas detectado|Rilevato conflitto tra regole|규칙 충돌 발견|Conflito de regras detectado

@@ -81,6 +81,28 @@ let dialog = null;
 let clipboardPoll = 0;
 let selectionRevision = null;
 let statePollInFlight = false;
+let uiStrings = {};
+let cloud = {};
+const interfaceLanguages = [["system", "跟随系统"], ["zh-Hans", "简体中文"], ["zh-Hant", "繁體中文"], ["en", "English"],
+  ["ja", "日本語"], ["de", "Deutsch"], ["fr", "Français"], ["es", "Español"], ["it", "Italiano"], ["ko", "한국어"], ["pt", "Português"]];
+
+function tr(value) {
+  if (typeof value !== "string") return value;
+  if (Object.hasOwn(uiStrings, value)) return uiStrings[value];
+  const base = value.replace(/…$/, "");
+  return base !== value && Object.hasOwn(uiStrings, base) ? uiStrings[base] + "…" : value;
+}
+async function loadInterfaceLanguage() {
+  let language = state.settings?.language || "system";
+  if (language === "system") {
+    const system = navigator.languages?.[0] || navigator.language || "en";
+    language = /^(zh-Hant|zh-TW|zh-HK|zh-MO)/i.test(system) ? "zh-Hant" : /^zh/i.test(system) ? "zh-Hans" : system.split("-")[0];
+  }
+  if (!interfaceLanguages.some(([id]) => id === language)) language = "en";
+  const result = await api("/api/localization?lang=" + encodeURIComponent(language));
+  uiStrings = result.strings || {};
+  document.documentElement.lang = language;
+}
 
 async function api(path, body) {
   const response = await fetch(path, {
@@ -99,9 +121,9 @@ async function api(path, body) {
 }
 const perform = (id, payload = {}) => api("/api/action", { id, payload });
 
-function el(tag, text, cls) {
+function el(tag, text, cls, userContent = false) {
   const node = document.createElement(tag);
-  if (text !== undefined && text !== "") node.textContent = text;
+  if (text !== undefined && text !== "") node.textContent = userContent ? text : tr(text);
   if (cls) node.className = cls;
   return node;
 }
@@ -127,8 +149,8 @@ function button(title, handler, { cls = "", glyph, disabled = false, label } = {
   if (glyph) node.append(icon(glyph));
   if (title) node.append(el("span", title));
   if (label) {
-    node.title = label;
-    node.setAttribute("aria-label", label);
+    node.title = tr(label);
+    node.setAttribute("aria-label", tr(label));
   }
   node.disabled = disabled;
   node.addEventListener("click", event => {
@@ -141,8 +163,8 @@ function input(value = "", { type = "text", placeholder = "", min, max, step, cl
   const node = el("input", "", cls);
   node.type = type;
   node.value = value;
-  node.placeholder = placeholder;
-  if (placeholder) node.setAttribute("aria-label", placeholder);
+  node.placeholder = tr(placeholder);
+  if (placeholder) node.setAttribute("aria-label", tr(placeholder));
   if (min !== undefined) node.min = min;
   if (max !== undefined) node.max = max;
   if (step !== undefined) node.step = step;
@@ -151,8 +173,8 @@ function input(value = "", { type = "text", placeholder = "", min, max, step, cl
 function area(value = "", placeholder = "") {
   const node = el("textarea");
   node.value = value;
-  node.placeholder = placeholder;
-  if (placeholder) node.setAttribute("aria-label", placeholder);
+  node.placeholder = tr(placeholder);
+  if (placeholder) node.setAttribute("aria-label", tr(placeholder));
   return node;
 }
 function select(items, current = "") {
@@ -174,12 +196,12 @@ function boxLabel(cls, ...children) {
   node.append(...children);
   return node;
 }
-function toggle(label, value, changed) {
+function toggle(label, value, changed, userContent = false) {
   const check = el("input");
   check.type = "checkbox";
   check.checked = Boolean(value);
   if (changed) check.addEventListener("change", () => Promise.resolve(changed(check.checked)).catch(report));
-  return boxLabel("option", check, el("span", label));
+  return boxLabel("option", check, el("span", label, undefined, userContent));
 }
 function note(value) { return el("p", value, "muted"); }
 function empty(glyph, title, detail) {
@@ -203,7 +225,7 @@ function say(text, error = false) {
 function report(error) {
   if (dialog?.open) {
     const message = dialog.querySelector(".modal-error");
-    message.textContent = error.message;
+    message.textContent = tr(error.message);
     message.hidden = false;
   }
   say(error.message, true);
@@ -344,6 +366,7 @@ function confirmAction(title, detail, run, accept = "确认") {
 function settingsDialog() {
   const settings = state.settings || {};
   const appearance = select([["system", "跟随系统"], ["light", "浅色"], ["dark", "深色"]], settings.appearance);
+  const language = select(interfaceLanguages, settings.language || "system");
   const days = input(settings.clipboardDays || 7, { type: "number", min: 1, max: 365 });
   const limit = input(settings.clipboardLimit || 200, { type: "number", min: 1, max: 1000 });
   const exclusions = area((settings.clipboardExcludedApps || []).join("\n"), "每行一个应用标识");
@@ -354,17 +377,18 @@ function settingsDialog() {
     return box("list-row", box("fill", el("strong", names[id] || id, "row-title"), el("small", item.detail)));
   });
   formDialog("设置", [
-    field("外观", appearance), field("保留剪贴板历史（天）", days), field("历史记录上限", limit),
+    field("外观", appearance), field("界面语言", language), field("保留剪贴板历史（天）", days), field("历史记录上限", limit),
     field("排除的应用", exclusions),
     state.automation && panel("窗口与桌面", snap, state.automation.windowDrag && drag),
     panel("系统与权限", box("list", ...permissions)),
   ].filter(Boolean), async () => {
     await api("/api/settings", {
-      appearance: appearance.value, clipboardDays: Number(days.value), clipboardLimit: Number(limit.value),
+      appearance: appearance.value, language: language.value, clipboardDays: Number(days.value), clipboardLimit: Number(limit.value),
       clipboardExcludedApps: splitLines(exclusions.value),
       ...(state.automation ? {windowSnapEnabled: snap.firstChild.checked} : {}),
       ...(state.automation?.windowDrag ? {windowDragEnabled: drag.firstChild.checked} : {}),
     });
+    await loadInterfaceLanguage();
     say("设置已保存");
     render();
   }, "保存");
@@ -755,17 +779,20 @@ async function extractArchives(payload) {
 }
 async function archivePreview(path, password) {
   try {
-    const result = await progress("正在读取压缩包…", () => perform("archive.list", {path, password}));
+    const editable = /\.(zip|7z)$/i.test(path);
+    const result = await progress("正在读取压缩包…", () => editable ? api("/api/archive/edit/preview", {path, password}) : perform("archive.list", {path, password}));
     const members = result.members || [];
-    const controls = members.map(item => toggle(item.name || item.path, false));
+    const controls = members.map(item => toggle(item.name || item.path, false, undefined, true));
     const list = box("list dialog-result", ...controls.map((control, index) => box("list-row", box("fill", control), el("small", members[index].size === undefined ? "" : members[index].size + " 字节"))));
+    const selected = () => members.filter((_, index) => controls[index].firstChild.checked).map(item => item.name || item.path);
     showModal("预览 " + basename(path), box("stack", list, box("row",
       button("选择全部", () => controls.forEach(control => { control.firstChild.checked = true; })),
       button("提取所选…", () => {
-        const chosen = members.filter((_, index) => controls[index].firstChild.checked).map(item => item.name || item.path);
+        const chosen = selected();
         if (!chosen.length) throw new Error("请勾选要提取的文件。");
         chooseDestination("提取所选文件", "解压位置", destination => extractArchives({paths: [path], destination, members: chosen, password, batchID: crypto.randomUUID()}));
-      }, {cls: "primary"}))));
+      }, {cls: "primary"}),
+      result.previewID && button("编辑压缩包…", () => editArchive(path, password, result, selected())))));
     say("已读取压缩包目录 " + members.length + " 项");
   } catch (error) {
     if (!["password", "password-required"].includes(error.code)) throw error;
@@ -773,6 +800,35 @@ async function archivePreview(path, password) {
     next.required = true;
     formDialog("输入预览密码", [note(error.message), next], () => archivePreview(path, next.value), "查看");
   }
+}
+function editArchive(path, password, preview, removals) {
+  const additions = [];
+  const selected = el("p", "尚未选择新增文件", "muted");
+  const hidden = toggle("清理隐藏成员", false);
+  const passwordBox = input(password || "", {type: "password", placeholder: "压缩包密码"});
+  const finish = async (mode, destination) => {
+    const result = await progress("正在校验并保存压缩包…", () => api("/api/archive/edit/save", {
+      previewID: preview.previewID, password: passwordBox.value, add: additions, remove: removals,
+      removeHidden: hidden.firstChild.checked, mode, destination, confirm: true,
+    }));
+    say("已保存 " + result.path);
+    render();
+  };
+  showModal("编辑压缩包", box("stack",
+    removals.length ? box("panel", el("h3", "移除勾选项"), ...removals.map(name => el("div", name, undefined, true))) : null,
+    note(preview.encrypted ? "保存后仍需密码才能打开成员。" : "请确认修改范围。"),
+    button("选择新增文件…", async () => {
+      additions.splice(0, additions.length, ...await pick());
+      selected.textContent = additions.map(basename).join("、") || tr("尚未选择新增文件");
+    }, {glyph: "plus"}), selected, hidden, preview.encrypted && field("密码", passwordBox),
+    box("row", button("另存新副本…", () => {
+      const suffix = path.match(/\.(zip|7z)$/i)?.[0] || "";
+      const filename = input(basename(path).slice(0, -suffix.length) + "-edited" + suffix);
+      chooseDestination("另存新副本", "保存位置", folder => formDialog("新压缩包名称", [field("名称", filename)], () => {
+        if (!filename.value.trim() || /[\\/:]/.test(filename.value)) throw new Error("请输入有效文件名称。");
+        return finish("copy", folder.replace(/[\\/]$/, "") + "\\" + filename.value.trim());
+      }, "保存"));
+    }), button("保存到原包…", () => confirmAction("保存到原包？", path, () => finish("replace"), "保存"), {cls: "primary"}))));
 }
 function convertDialog(selected) {
   const options = [["png", "PNG"], ["bmp", "BMP"]];
@@ -1121,10 +1177,31 @@ function downloadBlob(blob, name) {
 
 async function refreshRules() {
   try {
-    const result = await api("/api/rules/list", {});
+    const [result, status] = await Promise.all([api("/api/rules/list", {}), api("/api/rules/cloud/status", {})]);
+    cloud = status;
     rules = result.rules || [];
     if (section === "input" && !dialog?.open) render();
   } catch (error) { report(error); }
+}
+async function cloudAction(action, payload = {}) {
+  cloud = await api("/api/rules/cloud/" + action, payload);
+  if (cloud.message) say(cloud.message);
+  await refreshRules();
+  render();
+}
+function rulesCloudPanel() {
+  const status = cloud.status || "off";
+  const labels = {off: "同步已关闭", localSynced: "本机修订已同步到 iCloud Drive 文件夹", conflict: "发现规则冲突", cloudPending: "正在等待 iCloud 文件"};
+  const resolve = (choice, title) => confirmAction(title, (cloud.conflicts || []).join("、"),
+    () => cloudAction("resolve", {choice, token: cloud.token, confirm: true}), "确认");
+  return panel("iCloud Drive 规则同步", note(labels[status] || cloud.message || status), cloud.folder && el("code", cloud.folder, undefined, true),
+    box("row", button("选择 iCloud Drive 目录…", () => chooseDestination("iCloud Drive 规则同步", "同步目录", folder =>
+      confirmAction("启用规则同步？", folder, () => cloudAction("configure", {folder, confirm: true})))),
+    status !== "off" && button("立即同步", () => cloudAction("status", {force: true})),
+    status !== "off" && button("停止同步", () => confirmAction("停止规则同步？", "本机规则和云端修订会保留。", () => cloudAction("configure", {confirm: true})))),
+    status === "conflict" && box("stack", el("strong", "选择冲突规则要采用的版本"),
+      button("保留本机改动", () => resolve("local", "保留本机改动")),
+      ...cloud.choices.map(branch => button("采用远端分支 " + branch.id.slice(0, 10), () => resolve(branch.id, "采用这个远端分支？")))));
 }
 async function saveRules(next) {
   const result = await api("/api/rules/save", {rules: next});
@@ -1138,11 +1215,15 @@ function inputPage() {
   const labels = { registered: "已注册", active: "已启用", disabled: "已停用", paused: "已暂停", conflict: "快捷键冲突", unsupported: "当前不支持", error: "注册失败", pending: "等待启用" };
   const rows = rules.map(rule => {
     const status = statuses.get(rule.id);
-    return box("list-row", toggle("启用", rule.enabled, value => saveRules(rules.map(item => item.id === rule.id ? {...item, enabled: value} : item))),
+    const approval = rule.needsReview && button("在本机复核…", () => showModal("在本机复核规则", box("stack",
+      el("strong", rule.name || rule.id, undefined, true), el("code", [rule.actionID, rule.shortcut, rule.application].filter(Boolean).join(" · "), undefined, true),
+      box("row", button("保持停用", () => cloudAction("approve", {id: rule.id, accept: false, confirm: true}).then(() => dialog?.close())),
+        rule.cloudWantsEnabled && button("启用", () => cloudAction("approve", {id: rule.id, accept: true, confirm: true}).then(() => dialog?.close()), {cls:"primary"})))));
+    return box("list-row", rule.needsReview ? el("span", "等待本机复核") : toggle("启用", rule.enabled, value => saveRules(rules.map(item => item.id === rule.id ? {...item, enabled: value} : item))),
       box("fill", el("strong", currentAction(rule.actionID)?.title || rule.actionID, "row-title"),
         el("small", [rule.shortcut || rule.trigger || "未指定快捷键", rule.application || (rule.include || []).join("、") || "所有应用", labels[status?.status] || status?.status].filter(Boolean).join(" · ")),
         status?.detail && el("small", status.detail)),
-      button("编辑", () => ruleDialog(rule)), button("", () => confirmAction("移除输入规则？", rule.shortcut || rule.actionID,
+      approval, button("编辑", () => ruleDialog(rule)), button("", () => confirmAction("移除输入规则？", rule.shortcut || rule.actionID,
         () => saveRules(rules.filter(item => item.id !== rule.id)), "移除"), {glyph: "trash", cls: "plain danger", label: "移除规则"}));
   });
   return box("stack", panel("", box("between", box("stack", el("h2", "快捷键与手势"), note("按应用设置的规则可限定到指定的 Windows 程序。")),
@@ -1159,7 +1240,7 @@ function inputPage() {
       }, {disabled: !state.settings?.windowsAutomationEnabled || (!runtime.running && !runtime.paused)})),
     runtime.lastAction?.detail && note(runtime.lastAction.detail),
     rules.length ? box("list", ...rows) : empty("keyboard", "还没有输入规则", "添加快捷键来运行常用操作。")),
-    panel("系统与权限", note(state.permissions?.inputMonitoring?.detail || ""), button("打开设置", settingsDialog, {glyph: "settings"})));
+    rulesCloudPanel(), panel("系统与权限", note(state.permissions?.inputMonitoring?.detail || ""), button("打开设置", settingsDialog, {glyph: "settings"})));
 }
 function ruleDialog(original = {}) {
   const runtime = state.automation || {};
@@ -1304,6 +1385,7 @@ async function refreshCatalog() {
 }
 async function initialize() {
   [state] = await Promise.all([api("/api/state"), refreshCatalog()]);
+  await loadInterfaceLanguage();
   files = state.selection || [];
   selectionRevision = state.selectionRevision;
   if (files.length && !location.hash) section = "files";

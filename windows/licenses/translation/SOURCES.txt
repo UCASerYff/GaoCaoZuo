@@ -1,0 +1,32 @@
+Windows local translation
+
+CTranslate2 4.6.0 (MIT) uses its published Windows x64 Python wheel.
+https://github.com/OpenNMT/CTranslate2/tree/v4.6.0
+
+The official wheel bundles Intel OpenMP libiomp5md.dll from Intel oneAPI
+Base Toolkit 2023.0.0 and NVIDIA cuDNN cudnn64_9.dll version 9.1.0.70.
+The upstream build script identifies the compiler runtime and cuDNN source.
+https://github.com/OpenNMT/CTranslate2/blob/v4.6.0/python/tools/prepare_build_environment_windows.sh
+https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2023-0/redistribute-libraries-when-deploying-apps.html
+https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2023-0/use-the-openmp-libraries.html
+https://software.intel.com/sites/manageability/AMT_Implementation_and_Reference_Guide/WordDocuments/intelamtsdklicense.htm
+https://docs.nvidia.com/deeplearning/cudnn/backend/v9.1.0/reference/eula.html
+
+SentencePiece 0.2.1 (Apache-2.0) handles subword tokenization.
+https://github.com/google/sentencepiece/tree/v0.2.1
+
+py3langid 0.2.2 (BSD-3-Clause, with original langid.py BSD-2-Clause) runs
+language identification on this device using its included classifier.
+https://pypi.org/project/py3langid/0.2.2/
+https://github.com/adbar/py3langid
+
+Separately downloaded Argos Translate models v1.9 (MIT or CC0).
+https://github.com/argosopentech/argos-translate/issues/533
+https://github.com/argosopentech/argospm-index/blob/main/index.json
+https://data.argosopentech.com/argospm/v1/
+
+1.9 / zh-en / 74481402 bytes / SHA-256
+62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d
+
+1.9 / en-zh / 70743021 bytes / SHA-256
+433e7c4f034d87fbe2353161e05f18646d7999452f801a4e1f0378522b9850ab

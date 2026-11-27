@@ -8,7 +8,7 @@ import os
 import sys
 from contextlib import nullcontext
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 
 from gaocaozuo.app import App
 from gaocaozuo.errors import AppError
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     directory = (args.data_dir or default_data_dir()).resolve()
     interactive = not args.no_browser and os.name == "nt"
-    instance = server = window = app = tray = None
+    instance = server = window = app = tray = cloud_worker = None
     paths = [str(Path(p).absolute()) for p in (args.paths or [])]
     package = args.gaoaction
     if not package and len(paths) == 1 and Path(paths[0]).suffix.lower() == ".gaoaction":
@@ -93,6 +93,16 @@ def main(argv: list[str] | None = None) -> int:
                 app.last_message = exc.message
                 app.runtime.configure([], paused=True)
             app.runtime.start()
+            def synchronize_rules():
+                while not server.shutdown_requested.wait(15):
+                    if server.lock.acquire(blocking=False):
+                        try:
+                            app.rule_cloud.poll()
+                        finally:
+                            server.lock.release()
+
+            cloud_worker = Thread(target=synchronize_rules, name="gaocaozuo-cloud-rules", daemon=True)
+            cloud_worker.start()
             show_requested = Event()
             tray = WindowsTray(show_requested.set, server.shutdown_requested.set)
             app.tray = tray
@@ -131,6 +141,12 @@ def main(argv: list[str] | None = None) -> int:
             _write(message, error=True)
         return 2
     finally:
+        if server is not None:
+            server.shutdown_requested.set()
+        if cloud_worker is not None:
+            cloud_worker.join(1)
+        if app is not None:
+            app.translation.close()
         if tray is not None:
             tray.close()
         if app is not None and app.runtime is not None:

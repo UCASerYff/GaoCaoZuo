@@ -6,7 +6,7 @@ import ctypes as ct
 import io
 import os
 import struct
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from ctypes import wintypes as wt
 from pathlib import Path
 
@@ -73,20 +73,29 @@ class WindowsClipboard:
         self.drop_query = _prototype(shell, "DragQueryFileW", wt.UINT, wt.HANDLE, wt.UINT, wt.LPWSTR, wt.UINT)
 
     @contextmanager
-    def opened(self, write=False):
-        window = self.create_window(0, "STATIC", None, 0, 0, 0, 0, 0, wt.HWND(-3), None, None, None) if write else None
-        if write and not window:
+    def _clipboard_window(self):
+        window = self.create_window(0, "STATIC", None, 0, 0, 0, 0, 0, wt.HWND(-3), None, None, None)
+        if not window:
             raise AppError("系统未提供可以写入剪贴板的窗口。", "unavailable")
         try:
-            if not self.open(window):
-                raise AppError("系统剪贴板正被占用，请重试。", "busy")
-            try:
-                yield
-            finally:
-                self.close()
+            yield window
         finally:
-            if window:
-                self.destroy_window(window)
+            self.destroy_window(window)
+
+    @contextmanager
+    def _access_clipboard(self, window):
+        if not self.open(window):
+            raise AppError("系统剪贴板正被占用，请重试。", "busy")
+        try:
+            yield
+        finally:
+            self.close()
+
+    @contextmanager
+    def opened(self, write=False):
+        with self._clipboard_window() if write else nullcontext(None) as window:
+            with self._access_clipboard(window):
+                yield
 
     def formats(self) -> list[int]:
         formats = []
@@ -177,18 +186,24 @@ class WindowsClipboard:
         rollback = {}
         try:
             rollback = self._prepare(fallback or {})
-            with self.opened(write=True):
-                if expected is not None and self.sequence() != expected:
-                    raise AppError("系统剪贴板已变化，保留新内容。", "changed")
-                if not self.empty():
-                    raise AppError("系统拒绝清空剪贴板。", "rejected")
-                try:
-                    self._install(handles)
-                except AppError:
-                    if fallback is not None and self.empty():
-                        self._install(rollback)
-                    raise
-                return self.sequence()
+            with self._clipboard_window() as window:
+                with self._access_clipboard(window):
+                    if expected is not None and self.sequence() != expected:
+                        raise AppError("系统剪贴板已变化，保留新内容。", "changed")
+                    if not self.empty():
+                        raise AppError("系统拒绝清空剪贴板。", "rejected")
+                    try:
+                        self._install(handles)
+                    except AppError:
+                        if fallback is not None and self.empty():
+                            self._install(rollback)
+                        raise
+                # Closing the write can synthesize standard formats and advance the sequence.
+                # Read the finalized number under a second lock while the original owner is still alive.
+                with self._access_clipboard(window):
+                    if self.owner() != window:
+                        raise AppError("系统剪贴板已变化，保留新内容。", "changed")
+                    return self.sequence()
         finally:
             for handle in (*handles.values(), *rollback.values()):
                 self.free(handle)

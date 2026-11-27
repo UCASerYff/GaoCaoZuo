@@ -30,6 +30,11 @@ if register_heif_opener:
 
 MAX_INPUT_BYTES = 128 * 1024 * 1024
 MAX_SESSION_BYTES = 256 * 1024 * 1024
+MAX_LONG_FRAMES = 35
+MAX_AUTO_FRAMES = 12
+MAX_AUTO_FRAME_PIXELS = 8_000_000
+MAX_AUTO_OUTPUT_PIXELS = 24_000_000
+MAX_AUTO_SECONDS = 8
 
 
 def read_image(source) -> Image.Image:
@@ -136,6 +141,16 @@ def common_overlap(previous: Image.Image, following: Image.Image) -> int:
     if not candidates or any(abs(shift - candidates[0][1]) > 2 and score + .06 >= candidates[0][0] for score, shift in candidates[1:]):
         raise AppError("无法唯一对齐滚动内容。请缩小滚动幅度或填入精确重叠像素。", "alignment")
     return height - candidates[0][1]
+
+
+def _verified_overlap(previous: Image.Image, following: Image.Image) -> int:
+    shared = common_overlap(previous, following)
+    width, height = previous.size
+    first = previous.crop((0, height - shared, width, height))
+    second = following.crop((0, 0, width, shared))
+    if ImageChops.difference(first, second).getbbox() is not None:
+        raise AppError("自动核验发现接缝处像素不一致。请避开固定标题栏和动画，或手动调整后续拍。", "alignment")
+    return shared
 
 
 def _join(images: list[Image.Image], overlap: int | None) -> Image.Image:
@@ -390,16 +405,21 @@ class ScreenshotSession:
             region = _selection(bounds) or capture_win.choose_region()
             window = capture_win.window_at_center(region)
             identity = capture_win.window_identity(window)
-            if not window or not all(identity):
+            if not identity:
                 raise AppError("所选区域没有可跟踪的目标窗口。", "missing")
             if not capture_win.region_has_target(region, window):
                 raise AppError("长截图区域须完全位于同一窗口内，且没有被其他窗口遮挡。", "rejected")
+            frame = capture_win.window_frame(window)
             image = capture_win.capture("region", region)
-            self._long = {"region": region, "window": window, "identity": identity, "last": image, "image": image, "frames": 1}
+            if (capture_win.window_identity(window) != identity or capture_win.window_frame(window) != frame
+                    or not capture_win.region_has_target(region, window)):
+                raise AppError("截图时目标窗口已改变，请重新选择范围。", "rejected")
+            self._long = {"region": region, "window": window, "identity": identity, "frame": frame,
+                          "last": image, "image": image, "frames": 1}
         elif command == "cancel":
             self._long = None
             return {"active": False}
-        elif command in {"append", "finish"}:
+        elif command in {"append", "auto", "finish"}:
             if self._long is None:
                 raise AppError("先开始一个长截图会话。", "missing")
             if command == "finish":
@@ -408,22 +428,88 @@ class ScreenshotSession:
                 result = self._add(self._long["image"], keep_history=True)
                 self._long = None
                 return {**result, "active": False}
-            _pause(3 if delay is None else delay)
             state = self._long
-            region, window = state["region"], state["window"]
-            if state["frames"] >= 35:
+            if state["frames"] >= MAX_LONG_FRAMES:
                 raise AppError("本次长截图已达到 35 帧。", "invalid")
-            if capture_win.foreground_window() != window or capture_win.window_identity(window) != state["identity"] or not capture_win.region_has_target(region, window):
-                raise AppError("目标窗口已改变。请切回原窗口、保持原位置并重试。", "rejected")
-            frame = capture_win.capture("region", region)
-            shared = common_overlap(state["last"], frame) if overlap is None else overlap
-            state["image"] = _join([state["image"], frame], shared)
-            state["last"] = frame
-            state["frames"] += 1
+            if command == "auto":
+                return self._auto_long_capture(state, 3 if delay is None else delay)
+            _pause(3 if delay is None else delay)
+            current = self._read_long_frame(state, lambda: self._verify_long_window(state))
+            self._append_long_frame(state, current, common_overlap(state["last"], current) if overlap is None else overlap)
         else:
             raise AppError("未知的长截图操作。", "invalid")
-        state = self._long
+        return self._long_status(self._long)
+
+    @staticmethod
+    def _long_status(state: dict) -> dict:
         return {"active": True, "frames": state["frames"], "width": state["image"].width, "height": state["image"].height}
+
+    @staticmethod
+    def _verify_long_window(state: dict) -> None:
+        window = state["window"]
+        if (capture_win.foreground_window() != window or capture_win.window_identity(window) != state["identity"]
+                or capture_win.window_frame(window) != state["frame"] or not capture_win.region_has_target(state["region"], window)):
+            raise AppError("目标窗口已改变。请切回原窗口、保持原位置并重试。", "rejected")
+
+    @staticmethod
+    def _read_long_frame(state: dict, verify) -> Image.Image:
+        verify()
+        image = capture_win.capture("region", state["region"])
+        verify()
+        if image.size != state["last"].size:
+            raise AppError("窗口画面大小已变更，请重新选择区域。", "targetChanged")
+        return image
+
+    @staticmethod
+    def _append_long_frame(state: dict, image: Image.Image, shared: int) -> None:
+        state["image"] = _join([state["image"], image], shared)
+        state["last"] = image
+        state["frames"] += 1
+
+    def _auto_long_capture(self, state: dict, delay) -> dict:
+        if type(delay) not in (int, float) or not 0 <= delay <= 10:
+            raise AppError("自动滚动等待时间须为 0 至 10 秒。", "invalid")
+        original_count = state["frames"]
+        reason = "已达本轮自动滚动上限，可以再次启动或生成长截图。"
+        stop = "limit"
+        region, identity, frame = (state[key] for key in ("region", "identity", "frame"))
+        width, height = state["last"].size
+        try:
+            if frame is None:
+                raise AppError("无法核验目标窗口的位置，请手动续拍。", "scrollUnavailable")
+            if width < 24 or height < 96 or width * height > MAX_AUTO_FRAME_PIXELS:
+                raise AppError("自动滚动需要 24 像素宽、96 像素高以上且不超过 800 万像素的选区。", "sizeLimit")
+            _pause(delay)
+            deadline = time.monotonic() + MAX_AUTO_SECONDS
+            anchor = capture_win.verify_scroll_anchor(region, identity, frame)
+
+            def verify():
+                if time.monotonic() >= deadline:
+                    raise AppError("本轮自动滚动时间已到，可以再次启动或手动续拍。", "limit")
+                return capture_win.verify_scroll_anchor(region, identity, frame, anchor)
+
+            initial = self._read_long_frame(state, verify)
+            if ImageChops.difference(state["last"], initial).getbbox() is not None:
+                raise AppError("当前画面与上一帧不同，请先手动添加当前画面。", "initialChanged")
+            del initial
+            for _ in range(min(MAX_AUTO_FRAMES, MAX_LONG_FRAMES - original_count)):
+                if state["image"].width * (state["image"].height + height) > MAX_AUTO_OUTPUT_PIXELS:
+                    raise AppError("已接近自动拼接画面大小上限，可以生成长截图。", "limit")
+                verify()
+                capture_win.scroll_down(region, identity, frame, anchor)
+                _pause(.45)
+                current = self._read_long_frame(state, verify)
+                try:
+                    shared = _verified_overlap(state["last"], current)
+                except AppError as exc:
+                    if exc.code == "unchanged":
+                        raise AppError("画面未移动，可能已到边界或目标未处理滚动。", "unchanged") from exc
+                    raise
+                verify()
+                self._append_long_frame(state, current, shared)
+        except AppError as exc:
+            stop, reason = exc.code, exc.message
+        return {**self._long_status(state), "automatic": {"added": state["frames"] - original_count, "stop": stop, "reason": reason}}
 
     def ocr(self, explicit=False, *, image_id=None, paths=None, clipboard_data=None, languages=None) -> dict:
         if explicit is not True:

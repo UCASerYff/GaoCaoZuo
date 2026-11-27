@@ -59,6 +59,14 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.lock:
                 self._json({"actions": self.server.app.search(query)})
             return
+        if parsed.path == "/api/localization":
+            if not self._authorized():
+                return
+            from gaocaozuo.localization import language_dictionary
+
+            language = parse_qs(parsed.query).get("lang", ["zh-Hans"])[0]
+            self._json({"strings": language_dictionary(language)})
+            return
         if parsed.path == "/api/export/snippets.csv":
             if not self._authorized():
                 return
@@ -182,6 +190,32 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def dispatch(app: App, path: str, payload: dict):
+    if path == "/api/archive/edit/preview":
+        return app.archive_editor.preview(Path(payload["path"]), payload.get("password"))
+    if path == "/api/archive/edit/save":
+        return app.archive_editor.save(payload)
+    translation = "/api/screenshot/translate"
+    if path == translation or path.startswith(translation + "/"):
+        endpoint = path[len(translation):].lstrip("/") or "translate"
+        if endpoint == "download" and app.store.status != "ready":
+            raise AppError("请先建立可写的本机设置，再下载语言包。", "unavailable")
+        if endpoint == "input" and payload.get("mode") == "clipboard":
+            if payload.get("confirm") is not True or app.native_clipboard is None:
+                raise AppError("请确认读取系统剪贴板。", "confirmation")
+            return {"text": app.native_clipboard.text()}
+        return app.translation.dispatch(endpoint, payload)
+    if path == "/api/rules/cloud/status":
+        return app.rule_cloud.poll(force=payload.get("force") is True)
+    if path == "/api/rules/cloud/configure":
+        if app.store.status != "ready":
+            raise AppError("请先建立可写的本机设置，再配置规则同步。", "unavailable")
+        return app.rule_cloud.configure(payload.get("folder"), payload.get("confirm"))
+    if path == "/api/rules/cloud/resolve":
+        if payload.get("confirm") is not True:
+            raise AppError("请确认规则冲突的处理选择。", "confirmation")
+        return app.rule_cloud.poll(force=True, choice=payload.get("choice"), token=payload.get("token"))
+    if path == "/api/rules/cloud/approve":
+        return app.rule_cloud.approve(payload["id"], payload.get("accept") is True, payload.get("confirm"))
     if path == "/api/activate":
         return app.activate(payload)
     if path == "/api/ocr-provider/review":
@@ -291,8 +325,11 @@ def dispatch(app: App, path: str, payload: dict):
     if path == "/api/screenshot/history/open":
         return app.screenshots.history_open(payload["name"], bool(payload.get("pin")))
     if path == "/api/screenshot/long":
-        return app.screenshots.long_capture(payload["command"], bool(payload.get("confirm")), payload.get("delay"),
-                                            payload.get("bounds"), payload.get("overlap"))
+        from contextlib import nullcontext
+
+        confirmed = payload.get("confirm") is True
+        with app.capture_context() if payload["command"] in {"start", "auto"} and confirmed and not payload.get("bounds") else nullcontext():
+            return app.screenshots.long_capture(payload["command"], confirmed, payload.get("delay"), payload.get("bounds"), payload.get("overlap"))
     if path == "/api/screenshot/ocr":
         paths = payload.get("paths") or None
         return app.screenshots.ocr(bool(payload.get("confirm")), image_id=payload.get("id"),

@@ -50,7 +50,7 @@ class ScriptedWindow:
 
 
 def test_version_label():
-    assert VERSION_LABEL == "1.16+1"
+    assert VERSION_LABEL == "1.16+2"
 
 
 def test_settings_preserve_unknown_and_refuse_newer(tmp_path):
@@ -429,8 +429,7 @@ def test_screenshot_requires_explicit_confirmation(tmp_path):
     with pytest.raises(AppError):
         app.perform("screenshot.ocr.capture", {})
     assert app.perform("screenshot.recording", {}) == {"section": "screenshots", "show": True}
-    with pytest.raises(AppError):
-        app.perform("screenshot.translate.clipboard", {})
+    assert app.perform("screenshot.translate.clipboard", {}) == {"section": "screenshots", "show": True}
 
 
 def test_local_http_creates_a_file_and_shuts_down(tmp_path):

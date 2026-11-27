@@ -1,5 +1,5 @@
 [Setup]
-AppId=GaoSeries.GaoCaoZuo.Windows
+AppId=GaoSeries.GaoCaoZuo.Windows{code:SmokeSuffix}
 AppName=搞操作
 AppVersion={#AppVersion}
 AppVerName=搞操作 V{#AppVersion}
@@ -15,15 +15,16 @@ ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 MinVersion=10.0.17763
 DisableProgramGroupPage=yes
+UsePreviousLanguage=no
 ChangesAssociations=yes
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
-Uninstallable=IsRegisteredInstall
+Uninstallable=HasControlledUninstaller
 
 [Files]
-Source: "dist\GaoCaoZuo.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\GaoCaoZuo-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinaryDir}\GaoCaoZuo.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinaryDir}\GaoCaoZuo-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\notices\*"; DestDir: "{app}\Licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -42,5 +43,24 @@ Root: HKCU; Subkey: "Software\Classes\Directory\shell\GaoCaoZuo\command"; ValueT
 [Code]
 function IsRegisteredInstall: Boolean;
 begin
-  Result := ExpandConstant('{param:ISOLATEDSMOKE|0}') <> '1';
+  Result := ExpandConstant('{param:ISOLATEDSMOKE|0}') = '0';
+end;
+
+function SmokeSuffix(Param: String): String;
+var
+  Token: String;
+  Index: Integer;
+begin
+  Result := '';
+  if ExpandConstant('{param:ISOLATEDSMOKE|0}') <> '2' then Exit;
+  Token := ExpandConstant('{param:SMOKETOKEN|}');
+  if Length(Token) <> 32 then RaiseException('Invalid isolated installation token');
+  for Index := 1 to Length(Token) do
+    if Pos(Token[Index], '0123456789abcdef') = 0 then RaiseException('Invalid isolated installation token');
+  Result := '.Smoke-' + Token;
+end;
+
+function HasControlledUninstaller: Boolean;
+begin
+  Result := IsRegisteredInstall or (SmokeSuffix('') <> '');
 end;

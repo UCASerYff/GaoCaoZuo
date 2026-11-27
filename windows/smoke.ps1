@@ -1,4 +1,4 @@
-param([string]$Installer = "")
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+2")
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
@@ -13,11 +13,21 @@ New-Item -ItemType Directory -Path $scratch | Out-Null
 $scratch = (Resolve-Path -LiteralPath $scratch).Path
 $installDir = Join-Path $scratch 'installed'
 $dataDir = Join-Path $scratch 'isolated data'
+$smokeToken = [guid]::NewGuid().ToString('N')
+$setupLog = Join-Path $scratch 'setup.txt'
 $output = Join-Path $scratch 'created'
 $server = $null
 $stdout = Join-Path $scratch 'stdout.txt'
 $stderr = Join-Path $scratch 'stderr.txt'
 $previousEnvironment = @{}
+$uninstaller = $null
+
+function Remove-IsolatedInstall {
+    if ($uninstaller -and (Test-Path -LiteralPath $uninstaller)) {
+        $removed = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru -WindowStyle Hidden
+        if ($removed.ExitCode -ne 0) { throw "Uninstaller exited $($removed.ExitCode)." }
+    }
+}
 
 function Assert-X64([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -26,11 +36,34 @@ function Assert-X64([string]$Path) {
 }
 
 try {
-    $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $installDir + '"'
+    $clipboard = Join-Path $dataDir 'Clipboard'
+    New-Item -ItemType Directory -Path $clipboard, $output | Out-Null
+    $old = Join-Path $dataDir 'settings.json'
+    [IO.File]::WriteAllText($old, '{"schema":1,"appearance":"dark","clipboardEnabled":false,"favorites":["new.text"],"unknownLegacyKey":{"mark":"keep"}}')
+    $legacySettingsHash = (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash
+    $history = Join-Path $clipboard 'history.json'
+    [IO.File]::WriteAllText($history, '{"schema":1,"items":[{"text":"isolated fixture","pinned":true}]}')
+    $historyHash = (Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash
+    if ($PreviousInstaller) {
+        $PreviousInstaller = (Resolve-Path -LiteralPath $PreviousInstaller).Path
+        $oldArguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $installDir + '"'
+        $prior = Start-Process -FilePath $PreviousInstaller -ArgumentList $oldArguments -Wait -PassThru -WindowStyle Hidden
+        if ($prior.ExitCode -ne 0) { throw "Previous installer exited $($prior.ExitCode)." }
+        if ((Get-Item -LiteralPath (Join-Path $installDir 'GaoCaoZuo.exe')).VersionInfo.FileVersion -ne '1.16.1.0') { throw 'Previous installed build mismatch.' }
+    }
+    $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=2 /SMOKETOKEN=' + $smokeToken + ' /DIR="' + $installDir + '" /LOG="' + $setupLog + '"'
     $setup = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
-    if ($setup.ExitCode -ne 0) { throw "Installer exited $($setup.ExitCode)." }
+    if ($setup.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $setupLog) { Get-Content -LiteralPath $setupLog -Tail 16 | Write-Output }
+        throw "Installer exited $($setup.ExitCode)."
+    }
+    if ((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $legacySettingsHash -or (Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash -ne $historyHash) {
+        throw 'The installer changed isolated legacy data.'
+    }
     $cli = Join-Path $installDir 'GaoCaoZuo-cli.exe'
     $gui = Join-Path $installDir 'GaoCaoZuo.exe'
+    $uninstaller = (Get-ChildItem -LiteralPath $installDir -Filter 'unins*.exe' -File | Select-Object -First 1).FullName
+    if (!$uninstaller) { throw 'Controlled uninstall was not installed.' }
     Assert-X64 $cli
     Assert-X64 $gui
     if ((Get-Item -LiteralPath $gui).VersionInfo.ProductVersion -ne '1.16') { throw 'Installed version mismatch.' }
@@ -45,13 +78,6 @@ try {
     $capabilities = & $cli --capabilities | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or !($capabilities.actions | Where-Object action -eq 'ocr.files')) { throw 'Installed OCR provider discovery failed.' }
 
-    $clipboard = Join-Path $dataDir 'Clipboard'
-    New-Item -ItemType Directory -Path $clipboard, $output | Out-Null
-    $old = Join-Path $dataDir 'settings.json'
-    [IO.File]::WriteAllText($old, '{"schema":1,"appearance":"dark","clipboardEnabled":false,"favorites":["new.text"],"unknownLegacyKey":{"mark":"keep"}}')
-    $history = Join-Path $clipboard 'history.json'
-    [IO.File]::WriteAllText($history, '{"schema":1,"items":[{"text":"isolated fixture","pinned":true}]}')
-    $historyHash = (Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash
     $arguments = '--no-browser --data-dir "' + $dataDir + '" --port 0'
     $server = Start-Process -FilePath $cli -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $deadline = (Get-Date).AddSeconds(40)
@@ -75,7 +101,7 @@ try {
     }
 
     $state = Invoke-RestMethod -Uri ($base + 'api/state') -Headers $headers -TimeoutSec 10 -NoProxy
-    if ($state.version -ne '1.16+1' -or $state.status -ne 'ready' -or $state.clipboardReads -ne 0 -or $state.settings.appearance -ne 'dark') { throw 'Legacy startup or disabled clipboard regression.' }
+    if ($state.version -ne $ExpectedVersion -or $state.status -ne 'ready' -or $state.clipboardReads -ne 0 -or $state.settings.appearance -ne 'dark') { throw 'Legacy startup or disabled clipboard regression.' }
     Post 'api/settings' @{appearance='light'} | Out-Null
     if ((Get-Content -LiteralPath $old -Raw | ConvertFrom-Json).unknownLegacyKey.mark -ne 'keep') { throw 'Unknown settings field changed.' }
     if ((Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash -ne $historyHash) { throw 'Disabled clipboard history changed.' }
@@ -84,6 +110,13 @@ try {
     $archive = (Post 'api/action' @{id='archive.custom';payload=@{paths=@($file);format='7z';password='isolated test'}}).result.path
     $listed = (Post 'api/action' @{id='archive.list';payload=@{path=$archive;password='isolated test'}}).result.members
     if ($listed.Count -ne 1) { throw 'Installed 7Z list failed.' }
+    $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    $addition = Join-Path $output 'added.txt'
+    [IO.File]::WriteAllText($addition, 'edit fixture')
+    $preview = (Post 'api/archive/edit/preview' @{path=$archive;password='isolated test'}).result
+    $copy = Join-Path $output 'edited.7z'
+    $edited = (Post 'api/archive/edit/save' @{previewID=$preview.previewID;password='isolated test';mode='copy';destination=$copy;confirm=$true;add=@($addition);remove=@($listed[0].name)}).result
+    if (!$preview.encrypted -or $edited.members[0].name -ne 'added.txt' -or !$edited.members[0].encrypted -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $archiveHash) { throw 'Encrypted archive edit or original preservation failed.' }
     $extracted = (Post 'api/action' @{id='archive.extract';payload=@{paths=@($archive);password='isolated test'}}).result.items[0].destination
     if ((Get-Content -LiteralPath (Join-Path $extracted ([IO.Path]::GetFileName($file))) -Raw) -ne 'GaoCaoZuo isolated install fixture') { throw 'Installed 7Z extraction differed.' }
     $languages = (Post 'api/screenshot/ocr/languages' @{}).result
@@ -133,9 +166,13 @@ try {
     }
     Post 'api/shutdown' @{} | Out-Null
     if (!$server.WaitForExit(25000) -or $server.ExitCode -ne 0) { throw 'Installed CLI failed to shut down cleanly.' }
-    Write-Output "OK installer, x64 PE, version, loopback, isolated settings migration, disabled clipboard, text, encrypted 7Z, $ocrCheck and shutdown."
+    Remove-IsolatedInstall
+    $uninstaller = $null
+    if ((Test-Path -LiteralPath $gui) -or (Test-Path -LiteralPath $cli) -or !(Test-Path -LiteralPath $old) -or !(Test-Path -LiteralPath $history)) { throw 'Uninstall did not remove binaries and retain isolated user data.' }
+    Write-Output "OK installer, optional prior build upgrade, x64 PE, version, loopback, settings migration, disabled clipboard, text, encrypted 7Z and edit preserving original, $ocrCheck, shutdown, and uninstall retaining data."
 } finally {
     if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force }
+    Remove-IsolatedInstall
     foreach ($key in $previousEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key], 'Process')
     }

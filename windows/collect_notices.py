@@ -10,6 +10,7 @@ import sys
 PACKAGES = (
     "Pillow", "pillow-heif", "py7zr", "pyzipper", "pycryptodomex", "Brotli", "psutil", "pyppmd", "pybcj",
     "multivolumefile", "inflate64", "backports.zstd", "texttable", "PyInstaller",
+    "ctranslate2", "sentencepiece", "py3langid", "numpy", "PyYAML", "setuptools",
 )
 
 
@@ -40,6 +41,10 @@ def main(directory: Path, inno: Path) -> None:
         if inno_notice.is_file():
             shutil.copyfile(inno_notice, directory / "InnoSetup.txt")
             break
+    vendor = Path(__file__).resolve().parent / "src" / "gaocaozuo" / "assets" / "vendor"
+    for notice in vendor.glob("*.txt"):
+        shutil.copyfile(notice, directory / notice.name)
+    shutil.copytree(Path(__file__).resolve().parent / "licenses" / "translation", directory / "Translation", dirs_exist_ok=True)
     (directory / "Third-Party.txt").write_text("\n".join(notices) + "\n", encoding="utf-8")
 
 

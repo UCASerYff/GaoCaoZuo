@@ -38,6 +38,7 @@ class PackagedApp:
                     with self.opener.open(self.url, timeout=5) as page:
                         self.token = re.search(rb'name="gao-token" content="([^"]+)"', page.read())[1].decode("ascii")
                     self.post("settings/create", {})
+                    self.post("settings", {"language": "zh-Hans"})
                     break
                 time.sleep(0.1)
             else:
@@ -84,6 +85,7 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
     else:
         app = App(path / "data")
         app.create_settings()
+        app.update_settings({"language": "zh-Hans"})
         server = serve(app, open_browser=False)
     profile = path / "profile"
     with tempfile.TemporaryFile() as log:
@@ -204,8 +206,15 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
             click("保存", "dialog button")
             wait("document.body.innerText.includes('Ctrl+Alt+W')")
             assert app.rules()[0]["shortcut"] == "Ctrl+Alt+W"
+            click("设置")
+            wait("document.querySelectorAll('dialog select')[1]?.options.length === 11")
+            js("document.querySelectorAll('dialog select')[1].value = 'en'")
+            click("保存", "dialog button")
+            wait("document.documentElement.lang === 'en'")
+            click("Workbench", ".nav button")
+            wait("document.querySelector('h1')?.textContent === 'Workbench'")
             assert not exceptions, exceptions
-            print("Theme persistence, action search, six screenshot tabs, Explorer handoff, ZIP preview/extraction, image open/rotate/save, rule persistence passed.")
+            print("Theme and interface-language persistence, action search, six screenshot tabs, Explorer handoff, ZIP preview/extraction, image open/rotate/save, and rule persistence passed.")
         finally:
             server.shutdown()
             server.server_close()

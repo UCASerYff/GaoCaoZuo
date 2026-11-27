@@ -1,6 +1,7 @@
 param(
     [string]$Python = "python",
     [string]$InnoCompiler = "",
+    [string]$DistDirectory = "dist",
     [switch]$SkipDependencyInstall
 )
 
@@ -27,7 +28,7 @@ $buildNumber = & $Python -c 'from gaocaozuo.version import WINDOWS_BUILD; print(
 Assert-LastExit "build number"
 $stem = "GaoCaoZuo-Windows-$version-x64-Setup"
 $buildDir = Join-Path $PSScriptRoot "build"
-$distDir = Join-Path $PSScriptRoot "dist"
+$distDir = [IO.Path]::GetFullPath($DistDirectory, $PSScriptRoot)
 $ocrHelper = Join-Path $buildDir 'ocr\GaoCaoZuo-WinOcr.exe'
 & "$PSScriptRoot\ocr\build.ps1" -OutputPath $ocrHelper
 Assert-LastExit "Windows OCR helper"
@@ -46,9 +47,13 @@ StringFileInfo([StringTable('080404b0', [StringStruct('CompanyName','GaoSeries')
 "@ | Set-Content -LiteralPath $versionFile -Encoding UTF8
 
 $assetDir = Join-Path $PSScriptRoot 'src\gaocaozuo\assets'
+$localization = Join-Path $buildDir 'localization.json'
+& $Python -m gaocaozuo.localization $localization
+Assert-LastExit "Mac-derived localization"
 $common = @('--noconfirm', '--clean', '--onefile', '--paths', 'src', '--distpath', $distDir,
             '--add-data', "$assetDir;gaocaozuo_assets", '--add-data', "$ocrHelper;gaocaozuo_assets",
-            '--add-data', "$iconPng;gaocaozuo_assets", '--collect-all', 'pillow_heif', '--icon', $icon, '--version-file', $versionFile)
+            '--add-data', "$iconPng;gaocaozuo_assets", '--add-data', "$localization;gaocaozuo_assets", '--collect-all', 'pillow_heif',
+            '--collect-binaries', 'ctranslate2', '--collect-data', 'py3langid', '--icon', $icon, '--version-file', $versionFile)
 & $Python -m PyInstaller @common --name GaoCaoZuo-cli --console --workpath build/cli --specpath build/cli launch.py
 Assert-LastExit "PyInstaller CLI"
 & $Python -m PyInstaller @common --name GaoCaoZuo --windowed --workpath build/gui --specpath build/gui launch.py
@@ -66,7 +71,7 @@ if (-not $InnoCompiler) {
 if (-not $InnoCompiler) { throw 'Inno Setup 6.3+ ISCC.exe is required to build the setup package.' }
 & $Python collect_notices.py (Join-Path $buildDir 'notices') (Split-Path -Parent $InnoCompiler)
 Assert-LastExit "dependency notices"
-& $InnoCompiler /Qp "/DAppVersion=$version" "/DBuildNumber=$buildNumber" "/F$stem" "/O$distDir" installer.iss
+& $InnoCompiler /Qp "/DAppVersion=$version" "/DBuildNumber=$buildNumber" "/DBinaryDir=$distDir" "/F$stem" "/O$distDir" installer.iss
 Assert-LastExit "Inno Setup"
 $package = Join-Path $distDir "$stem.exe"
 $checksum = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
