@@ -6,6 +6,7 @@ import CryptoKit
 import ImageIO
 import CoreImage
 import NaturalLanguage
+import Darwin
 
 final class ScreenshotOCRService: @unchecked Sendable {
     private struct Work: Sendable {
@@ -193,10 +194,12 @@ final class ScreenshotOCRService: @unchecked Sendable {
             guard !visible.isNull, visible.width.isFinite, visible.height.isFinite, visible.width > 0, visible.height > 0 else { throw ScreenshotOCRError.invalidInput("PDF 裁切页面框无有效可见区域。") }
             let rotation = ((Int(page.rotationAngle) % 360) + 360) % 360
             let rotated = rotation == 90 || rotation == 270
-            let uprightSize = CGSize(width: rotated ? visible.height : visible.width, height: rotated ? visible.width : visible.height)
+            let uprightWidth = Double(rotated ? visible.height : visible.width)
+            let uprightHeight = Double(rotated ? visible.width : visible.height)
             let requestedScale = options.pdfDPI / 72
-            let scale = min(requestedScale, sqrt(Double(options.maxPixelsPerPage) / (uprightSize.width * uprightSize.height)), 12_000 / max(uprightSize.width, uprightSize.height))
-            let width = max(1, Int(floor(uprightSize.width * scale))), height = max(1, Int(floor(uprightSize.height * scale)))
+            let scale = min(requestedScale, Darwin.sqrt(Double(options.maxPixelsPerPage) / (uprightWidth * uprightHeight)), 12_000 / max(uprightWidth, uprightHeight))
+            let width = max(1, Int(Darwin.floor(uprightWidth * scale)))
+            let height = max(1, Int(Darwin.floor(uprightHeight * scale)))
             guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ScreenshotOCRError.resourceLimit("无法分配 PDF 页面像素。") }
             context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
             let uprightMedia = CGRect(x: 0, y: 0, width: rotated ? media.height : media.width, height: rotated ? media.width : media.height)
@@ -250,26 +253,28 @@ final class ScreenshotOCRService: @unchecked Sendable {
             let dx = (observation.bottomRight.x - observation.bottomLeft.x) * width
             let dy = (observation.bottomRight.y - observation.bottomLeft.y) * height
             guard dx > width * 0.04 else { return nil }
-            let angle = atan2(dy, dx)
-            return abs(angle) <= 12 * .pi / 180 ? angle : nil
+            let angle = Darwin.atan2(Double(dy), Double(dx))
+            return abs(angle) <= 12 * Double.pi / 180 ? angle : nil
         }.sorted()
         guard angles.count >= 2 else { return (rendered, 0) }
         let median = angles[angles.count / 2]
-        guard abs(median) > 0.15 * .pi / 180 else { return (rendered, 0) }
-        let spread = angles.filter { abs($0 - median) <= 2 * .pi / 180 }.count
+        guard abs(median) > 0.15 * Double.pi / 180 else { return (rendered, 0) }
+        let spread = angles.filter { abs($0 - median) <= 2 * Double.pi / 180 }.count
         guard spread * 2 >= angles.count else { return (rendered, 0) }
         let angle = -median
         guard let context = CGContext(data: nil, width: rendered.image.width, height: rendered.image.height, bitsPerComponent: 8, bytesPerRow: rendered.image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ScreenshotOCRError.resourceLimit("去倾斜缓冲无法分配。") }
         context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let rotatedWidth = abs(width * cos(angle)) + abs(height * sin(angle))
-        let rotatedHeight = abs(width * sin(angle)) + abs(height * cos(angle))
+        let cosine = CGFloat(Darwin.cos(angle))
+        let sine = CGFloat(Darwin.sin(angle))
+        let rotatedWidth = abs(width * cosine) + abs(height * sine)
+        let rotatedHeight = abs(width * sine) + abs(height * cosine)
         let fit = min(width / rotatedWidth, height / rotatedHeight)
-        let transform = CGAffineTransform(translationX: width / 2, y: height / 2).rotated(by: angle).scaledBy(x: fit, y: fit).translatedBy(x: -width / 2, y: -height / 2)
+        let transform = CGAffineTransform(translationX: width / 2, y: height / 2).rotated(by: CGFloat(angle)).scaledBy(x: fit, y: fit).translatedBy(x: -width / 2, y: -height / 2)
         context.concatenate(transform); context.draw(rendered.image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let image = context.makeImage() else { throw ScreenshotOCRError.invalidInput("去倾斜输出失败。") }
         var corrected = rendered; corrected.image = image
         corrected.pixelsToPage = transform.inverted().concatenating(rendered.pixelsToPage)
-        return (corrected, angle * 180 / .pi)
+        return (corrected, angle * 180 / Double.pi)
     }
 
     static func sha256(url: URL, limit: Int64 = 512 * 1024 * 1024) throws -> String {

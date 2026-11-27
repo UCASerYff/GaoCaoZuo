@@ -187,8 +187,9 @@ enum ScreenshotOCRExporter {
     /// Corrected or incompletely searchable native-PDF pages become original visual pixels + one OCR layer.
     /// This avoids retaining a conflicting old native text layer beneath the new OCR text.
     private static func drawRasterizedOriginal(_ page: CGPDFPage, media: CGRect, maxPixels: Int, to output: CGContext) throws {
-        let scale = min(2, sqrt(Double(maxPixels) / (media.width * media.height)), 12_000 / max(media.width, media.height))
-        let width = max(1, Int(media.width * scale)), height = max(1, Int(media.height * scale))
+        let mediaWidth = Double(media.width), mediaHeight = Double(media.height)
+        let scale = min(2, (Double(maxPixels) / (mediaWidth * mediaHeight)).squareRoot(), 12_000 / max(mediaWidth, mediaHeight))
+        let width = max(1, Int(mediaWidth * scale)), height = max(1, Int(mediaHeight * scale))
         guard let bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ScreenshotOCRError.resourceLimit("校正PDF页面缓冲分配失败。") }
         bitmap.setFillColor(CGColor(gray: 1, alpha: 1)); bitmap.fill(CGRect(x: 0, y: 0, width: width, height: height))
         bitmap.scaleBy(x: CGFloat(width) / media.width, y: CGFloat(height) / media.height); bitmap.translateBy(x: -media.minX, y: -media.minY)
