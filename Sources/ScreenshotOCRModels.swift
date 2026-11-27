@@ -161,7 +161,7 @@ enum ScreenshotOCRReadingOrder {
         func order(_ values: [ScreenshotOCRLine], depth: Int) -> [ScreenshotOCRLine] {
             guard values.count > 2, depth < 8 else { return rows(values) }
             let rects = values.map(\.boundingBox)
-            let intervals = rects.map { ($0.minX, $0.maxX) }.sorted { $0.0 < $1.0 }
+            let intervals = rects.map { (Double($0.minX), Double($0.maxX)) }.sorted { $0.0 < $1.0 }
             var right = intervals[0].1
             var gaps: [(Double, Double)] = []
             for interval in intervals.dropFirst() {
@@ -169,14 +169,14 @@ enum ScreenshotOCRReadingOrder {
                 right = max(right, interval.1)
             }
             if let gap = gaps.max(by: { $0.1 - $0.0 < $1.1 - $1.0 }) {
-                let left = values.filter { $0.boundingBox.maxX <= gap.0 + 0.001 }
-                let right = values.filter { $0.boundingBox.minX >= gap.1 - 0.001 }
+                let left = values.filter { Double($0.boundingBox.maxX) <= gap.0 + 0.001 }
+                let right = values.filter { Double($0.boundingBox.minX) >= gap.1 - 0.001 }
                 if left.count >= 2, right.count >= 2, left.count + right.count == values.count {
                     return order(left, depth: depth + 1) + order(right, depth: depth + 1)
                 }
             }
             // A full-width heading spans gutters; split at horizontal whitespace first.
-            let ys = rects.map { ($0.minY, $0.maxY) }.sorted { $0.0 < $1.0 }
+            let ys = rects.map { (Double($0.minY), Double($0.maxY)) }.sorted { $0.0 < $1.0 }
             var top = ys[0].1
             var best: (Double, Double)?
             for interval in ys.dropFirst() {
@@ -184,8 +184,8 @@ enum ScreenshotOCRReadingOrder {
                 top = max(top, interval.1)
             }
             if let gap = best {
-                let above = values.filter { $0.boundingBox.minY >= gap.1 - 0.001 }
-                let below = values.filter { $0.boundingBox.maxY <= gap.0 + 0.001 }
+                let above = values.filter { Double($0.boundingBox.minY) >= gap.1 - 0.001 }
+                let below = values.filter { Double($0.boundingBox.maxY) <= gap.0 + 0.001 }
                 if !above.isEmpty, !below.isEmpty, above.count + below.count == values.count {
                     return order(above, depth: depth + 1) + order(below, depth: depth + 1)
                 }
