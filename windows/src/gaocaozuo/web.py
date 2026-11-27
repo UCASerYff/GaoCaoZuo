@@ -245,8 +245,10 @@ class Handler(BaseHTTPRequestHandler):
                 settings = app.store.settings or {}
                 with native_locale(settings.get("language", "system")), native_surface(settings.get("appearance", "system")):
                     result = dispatch(app, parsed.path, payload)
-                    state = app.snapshot()
-            self._json({"ok": True, "result": result, "state": state})
+                    response = {"ok": True, "result": result}
+                    if parsed.path != "/api/rules/preview":
+                        response["state"] = app.snapshot()
+            self._json(response)
         except AppError as exc:
             self._json({"ok": False, "error": exc.message, "code": exc.code}, 400)
         except (KeyError, TypeError, ValueError, OSError):
@@ -343,7 +345,9 @@ def dispatch(app: App, path: str, payload: dict):
     if path == "/api/ocr-provider/review":
         return app.ocr_provider.receive(Path(payload["path"]))
     if path == "/api/ocr-provider/approve":
-        return app.ocr_provider.approve(payload["requestID"], payload.get("confirm") is True)
+        return app.remember_ocr_review(app.ocr_provider.approve(payload["requestID"], payload.get("confirm") is True))
+    if path == "/api/ocr-provider/return":
+        return app.remember_ocr_review(app.ocr_provider.return_result(payload["requestID"]))
     if path == "/api/ocr-provider/result":
         return app.ocr_provider.export_result(payload["requestID"], Path(payload["directory"]), payload.get("confirm") is True)
     if path == "/api/ocr-provider/jobs":
@@ -419,6 +423,12 @@ def dispatch(app: App, path: str, payload: dict):
         return app.save_rules(payload.get("rules") or [])
     if path == "/api/rules/list":
         return {"rules": app.rules()}
+    if path == "/api/rules/preview":
+        from gaocaozuo.rule_preview import preview_rule
+
+        settings = app.store.settings or {}
+        rules = app.rules() if payload.get("kind", "rule") == "rule" else []
+        return preview_rule(payload, rules=rules, workflows=settings.get("workflows") or [], settings=settings)
     if path == "/api/rules/import":
         return app.import_input(payload.get("remote") or [], payload.get("tombstones") or [])
     if path == "/api/exchange/ticket":

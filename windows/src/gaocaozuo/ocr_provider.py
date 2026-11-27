@@ -9,16 +9,17 @@ import json
 import os
 import re
 import secrets
-import shutil
 import stat
 import tempfile
 import uuid
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from gaocaozuo.atomic import atomic_replace
 from gaocaozuo.errors import AppError
 from gaocaozuo.ocr import ENGINE, FORMATS, MAX_PAGES, OcrSession, validate_languages
+from gaocaozuo.ocr_return import RETURN_SOURCES, default_return_root, pinned_directory, pinned_path, rename_directory
 from gaocaozuo.screenshot import MAX_INPUT_BYTES, write_new
 from gaocaozuo.version import BUNDLE_ID, MARKETING_VERSION
 
@@ -26,6 +27,7 @@ if os.name == "nt":
     from gaocaozuo.ocr_provider_win import _open_windows_file, _windows_file_snapshot
 
 MAX_MANIFEST_BYTES = 1_048_576
+MAX_RETURN_TICKET_BYTES = 4096
 MAX_PAYLOAD_BYTES = 2_147_483_648
 MAX_PENDING = 128
 MAX_STORE_BYTES = 8 * 1024 * 1024 * 1024
@@ -124,7 +126,7 @@ def _check_current_path(path, expected):
         raise AppError("交接文件位置在校验时发生变化。", "changed")
 
 
-def _read(path: Path, maximum: int, destination: Path | None = None, *, collect=True) -> tuple[bytes | None, int, str]:
+def _read(path: Path, maximum: int, destination: Path | None = None, *, collect=True, sync=False) -> tuple[bytes | None, int, str]:
     if os.name == "nt":
         path_snapshot = None
         source = _open_windows_file(path)
@@ -152,6 +154,9 @@ def _read(path: Path, maximum: int, destination: Path | None = None, *, collect=
                     output_stream.write(chunk)
                 elif data is not None:
                     data.extend(chunk)
+            if output_stream and sync:
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
         finally:
             if output_stream:
                 output_stream.close()
@@ -218,10 +223,11 @@ def _manifest(path, now):
 
 
 class OcrProvider:
-    def __init__(self, directory: Path, clock=None, session_factory=OcrSession):
+    def __init__(self, directory: Path, clock=None, session_factory=OcrSession, *, return_root: Path | None = None):
         self.root = Path(directory).resolve() / "OcrProvider"
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.session_factory = session_factory
+        self.return_root = Path(return_root) if return_root is not None else default_return_root()
 
     def receive(self, source: Path) -> dict:
         if source.suffix.casefold() != ".gaoaction":
@@ -312,7 +318,120 @@ class OcrProvider:
             record["provenance"] = {"engine": ENGINE, "networkUsed": False, "sources": [], "outputs": [],
                                     "exportFailures": [exc.message if isinstance(exc, AppError) else "结果暂存失败。"]}
         self._write_record(folder, record)
+        return self._try_return(folder, record)
+
+    @staticmethod
+    def _supports_return(record):
+        manifest = record["manifest"]
+        identifier = record["internalID"]
+        digest = record.get("manifestSHA256")
+        return (manifest["sourceBundleID"] in RETURN_SOURCES and manifest["requestID"] == identifier
+                and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", identifier)
+                and isinstance(digest, str) and SHA.fullmatch(digest))
+
+    @contextmanager
+    def _return_ticket(self, directory, record):
+        original = record["manifest"]
+        _fresh(original, self.clock())
+        ticket = directory / "request.json"
+        with _open_windows_file(ticket) as stream:
+            snapshot = _file_snapshot(stream, ticket)
+            if snapshot[0] > MAX_RETURN_TICKET_BYTES:
+                raise ValueError("ticket size")
+            raw = stream.read(MAX_RETURN_TICKET_BYTES + 1)
+            if len(raw) != snapshot[0] or snapshot != _file_snapshot(stream, ticket):
+                raise ValueError("ticket changed")
+            _check_current_path(ticket, snapshot)
+
+            def unique(pairs):
+                values = dict(pairs)
+                if len(values) != len(pairs):
+                    raise ValueError("duplicate ticket keys")
+                return values
+
+            actual = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+            expected = {"schemaVersion": 1, "requestID": record["internalID"], "action": "ocr.files",
+                        "sourceBundleID": original["sourceBundleID"], "targetBundleID": BUNDLE_ID,
+                        "requestManifestSHA256": record["manifestSHA256"], "expiresAt": original["expiresAt"]}
+            if actual != expected or type(actual["schemaVersion"]) is not int:
+                raise ValueError("ticket binding")
+
+            def recheck():
+                _fresh(original, self.clock())
+                if snapshot != _file_snapshot(stream, ticket):
+                    raise ValueError("ticket changed")
+                _check_current_path(ticket, snapshot)
+
+            yield recheck
+
+    def return_result(self, request_id) -> dict:
+        folder = self.root / _request_uuid(request_id)
+        return self._try_return(folder, self._record(folder))
+
+    def _try_return(self, folder, record):
+        if record["status"] != "completed" or not record.get("result") or not self._supports_return(record):
+            return self._summary(record)
+        try:
+            _fresh(record["manifest"], self.clock())
+            slot = self.return_root / record["internalID"] if self.return_root is not None else None
+            with pinned_path(slot, exact_name=True, writable_parent=True) as directory, self._return_ticket(directory, record) as recheck:
+                descriptor = record.get("returnDescriptor")
+                if descriptor is None:
+                    descriptor = record["returnDescriptor"] = self._result_identity()
+                    # Persist the result identity before publishing so a retry can recognize our own result.
+                    self._write_record(folder, record)
+                result, blob = self._result_manifest(record, descriptor)
+                destination = directory / "result.gaoaction"
+                self._publish_return(folder, directory, destination, result, blob, recheck)
+            status = "published"
+        except AppError as exc:
+            status = "expired" if exc.code == "expired" else "unavailable"
+        except (OSError, ValueError):
+            status = "unavailable"
+        if record.get("returnStatus") != status:
+            record["returnStatus"] = status
+            try:
+                self._write_record(folder, record)
+            except AppError:
+                # OCR artifacts and their result identity were committed before publication.
+                pass
         return self._summary(record)
+
+    def _publish_return(self, folder, directory, destination, result, blob, recheck):
+        try:
+            self._verify_published(destination, result, blob, recheck)
+            return
+        except FileNotFoundError:
+            # Only absence of the destination itself permits publication. A malformed existing package does not.
+            try:
+                destination.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                self._verify_published(destination, result, blob, recheck)
+                return
+        with pinned_path(folder / "outputs"), tempfile.TemporaryDirectory(prefix=".return-", dir=directory) as work:
+            staging = Path(work)
+            with pinned_directory(staging, rename=True) as handle:
+                self._write_package(folder, staging, result, blob, sync=True)
+                with pinned_path(directory, exact_name=True, writable_parent=True):
+                    recheck()
+                    try:
+                        rename_directory(handle, destination)
+                    except OSError:
+                        self._verify_published(destination, result, blob, recheck)
+
+    def _verify_published(self, destination, result, blob, recheck):
+        with pinned_directory(destination):
+            payload = destination / "payload"
+            with pinned_directory(payload):
+                existing, _, _ = _read(destination / "manifest.json", MAX_MANIFEST_BYTES)
+                if (existing != blob or {entry.name for entry in destination.iterdir()} != {"manifest.json", "payload"}
+                        or {entry.name for entry in payload.iterdir()} != {item["relativePath"] for item in result["items"]}):
+                    raise ValueError("different existing return")
+                for item in result["items"]:
+                    self._verify_result_item(payload, item)
+                recheck()
 
     def export_result(self, request_id, directory: Path, confirm) -> dict:
         if confirm is not True:
@@ -321,38 +440,60 @@ class OcrProvider:
         record = self._record(folder)
         if record["status"] not in {"completed", "partial", "failed"}:
             raise AppError("此请求还没有可导出的业务结果。", "pending")
-        result_id = str(uuid.uuid4())
-        now = self.clock()
-        original = record["manifest"]
-        result = {"schemaVersion": 1, "kind": "result", "requestID": result_id, "inReplyTo": original["requestID"],
-                  "sourceBundleID": BUNDLE_ID, "targetBundleID": original["sourceBundleID"], "action": "ocr.files",
-                  "createdAt": _stamp(now), "expiresAt": _stamp(now + timedelta(seconds=120)),
-                  "nonce": base64.b64encode(secrets.token_bytes(32)).decode("ascii"), "items": record["result"],
-                  "references": [], "parameters": original["parameters"], "status": record["status"],
-                  "errorCode": record.get("errorCode"), "provenance": record["provenance"]}
-        blob = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
-        if len(blob) > MAX_MANIFEST_BYTES:
-            raise AppError("结果清单超过 1 MiB，请分批识别。", "invalid")
+        result, blob = self._result_manifest(record, self._result_identity())
         try:
             directory.mkdir(parents=True, exist_ok=True)
             directory = directory.resolve(strict=True)
-            destination = directory / f"OCR-{result_id}.gaoaction"
+            destination = directory / f"OCR-{result['requestID']}.gaoaction"
             with tempfile.TemporaryDirectory(prefix=".gaocaozuo-result-", dir=directory) as work:
                 staging = Path(work) / "result"
-                target = staging / "payload"
-                target.mkdir(parents=True)
-                for item in result["items"]:
-                    basename = item["relativePath"]
-                    if len(_parts(basename)) != 1:
-                        raise AppError("保留结果中的附件路径无效。", "unsafe")
-                    _, count, digest = self._check_item(folder / "outputs" / basename, item, target / basename)
-                    if count != item["byteCount"] or digest != item["sha256"]:
-                        raise AppError("待导出的附件摘要不匹配。", "changed")
-                write_new(staging / "manifest.json", blob)
+                staging.mkdir()
+                self._write_package(folder, staging, result, blob)
                 staging.rename(destination)
-            return {"path": str(destination), "requestID": result_id, "inReplyTo": original["requestID"], "status": record["status"]}
+            return {"path": str(destination), "requestID": result["requestID"], "inReplyTo": result["inReplyTo"], "status": record["status"]}
         except OSError as exc:
             raise AppError("交接结果未能写入所选目录。", "rejected") from exc
+
+    def _result_identity(self):
+        now = self.clock()
+        return {"requestID": str(uuid.uuid4()), "createdAt": _stamp(now), "expiresAt": _stamp(now + timedelta(seconds=120)),
+                "nonce": base64.b64encode(secrets.token_bytes(32)).decode("ascii")}
+
+    @staticmethod
+    def _result_manifest(record, identity):
+        original = record["manifest"]
+        result = {"schemaVersion": 1, "kind": "result", "requestID": identity["requestID"], "inReplyTo": original["requestID"],
+                  "sourceBundleID": BUNDLE_ID, "targetBundleID": original["sourceBundleID"], "action": "ocr.files",
+                  "createdAt": identity["createdAt"], "expiresAt": identity["expiresAt"], "nonce": identity["nonce"],
+                  "items": record["result"], "references": [], "parameters": original["parameters"], "status": record["status"],
+                  "errorCode": record.get("errorCode"), "provenance": {**record["provenance"], "requestManifestSHA256": record["manifestSHA256"]}}
+        blob = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+        if len(blob) > MAX_MANIFEST_BYTES:
+            raise AppError("结果清单超过 1 MiB，请分批识别。", "invalid")
+        return result, blob
+
+    def _write_package(self, folder, staging, result, blob, *, sync=False):
+        target = staging / "payload"
+        target.mkdir()
+        with pinned_directory(target) if sync else nullcontext():
+            for item in result["items"]:
+                self._verify_result_item(folder / "outputs", item, target, sync=sync)
+        manifest = staging / "manifest.json"
+        if sync:
+            with manifest.open("xb") as stream:
+                stream.write(blob)
+                stream.flush()
+                os.fsync(stream.fileno())
+        else:
+            write_new(manifest, blob)
+
+    def _verify_result_item(self, source, item, target=None, *, sync=False):
+        basename = item["relativePath"]
+        if len(_parts(basename)) != 1:
+            raise AppError("保留结果中的附件路径无效。", "unsafe")
+        _, count, digest = self._check_item(source / basename, item, target / basename if target else None, sync=sync)
+        if count != item["byteCount"] or digest != item["sha256"]:
+            raise AppError("待导出的附件摘要不匹配。", "changed")
 
     def jobs(self) -> list[dict]:
         jobs = []
@@ -430,16 +571,34 @@ class OcrProvider:
                 "expiresAt": manifest["expiresAt"], "parameters": manifest["parameters"],
                 "resultCount": len(record.get("result", [])), "errorCode": record.get("errorCode"),
                 "errors": record.get("provenance", {}).get("exportFailures", []),
+                "autoReturn": {"targetBundleID": manifest["sourceBundleID"], "status": self._return_status(record)},
                 "items": [{"name": _parts(item["relativePath"])[-1], "byteCount": item["byteCount"], "uti": item["uti"]}
                           for item in manifest["items"]]}
+
+    def _return_status(self, record):
+        if not self._supports_return(record):
+            return "notEligible"
+        if record["status"] == "completed" and record.get("result"):
+            return record.get("returnStatus", "unavailable")
+        if record["status"] != "pending":
+            return "notEligible"
+        try:
+            _fresh(record["manifest"], self.clock())
+            slot = self.return_root / record["internalID"] if self.return_root is not None else None
+            with pinned_path(slot, exact_name=True) as directory, self._return_ticket(directory, record):
+                return "ready"
+        except AppError as exc:
+            return "expired" if exc.code == "expired" else "unavailable"
+        except (OSError, ValueError):
+            return "unavailable"
 
     @staticmethod
     def _input_path(folder, index, uti):
         return folder / f"input-{index + 1}{'.pdf' if uti in PDF_TYPES else '.bin'}"
 
     @staticmethod
-    def _check_item(path, item, target=None):
+    def _check_item(path, item, target=None, *, sync=False):
         try:
-            return _read(path, item["byteCount"], target, collect=False)
+            return _read(path, item["byteCount"], target, collect=False, sync=sync)
         except OSError as exc:
             raise AppError("交接附件无法重新核对。", "rejected") from exc

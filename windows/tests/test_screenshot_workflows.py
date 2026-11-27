@@ -19,6 +19,13 @@ from gaocaozuo.ocr_provider import OcrProvider
 from gaocaozuo.screenshot import ScreenshotSession
 
 
+@pytest.fixture(autouse=True)
+def isolated_ocr_return_base(tmp_path, monkeypatch):
+    root = tmp_path / "LocalAppData"
+    root.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(root))
+
+
 def test_annotate_transform_save_and_reopen(tmp_path):
     session = ScreenshotSession(tmp_path / "data")
     source = session.capture(True, lambda: (120, 80, bytes([255, 255, 255]) * 120 * 80))

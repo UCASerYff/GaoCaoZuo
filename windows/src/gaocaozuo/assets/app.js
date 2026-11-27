@@ -1430,7 +1430,7 @@ function inputPage() {
       box("row rule-meta", el("small", application || "所有应用", "", Boolean(application)),
         stateLabel && el("small", stateLabel, "rule-status " + stateClass)),
       status?.detail && el("small", trError(status.detail), "wrap-text", true)),
-    box("row rule-actions", active, approval, button("编辑", () => ruleDialog(rule)),
+    box("row rule-actions", active, approval, button("试跑…", () => rulePreviewDialog("rule", rule)), button("编辑", () => ruleDialog(rule)),
       button("", () => confirmAction("移除输入规则？", rule.shortcut || rule.actionID,
         () => saveRules(rules.filter(item => item.id !== rule.id)), "移除", {danger: true}), {glyph: "trash", cls: "plain danger", label: "移除规则"})));
   });
@@ -1504,24 +1504,118 @@ function ruleDialog(original = {}) {
   };
   trigger.onchange = update;
   update();
+  const draftID = original.id || crypto.randomUUID();
+  const draft = () => ({
+    ...original, id: draftID, actionID: action.value, shortcut: trigger.value === "hotkey" ? shortcut.value.trim() : "",
+    trigger: trigger.value, direction: direction.value, application: application.value.trim(), enabled: enabled.firstChild.checked,
+    ...(trigger.value === "mouseButton" ? {mouseButton: Number(mouseButton.value), mouseModifiers: modifierControl.value.trim()} :
+      trigger.value === "gesture" ? {mouseModifiers: "Alt"} : {}),
+  });
   formDialog("编辑输入规则", [box("rule-fields", field("执行动作", action), field("触发方式", trigger)),
     box("rule-trigger-fields", hotkey, gesture, mouseFields),
-    box("rule-fields rule-scope", field("限定应用（可选）", application), enabled)], () => {
-    const next = {
-      ...original, id: original.id || crypto.randomUUID(), actionID: action.value, shortcut: trigger.value === "hotkey" ? shortcut.value.trim() : "",
-      trigger: trigger.value, direction: direction.value, application: application.value.trim(), enabled: enabled.firstChild.checked,
-      ...(trigger.value === "mouseButton" ? {mouseButton: Number(mouseButton.value), mouseModifiers: modifierControl.value.trim()} :
-        trigger.value === "gesture" ? {mouseModifiers: "Alt"} : {}),
-    };
+    box("rule-fields rule-scope", field("限定应用（可选）", application), enabled),
+    box("row", button("试跑草稿…", () => rulePreviewDialog("rule", draft(), true)))], () => {
+    const next = draft();
     return saveRules(original.id ? rules.map(item => item.id === original.id ? next : item) : [...rules, next]);
   }, "保存");
+}
+function rulePreviewDialog(kind, item, draft = false) {
+  const preview = box("stack rule-preview-result");
+  let revision = 0;
+  let fields;
+  let sample;
+  if (kind === "rule") {
+    const application = input(item.application || item.appBundleID || item.include?.[0] || "notepad.exe");
+    const trigger = select([["hotkey", "快捷键"], ["gesture", "鼠标手势"], ["mouseButton", "鼠标按钮"]], item.trigger || "hotkey");
+    const shortcut = input(item.shortcut || "Ctrl+Alt+W");
+    const direction = select([["left", "向左"], ["right", "向右"], ["up", "向上"], ["down", "向下"]], item.direction || "left");
+    const mouseButton = select([["2", "中键"], ["3", "侧键 X1"], ["4", "侧键 X2"]], String(item.mouseButton || 2));
+    const modifiers = input(item.mouseModifiers || "", {placeholder: "留空沿用规则设置"});
+    const hotkeyField = field("模拟快捷键", shortcut);
+    const gestureField = field("拖动方向", direction);
+    const mouseField = field("鼠标按钮", mouseButton);
+    const modifierField = field("鼠标修饰键（可选）", modifiers);
+    const mouseFields = box("rule-fields", gestureField, mouseField, modifierField);
+    const update = () => {
+      hotkeyField.hidden = trigger.value !== "hotkey";
+      gestureField.hidden = trigger.value !== "gesture";
+      mouseField.hidden = trigger.value !== "mouseButton";
+      mouseFields.hidden = trigger.value === "hotkey";
+    };
+    trigger.addEventListener("change", update);
+    update();
+    fields = box("stack", box("rule-fields", field("模拟应用", application), field("模拟触发方式", trigger)), hotkeyField, mouseFields);
+    sample = () => ({application: application.value.trim(), trigger: trigger.value,
+      ...(trigger.value === "hotkey" ? {shortcut: shortcut.value.trim()} : {
+        ...(trigger.value === "gesture" ? {direction: direction.value} : {mouseButton: Number(mouseButton.value)}),
+        ...(modifiers.value.trim() && {mouseModifiers: modifiers.value.trim()}),
+      })});
+  } else {
+    const pathInput = area("C:\\GaoPreview\\Inbox\\sample.png\nC:\\GaoPreview\\Inbox\\notes.txt");
+    const existing = area("");
+    fields = box("stack", field("合成输入路径（每行一个）", pathInput), field("模拟已存在路径（可选）", existing));
+    sample = () => ({paths: splitLines(pathInput.value), existingPaths: splitLines(existing.value)});
+  }
+  fields.addEventListener("input", () => { revision += 1; preview.replaceChildren(); });
+  fields.addEventListener("change", () => { revision += 1; preview.replaceChildren(); });
+  const selection = kind === "rule" ? draft ? {rule: item} : {ruleID: item.id} : {workflowID: item.id};
+  const name = item.name || actionTitle(item.actionID);
+  const current = formDialog(kind === "rule" ? "规则试跑" : "组合操作试跑", [el("strong", name, "wrap-text", Boolean(item.name)),
+    note("仅根据下面的合成输入生成只读计划。"), fields, preview], async () => {
+    const submittedRevision = revision;
+    const result = await api("/api/rules/preview", {kind, ...selection, sample: sample()});
+    if (current.open && submittedRevision === revision) {
+      preview.replaceChildren(rulePreviewResult(result));
+      const heading = preview.querySelector("h3");
+      heading.focus({preventScroll: true});
+      heading.scrollIntoView({block: "start"});
+    }
+    return false;
+  }, "生成试跑计划", {size: "wide", overlay: draft});
+}
+function rulePreviewResult(plan) {
+  const outcomes = {planned: "已生成试跑计划", blocked: "试跑已阻断", notMatched: "试跑条件未命中"};
+  const conditionLabels = {match: "命中", mismatch: "不匹配", blocked: "已阻断", unknown: "不确定"};
+  const stepLabels = {planned: "预计", blocked: "已阻断", skipped: "已跳过"};
+  const title = el("h3", outcomes[plan.outcome] || "试跑结果");
+  title.tabIndex = -1;
+  const conditions = el("ul", "", "rule-preview-list");
+  for (const condition of plan.conditions) {
+    const item = el("li", "", "rule-preview-item");
+    item.append(box("between", el("strong", condition.label), el("small", conditionLabels[condition.status], `rule-preview-status ${condition.status}`)));
+    if (condition.detail) item.append(el("p", trError(condition.detail), "wrap-text", true));
+    conditions.append(item);
+  }
+  const steps = el("ol", "", "rule-preview-list");
+  for (const step of plan.steps) {
+    const item = el("li", "", "rule-preview-item");
+    item.append(box("between", el("strong", formatMessage("步骤 {index} · {title}", {index: step.index, title: tr(step.title || step.actionID)}), "wrap-text", true),
+      el("small", stepLabels[step.status], `rule-preview-status ${step.status}`)));
+    if (step.reason) item.append(el("p", trError(step.reason), "wrap-text", true));
+    if (step.uncertainty) item.append(el("p", formatMessage("不确定：{detail}", {detail: trError(step.uncertainty)}), "rule-preview-uncertainty wrap-text", true));
+    if (step.effects.length) {
+      const effects = el("ul", "", "rule-preview-effects");
+      for (const effect of step.effects) {
+        const row = el("li");
+        row.append(el("span", effect.operation));
+        if (effect.source) row.append(box("row", el("small", "来源"), el("code", effect.source, "wrap-text fill", true)));
+        if (effect.path) row.append(box("row", el("small", "目标路径"), el("code", effect.path, "wrap-text fill", true)));
+        effects.append(row);
+      }
+      item.append(effects);
+    }
+    steps.append(item);
+  }
+  return box("stack", title, conditions.children.length && box("stack", el("h3", "命中条件"), conditions),
+    steps.children.length && box("stack", el("h3", "预计动作与文件"), steps));
 }
 const actionTitle = id => currentAction(id)?.title || ({delay: "等待", "open.path": "打开路径", "open.url": "打开网址"}[id] || id);
 function workflowPage() {
   const workflows = state.workflows || [];
   const list = workflows.map(workflow => box("list-row", icon("layers"),
     box("fill", el("strong", workflow.name, "row-title"), el("small", (workflow.steps || []).map(step => actionTitle(step.actionID)).join(" → "))),
-    button("运行", () => runWorkflow(workflow), {glyph: "play"}), button("编辑", () => workflowDialog(workflow)),
+    button("运行", () => runWorkflow(workflow), {glyph: "play"}), button("试跑…", () => rulePreviewDialog("workflow", workflow)),
+    button("编辑", () => workflowDialog(workflow)),
     button("", () => confirmAction("删除此组合操作？", workflow.name, async () => {
       await api("/api/settings", {workflows: state.workflows.filter(item => item.id !== workflow.id)});
       await refreshCatalog();

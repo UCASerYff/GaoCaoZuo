@@ -2,7 +2,9 @@
 
 import argparse
 import base64
+import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -10,9 +12,11 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import websocket
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 repo = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo / "windows" / "src"))
@@ -73,12 +77,50 @@ class PackagedApp:
             self.process.wait()
 
 
+def make_ocr_fixture(scratch, return_root, source, ticket=True):
+    request_id = str(uuid.uuid4())
+    package = scratch / (request_id + ".gaoaction")
+    payload = package / "payload"
+    payload.mkdir(parents=True)
+    image = Image.new("RGB", (750, 170), "white")
+    font_path = pathlib.Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeui.ttf"
+    ImageDraw.Draw(image).text((26, 35), "Test 12345", fill="black", font=ImageFont.truetype(str(font_path), 76))
+    sample = payload / "synthetic.png"
+    image.save(sample)
+    content = sample.read_bytes()
+    now = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(seconds=1)
+    manifest = {"schemaVersion": 1, "kind": "request", "requestID": request_id, "action": "ocr.files",
+                "sourceBundleID": source, "targetBundleID": "com.gaoseries.GaoCaoZuo",
+                "createdAt": now.isoformat().replace("+00:00", "Z"),
+                "expiresAt": (now + timedelta(seconds=115)).isoformat().replace("+00:00", "Z"),
+                "parameters": {"outputs": ["text"]}, "references": [],
+                "nonce": base64.b64encode(os.urandom(32)).decode("ascii"),
+                "items": [{"id": "synthetic-png", "uti": "public.png", "relativePath": sample.name,
+                           "byteCount": len(content), "sha256": hashlib.sha256(content).hexdigest()}]}
+    raw = json.dumps(manifest, indent=2).encode("utf-8")
+    (package / "manifest.json").write_bytes(raw)
+    slot = return_root / request_id
+    slot.mkdir(parents=True)
+    return_ticket = {key: manifest[key] for key in ("schemaVersion", "requestID", "action", "sourceBundleID", "targetBundleID", "expiresAt")}
+    return_ticket["requestManifestSHA256"] = hashlib.sha256(raw).hexdigest()
+    if ticket:
+        write_return_ticket(slot, return_ticket)
+    return package, slot, return_ticket
+
+
+def write_return_ticket(slot, ticket):
+    temporary = slot / "request.tmp"
+    temporary.write_bytes(json.dumps(ticket, ensure_ascii=False).encode("utf-8"))
+    temporary.rename(slot / "request.json")
+
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--browser", type=pathlib.Path, default=browser_path())
 parser.add_argument("--packaged-cli", type=pathlib.Path)
 parser.add_argument("--localization-only", action="store_true")
 parser.add_argument("--visual-only", action="store_true")
 parser.add_argument("--visual-dir", type=pathlib.Path)
+parser.add_argument("--preview-ocr", action="store_true", help="Test rule previews and two native OCR return flows with synthetic data.")
 options = parser.parse_args()
 if not options.browser or not options.browser.is_file():
     parser.error("Specify an installed Chromium executable with --browser.")
@@ -89,6 +131,10 @@ if options.visual_dir:
 
 with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
     path = pathlib.Path(temp)
+    private_localappdata = path / "LocalAppData"
+    private_localappdata.mkdir()
+    os.environ["LOCALAPPDATA"] = str(private_localappdata)
+    return_root = private_localappdata / "GaoSeries" / "GaoAction" / "OcrReturns-v1"
     if options.packaged_cli:
         app = server = PackagedApp(options.packaged_cli, path)
     else:
@@ -132,11 +178,17 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
                 out = command("Runtime.evaluate", {"expression": expr, "returnByValue": True})
                 if out.get("exceptionDetails"): raise RuntimeError(out)
                 return out["result"].get("value")
-            def wait(predicate):
-                for _ in range(85):
+            def wait(predicate, timeout=6):
+                limit = time.monotonic() + timeout
+                while time.monotonic() < limit:
                     if js(predicate): return
                     time.sleep(.06)
                 raise AssertionError(f"{predicate}\n{js('document.body.innerText')}")
+            def post(route, payload):
+                result = command("Runtime.evaluate", {"expression": f"api({json.dumps('/api/' + route)}, {json.dumps(payload)})",
+                    "awaitPromise": True, "returnByValue": True})
+                assert not result.get("exceptionDetails"), result
+                return result["result"]["value"]
             def click(title, scope="button"):
                 js(f"Array.from(document.querySelectorAll({json.dumps(scope)})).find(b => b.textContent.trim() === {json.dumps(title)}).click()")
             def navigate(title):
@@ -170,7 +222,9 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
             command("Runtime.enable")
             command("Page.addScriptToEvaluateOnNewDocument", {"source": """
                 const nativeFetch = window.fetch.bind(window);
+                window.qaProviderPosts = [];
                 window.fetch = (url, options) => {
+                  if (url === '/api/ocr-provider/approve' || url === '/api/ocr-provider/return') window.qaProviderPosts.push(url);
                   if (url === '/api/state' && location.search === '?qa-startup' && !window.qaFailStartup) {
                     return new Promise((_, reject) => {
                       window.qaFailStartup = () => reject(new Error('无法连接到本机工作台。'));
@@ -193,6 +247,94 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
                 };"""})
             command("Page.navigate", {"url": server.url})
             wait("document.querySelector('h1')?.textContent === '工作台'")
+            if options.preview_ocr:
+                rule_id, workflow_id = str(uuid.uuid4()), str(uuid.uuid4())
+                post("settings", {"windowsAutomationEnabled": True, "workflows": [{"id": workflow_id, "name": "合成压缩试跑",
+                    "steps": [{"id": str(uuid.uuid4()), "actionID": action, "argument": ""}
+                              for action in ("archive.create", "files.move", "window.leftHalf")]}]})
+                post("rules/save", {"rules": [{"id": rule_id, "shortcut": "Ctrl+Alt+W", "trigger": "hotkey", "application": "notepad.exe",
+                    "actionID": "window.leftHalf", "enabled": True}]})
+                viewport(1160, 800, 1)
+                set_theme("light")
+                navigate("快捷键与手势")
+                wait("document.querySelector('.rule-row')?.innerText.includes('notepad.exe')")
+                click("试跑…", ".rule-row button")
+                click("生成试跑计划", "dialog[open] button")
+                wait("document.querySelector('.rule-preview-result')?.innerText.includes('预计动作与文件')")
+                assert js("document.querySelector('.rule-preview-result').innerText.includes('不确定')")
+                check_dialog()
+                screenshot("rule-preview-light")
+                js("document.querySelector('dialog[open] input').value = 'other.exe'")
+                click("生成试跑计划", "dialog[open] button")
+                wait("document.querySelector('.rule-preview-result')?.innerText.includes('试跑条件未命中')")
+                click("取消", "dialog[open] button")
+                click("编辑", ".rule-row button")
+                js("document.querySelector('dialog[open] input[placeholder=\"Ctrl+Alt+W\"]').value = 'Ctrl+Alt+Q'")
+                click("试跑草稿…", "dialog[open] button")
+                click("生成试跑计划", "body > dialog[open] button")
+                wait("document.querySelector('body > dialog[open] .rule-preview-result')?.innerText.includes('已生成试跑计划')")
+                click("取消", "body > dialog[open] button")
+                assert js("document.querySelector('dialog[open] input[placeholder=\"Ctrl+Alt+W\"]').value === 'Ctrl+Alt+Q'")
+                assert post("rules/list", {})["rules"][0]["shortcut"] == "Ctrl+Alt+W"
+                click("取消", "dialog[open] button")
+
+                navigate("组合操作")
+                set_theme("dark")
+                viewport(428, 570, 1.5)
+                click("试跑…", ".body button")
+                simulated = str(path / "fictional" / "sample.png")
+                planned = str(path / "fictional" / "sample 2.zip")
+                js(f"const sampleFields = document.querySelectorAll('dialog[open] textarea'); sampleFields[0].value = {json.dumps(simulated)};"
+                   f"sampleFields[1].value = {json.dumps(str(path / 'fictional' / 'sample.zip'))}")
+                click("生成试跑计划", "dialog[open] button")
+                wait(f"document.querySelector('.rule-preview-result')?.innerText.includes({json.dumps(planned)})")
+                assert js("document.querySelector('.rule-preview-result').innerText.includes('缺少目标目录。')")
+                assert js("document.querySelector('.rule-preview-result').innerText.includes('已跳过')")
+                assert not (path / "fictional").exists()
+                check_dialog()
+                js(r"sampleFields[0].value = 'C:\\GaoPreview\\Inbox\\sample.png'; sampleFields[1].value = 'C:\\GaoPreview\\Inbox\\sample.zip'")
+                click("生成试跑计划", "dialog[open] button")
+                wait(r"document.querySelector('.rule-preview-result')?.innerText.includes('C:\\GaoPreview\\Inbox\\sample 2.zip')")
+                screenshot("workflow-preview-dark-narrow-150")
+                click("取消", "dialog[open] button")
+
+                viewport(1160, 800, 1)
+                set_theme("light")
+                package, slot, issued = make_ocr_fixture(path, return_root, "com.gaoseries.GaoWenJian")
+                app.activate({"package": str(package)})
+                wait("document.querySelector('dialog[open] .ocr-return-status')?.innerText.includes('识别后回传给 搞文件 待审核')")
+                assert not (slot / "result.gaoaction").exists()
+                screenshot("ocr-return-approval-light")
+                click("确认识别", "dialog[open] button")
+                wait("document.querySelector('dialog[open] .ocr-return-status')?.innerText.includes('已回传给 搞文件')", timeout=25)
+                package_manifest = json.loads((slot / "result.gaoaction" / "manifest.json").read_bytes())
+                assert package_manifest["inReplyTo"] == issued["requestID"]
+                assert package_manifest["provenance"]["requestManifestSHA256"] == issued["requestManifestSHA256"]
+                assert not js("[...document.querySelectorAll('dialog[open] button')].some(button => button.innerText.trim() === '重试回传')")
+                js("document.querySelector('dialog[open]').close()")
+
+                set_theme("dark")
+                viewport(428, 570, 1.5)
+                package, slot, issued = make_ocr_fixture(path, return_root, "com.academic-achievement.manager", ticket=False)
+                app.activate({"package": str(package)})
+                wait("document.querySelector('dialog[open] .ocr-return-status')?.innerText.includes('当前无法自动回传给 搞研究')")
+                click("确认识别", "dialog[open] button")
+                wait("document.querySelector('dialog[open] h2')?.textContent === 'OCR 交接状态' && document.querySelector('.ocr-return-status')?.checkVisibility()", timeout=25)
+                assert not (slot / "result.gaoaction").exists()
+                assert js("[...document.querySelectorAll('dialog[open] button')].some(button => button.innerText.trim() === '导出结果…')")
+                assert js("![...document.querySelectorAll('dialog[open] button')].some(button => button.innerText.trim() === '确认识别')")
+                check_dialog()
+                screenshot("ocr-return-unavailable-dark-narrow-150")
+                write_return_ticket(slot, issued)
+                click("重试回传", "dialog[open] button")
+                wait("document.querySelector('dialog[open] .ocr-return-status')?.innerText.includes('已回传给 搞研究')")
+                assert js("window.qaProviderPosts") == ["/api/ocr-provider/approve", "/api/ocr-provider/approve", "/api/ocr-provider/return"]
+                assert (slot / "result.gaoaction" / "manifest.json").exists()
+                check_dialog()
+                screenshot("ocr-return-published-dark-narrow-150")
+                assert not exceptions, exceptions
+                print("Rule and workflow dry runs, native OCR approval and both recipients, manual fallback and return-only retry passed.")
+                raise SystemExit(0)
             if options.visual_only:
                 viewport(1160, 800, 1)
                 set_theme("light")

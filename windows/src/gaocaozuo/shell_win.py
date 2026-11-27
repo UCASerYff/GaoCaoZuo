@@ -8,7 +8,7 @@ import json
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from gaocaozuo.errors import AppError
@@ -52,6 +52,41 @@ def browser_path() -> Path | None:
     return None
 
 
+def _start_on_workbench_desktop(arguments):
+    import ctypes as c
+    from ctypes import wintypes as w
+    from gaocaozuo.native_win import kernel, user
+
+    class StartupInfo(c.Structure):
+        _fields_ = [("size", w.DWORD), ("reserved", w.LPWSTR), ("desktop", w.LPWSTR), ("title", w.LPWSTR),
+                    *[(name, w.DWORD) for name in ("x", "y", "width", "height", "columns", "rows", "fill", "flags")],
+                    ("show", w.WORD), ("reserved_size", w.WORD), ("reserved_data", w.LPVOID),
+                    ("stdin", w.HANDLE), ("stdout", w.HANDLE), ("stderr", w.HANDLE)]
+
+    class ProcessInfo(c.Structure):
+        _fields_ = [("process", w.HANDLE), ("thread", w.HANDLE), ("pid", w.DWORD), ("tid", w.DWORD)]
+
+    query = user("GetUserObjectInformationW", w.BOOL, w.HANDLE, c.c_int, w.LPVOID, w.DWORD, w.LPDWORD)
+    station = user("GetProcessWindowStation", w.HANDLE)()
+    thread = kernel("GetCurrentThreadId", w.DWORD)()
+    desktop = user("GetThreadDesktop", w.HANDLE, w.DWORD)(thread)
+    names = []
+    for handle in (station, desktop):
+        name, length = c.create_unicode_buffer(256), w.DWORD()
+        if not handle or not query(handle, 2, name, c.sizeof(name), c.byref(length)):
+            raise c.WinError(c.get_last_error())
+        names.append(name.value)
+    # With no inherited desktop handle, a child can connect to the default desktop.
+    startup = StartupInfo(size=c.sizeof(StartupInfo), desktop="\\".join(names))
+    command = c.create_unicode_buffer(subprocess.list2cmdline(arguments))
+    info = ProcessInfo()
+    create = kernel("CreateProcessW", w.BOOL, w.LPCWSTR, w.LPWSTR, w.LPVOID, w.LPVOID, w.BOOL,
+                    w.DWORD, w.LPVOID, w.LPCWSTR, c.POINTER(StartupInfo), c.POINTER(ProcessInfo))
+    if not create(arguments[0], command, None, None, False, 0x4, None, None, c.byref(startup), c.byref(info)):
+        raise c.WinError(c.get_last_error())
+    return info.process, info.thread, info.pid
+
+
 class _BrowserProcess:
     """Own the workbench's Chromium process and descendants via one Windows job."""
 
@@ -81,9 +116,7 @@ class _BrowserProcess:
             if not set_limits(job, 9, c.byref(limits), c.sizeof(limits)):
                 raise c.WinError(c.get_last_error())
             # Start suspended so Chromium cannot spawn untracked descendants.
-            process, thread, self.pid, _ = _winapi.CreateProcess(
-                arguments[0], subprocess.list2cmdline(arguments), None, None, False, 0x4, None, None, subprocess.STARTUPINFO(),
-            )
+            process, thread, self.pid = _start_on_workbench_desktop(arguments)
             assign = kernel("AssignProcessToJobObject", w.BOOL, w.HANDLE, w.HANDLE)
             resume = kernel("ResumeThread", w.DWORD, w.HANDLE)
             if not assign(job, process) or resume(thread) == 0xFFFFFFFF:
@@ -107,15 +140,69 @@ class _BrowserProcess:
             return None
         return self._api.GetExitCodeProcess(self._process)
 
+    def process_ids(self):
+        import ctypes as c
+        from ctypes import wintypes as w
+        from gaocaozuo.native_win import kernel
+
+        query = kernel("QueryInformationJobObject", w.BOOL, w.HANDLE, c.c_int, w.LPVOID, w.DWORD, w.LPDWORD)
+        capacity = 32
+        while True:
+            class ProcessIDList(c.Structure):
+                _fields_ = [("assigned", w.DWORD), ("listed", w.DWORD), ("pids", c.c_size_t * capacity)]
+
+            members = ProcessIDList()
+            if query(self._job, 3, c.byref(members), c.sizeof(members), None):  # JobObjectBasicProcessIdList
+                if members.listed == members.assigned:
+                    return set(members.pids[:members.listed])
+            elif c.get_last_error() != 234:  # ERROR_MORE_DATA
+                raise c.WinError(c.get_last_error())
+            capacity = max(members.assigned, 2 * capacity)
+
+    @contextmanager
+    def member(self, pid):
+        import ctypes as c
+        from ctypes import wintypes as w
+        from gaocaozuo.native_win import kernel
+
+        open_process = kernel("OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+        process = open_process(0x00101000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        try:
+            in_job = w.BOOL()
+            check = kernel("IsProcessInJob", w.BOOL, w.HANDLE, w.HANDLE, c.POINTER(w.BOOL))
+            yield process if process and check(process, self._job, c.byref(in_job)) and in_job.value else None
+        finally:
+            if process:
+                self._api.CloseHandle(process)
+
+    def is_running(self):
+        if self.poll() is None:
+            return True
+        # Edge can hand off the window to a Job member and exit as a launcher.
+        for pid in self.process_ids() - {self.pid}:
+            with self.member(pid) as process:
+                if process and self._api.WaitForSingleObject(process, 0) == self._api.WAIT_TIMEOUT:
+                    return True
+        return False
+
     def wait(self, seconds):
         self._api.WaitForSingleObject(self._process, int(seconds * 1000))
 
     def close(self):
-        self._api.CloseHandle(self._job)
-        try:
-            self.wait(5)
-        finally:
-            self._api.CloseHandle(self._process)
+        with ExitStack() as held:
+            try:
+                members = [process for pid in self.process_ids() - {self.pid}
+                           if (process := held.enter_context(self.member(pid)))]
+            except OSError:
+                members = []
+            self._api.CloseHandle(self._job)
+            try:
+                deadline = time.monotonic() + 5
+                for process in (self._process, *members):
+                    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+                    self._api.WaitForSingleObject(process, remaining)
+            finally:
+                self._api.CloseHandle(self._process)
 
 
 class WorkbenchWindow:
@@ -125,6 +212,8 @@ class WorkbenchWindow:
             raise AppError("需安装 Microsoft Edge 或 Google Chrome 才能打开工作台。", "unavailable")
         self.profile = tempfile.TemporaryDirectory(prefix="GaoCaoZuo-window-")
         self._hwnd = None
+        self._seen_window = False
+        self._missing_since = None
         try:
             self.process = _BrowserProcess([
                 str(binary), f"--app={url}", f"--user-data-dir={self.profile.name}",
@@ -136,48 +225,90 @@ class WorkbenchWindow:
             raise AppError("Windows 无法打开搞操作工作台。", "unavailable") from exc
 
     def close(self):
+        import _winapi
         from ctypes import wintypes as w
         from gaocaozuo.native_win import user
 
-        if self.process.poll() is None and (hwnd := self._handle()):
-            user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-            self.process.wait(2)
-        self.process.close()
         try:
-            self.profile.cleanup()
-        except OSError:
-            pass
+            if window := self._window():
+                hwnd, pid = window
+                with self.process.member(pid) as process:
+                    if process:
+                        user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                        _winapi.WaitForSingleObject(process, 2000)
+        finally:
+            self.process.close()
+            try:
+                self.profile.cleanup()
+            except OSError:
+                pass
+
+    def is_running(self):
+        if self._window():
+            self._missing_since = None
+            return True
+        if not self.process.is_running():
+            return False
+        if not self._seen_window:
+            return True
+        # An already opened window has closed. Allow a short grace for replacement
+        # or normal browser teardown, then retire any remaining background helpers.
+        now = time.monotonic()
+        if self._missing_since is None:
+            self._missing_since = now
+        return now - self._missing_since < 0.5
+
+    def window_pid(self):
+        window = self._window()
+        return window[1] if window else None
 
     def _handle(self):
+        window = self._window()
+        return window[0] if window else None
+
+    def _window(self):
         import ctypes as c
         from ctypes import wintypes as w
-        from gaocaozuo.native_win import user
+        from gaocaozuo.native_win import kernel, user
 
-        match = []
+        result = None
         callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
         pid_for = user("GetWindowThreadProcessId", w.DWORD, w.HWND, c.POINTER(w.DWORD))
         visible = user("IsWindowVisible", w.BOOL, w.HWND)
         name = user("GetClassNameW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
         owner = user("GetWindow", w.HWND, w.HWND, w.UINT)
+        members = self.process.process_ids()
+        if not members:
+            self._hwnd = None
+            return None
 
-        def belongs(hwnd):
+        def match(hwnd):
             pid, kind = w.DWORD(), c.create_unicode_buffer(64)
-            return bool(pid_for(hwnd, c.byref(pid)) and pid.value == self.process.pid and
-                        not owner(hwnd, 4) and name(hwnd, kind, len(kind)) and kind.value == "Chrome_WidgetWin_1")
+            if (not pid_for(hwnd, c.byref(pid)) or pid.value not in members or owner(hwnd, 4) or
+                    not name(hwnd, kind, len(kind)) or kind.value != "Chrome_WidgetWin_1"):
+                return None
+            with self.process.member(pid.value) as process:
+                current = w.DWORD()
+                if process and pid_for(hwnd, c.byref(current)) and current.value == pid.value:
+                    return hwnd, pid.value
+            return None
 
-        if self._hwnd and belongs(self._hwnd):
-            return self._hwnd
+        if self._hwnd and (result := match(self._hwnd)):
+            return result
 
         @callback_type
         def search(hwnd, _arg):
-            if visible(hwnd) and belongs(hwnd):
-                match.append(hwnd)
+            nonlocal result
+            if visible(hwnd) and (result := match(hwnd)):
                 return False
             return True
 
-        user("EnumWindows", w.BOOL, callback_type, w.LPARAM)(search, 0)
-        self._hwnd = match[0] if match else None
-        return self._hwnd
+        thread = kernel("GetCurrentThreadId", w.DWORD)()
+        desktop = user("GetThreadDesktop", w.HANDLE, w.DWORD)(thread)
+        user("EnumDesktopWindows", w.BOOL, w.HANDLE, callback_type, w.LPARAM)(desktop, search, 0)
+        self._hwnd = result[0] if result else None
+        self._seen_window |= result is not None
+        return result
 
     def hide(self) -> bool:
         import ctypes as c
@@ -208,7 +339,7 @@ class WorkbenchWindow:
                 raise AppError("工作台无法隐藏，未捕获画面。", "rejected")
             yield
         finally:
-            if self.process.poll() is None and user("IsWindow", w.BOOL, w.HWND)(hwnd):
+            if self._handle() == hwnd:
                 show(hwnd, 8)
 
     def activate(self):

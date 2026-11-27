@@ -174,6 +174,22 @@
 .rule-scope .option { align-self: end; min-height: 32px; }
 .rule-trigger-fields { padding: 11px; border: 1px solid var(--divider); border-radius: 8px; background: var(--canvas); }
 .rule-hotkey button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.rule-preview-result:empty { display: none; }
+.rule-preview-item {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 9px 11px;
+  border: 1px solid var(--divider);
+  border-radius: 7px;
+  background: var(--canvas);
+}
+.rule-preview-list, .rule-preview-effects { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.rule-preview-effects li { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.rule-preview-status { padding: 2px 6px; border-radius: 5px; background: var(--surface); }
+.rule-preview-status.match, .rule-preview-status.planned { color: var(--accent); background: var(--accent-faint); }
+.rule-preview-status.blocked { color: var(--danger); }
+.rule-preview-uncertainty { color: var(--muted); }
 
 @container (max-width: 39rem) {
   .clipboard-row, .rule-row { grid-template-columns: auto minmax(0, 1fr); }

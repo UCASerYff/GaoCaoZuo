@@ -15,6 +15,7 @@ let shotHistory = null;
 let shotHistoryRequest = null;
 let shotHistoryError = "";
 let providerJobs = [];
+let providerJobsRevision = 0;
 let translationDraft = "";
 let captureDelay = 0;
 let annot = { commands: [], redo: [], rendered: null, tool: "rectangle", color: "#e34037", width: 3, text: "" };
@@ -739,6 +740,7 @@ async function cancelLocalTranslation() {
 }
 async function getShotHistory(enabled) {
   if (shotHistoryRequest) return shotHistoryRequest;
+  const revision = providerJobsRevision;
   const request = Promise.all([
     screenshotRequest("history", enabled === undefined ? {} : {enabled}),
     api("/api/ocr-provider/jobs", {}),
@@ -747,7 +749,12 @@ async function getShotHistory(enabled) {
   try {
     const [history, jobs] = await request;
     shotHistory = history;
-    providerJobs = jobs.jobs || [];
+    const rows = jobs.jobs || [];
+    if (revision === providerJobsRevision) providerJobs = rows;
+    else {
+      const known = new Set(providerJobs.map(job => job.requestID));
+      providerJobs.push(...rows.filter(job => !known.has(job.requestID)));
+    }
     shotHistoryError = "";
   } catch (error) {
     shotHistoryError = error.message;
@@ -758,6 +765,7 @@ async function getShotHistory(enabled) {
   }
 }
 function openIncomingOCR(job) {
+  rememberProviderJob(job);
   changeShotTab("history");
   reviewProviderJob(job);
 }
@@ -808,20 +816,39 @@ function screenshotHistoryPage() {
 const providerLabels = {
   pending: "待复核", completed: "已完成", partial: "部分完成", failed: "失败", interrupted: "已中断", expired: "已过期",
 };
+const providerReturnApps = new Map([
+  ["com.gaoseries.GaoWenJian", "搞文件"], ["com.academic-achievement.manager", "搞研究"],
+]);
+const providerReturnLabels = {
+  ready: "识别后回传给 {app} 待审核", published: "已回传给 {app}，待在发起应用审核",
+  unavailable: "当前无法自动回传给 {app}", expired: "回传给 {app} 的请求已过期",
+};
+function providerReturnLabel(job) {
+  const appName = job.autoReturn?.targetBundleID === job.sourceBundleID && providerReturnApps.get(job.sourceBundleID);
+  const label = providerReturnLabels[job.autoReturn?.status];
+  return appName && label ? formatMessage(label, {app: tr(appName)}) : tr("手工交接");
+}
+function canExportProviderJob(job) {
+  return ["completed", "partial", "failed"].includes(job.status);
+}
+function rememberProviderJob(job) {
+  providerJobsRevision += 1;
+  const index = providerJobs.findIndex(item => item.requestID === job.requestID);
+  if (index < 0) providerJobs.unshift(job);
+  else providerJobs[index] = job;
+}
 function providerPanel() {
   const rows = providerJobs.map(job => box("list-row", icon("file"),
-    box("fill", el("strong", job.sourceBundleID, "row-title"),
-      el("small", providerLabels[job.status] || job.status),
+    box("fill", el("strong", providerReturnApps.get(job.sourceBundleID) || job.sourceBundleID, "row-title"),
+      el("small", `${tr(providerLabels[job.status] || job.status)} · ${providerReturnLabel(job)}`, "wrap-text", true),
       el("small", (job.items || []).map(item => item.name).slice(0, 4).join("、"))),
     button(job.status === "pending" ? "复核并识别…" : "查看…", () => reviewProviderJob(job)),
-    job.resultCount > 0 && button("导出结果…", () => exportProviderJob(job))));
+    canExportProviderJob(job) && button("导出结果…", () => exportProviderJob(job))));
   return shotPanel("shot-provider", "", box("between", el("h2", "跨应用交接"), button("打开 OCR 交接包…", async () => {
     const [path] = await pick("directory", false);
     if (!path) return;
     const job = await api("/api/ocr-provider/review", {path});
-    const index = providerJobs.findIndex(item => item.requestID === job.requestID);
-    if (index < 0) providerJobs.unshift(job);
-    else providerJobs[index] = job;
+    rememberProviderJob(job);
     render();
     reviewProviderJob(job);
   }, {glyph:"folder", cls:"primary"})),
@@ -829,22 +856,46 @@ function providerPanel() {
     rows.length ? box("list", ...rows) : !shotHistoryRequest && empty("file", "暂无 OCR 交接"));
 }
 function reviewProviderJob(job) {
+  const returnState = job.autoReturn?.status;
+  const ready = job.status === "pending" && returnState === "ready";
+  const published = returnState === "published";
+  const recipient = providerReturnApps.get(job.sourceBundleID);
+  const updateJob = (current, latest) => {
+    rememberProviderJob(latest);
+    const active = current.open;
+    if (active) current.close();
+    refreshShotView("history");
+    if (active) reviewProviderJob(latest);
+  };
   const details = [
-    box("stack", el("strong", job.sourceBundleID),
-      el("small", (providerLabels[job.status] || job.status) + " · " + job.action), el("small", dateLabel(job.createdAt))),
+    box("stack", el("strong", recipient || job.sourceBundleID, "wrap-text"),
+      recipient && el("small", job.sourceBundleID, "wrap-text", true),
+      el("small", tr(providerLabels[job.status] || job.status) + " · " + job.action, "wrap-text", true), el("small", dateLabel(job.createdAt))),
+    box("workflow-callout ocr-return-status", icon(published ? "check" : "file"), box("fill",
+      el("strong", providerReturnLabel(job), "wrap-text", true),
+      ready && note("识别成功且票据有效时，结果会交给发起应用复核。"),
+      !ready && !published && canExportProviderJob(job) && note("可手工导出交接包。"))),
     box("list dialog-result", ...(job.items || []).map(item => box("list-row", el("span", item.name, "fill"), el("small", item.byteCount + " 字节")))),
     ...(job.errors || []).map(item => el("p", typeof item === "string" ? item : item.message || item.errorCode || "有输出未完成。", "error")),
   ];
   if (job.status === "pending") {
-    formDialog("复核 OCR 交接", details, async () => {
+    const current = formDialog("复核 OCR 交接", details, async () => {
       const completed = await progress("正在本机处理交接…", () => api("/api/ocr-provider/approve", {requestID: job.requestID, confirm: true}));
-      await getShotHistory();
       say(providerLabels[completed.status] || completed.status, completed.status === "failed");
-      render();
-      reviewProviderJob(completed);
+      updateJob(current, completed);
     }, "确认识别");
   } else {
-    showModal("OCR 交接状态", box("stack", ...details, job.resultCount > 0 && button("导出结果…", () => exportProviderJob(job))));
+    const canRetry = job.status === "completed" && recipient && job.autoReturn?.targetBundleID === job.sourceBundleID && ["ready", "unavailable"].includes(returnState);
+    const retry = canRetry && button("重试回传", async () => {
+      retry.disabled = true;
+      try {
+        const latest = await progress("正在回传已有 OCR 结果…", () => api("/api/ocr-provider/return", {requestID: job.requestID}));
+        say(providerReturnLabel(latest), latest.autoReturn?.status !== "published");
+        updateJob(current, latest);
+      } finally { retry.disabled = false; }
+    });
+    const actions = box("row", retry, canExportProviderJob(job) && button("导出结果…", () => exportProviderJob(job)));
+    const current = showModal("OCR 交接状态", box("stack", ...details), {actions: actions.children.length ? actions : undefined});
   }
 }
 function exportProviderJob(job) {

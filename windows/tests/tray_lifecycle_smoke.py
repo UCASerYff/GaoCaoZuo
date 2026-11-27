@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -237,20 +237,26 @@ def wait_port_closed(port):
 
 def app_child(name, scratch, data_dir, browser, entry_args):
     verify_desktop(name)
-    import _winapi
-
+    local_data = scratch / "LocalAppData"
+    local_data.mkdir(exist_ok=True)
+    os.environ["LOCALAPPDATA"] = str(local_data)
     from gaocaozuo import cli, shell_win, tray_win
 
-    original_create = _winapi.CreateProcess
+    native_launch_only = "--test-native-launch" in entry_args
+    entry_args = [argument for argument in entry_args if argument != "--test-native-launch"]
+    original_start = shell_win._start_on_workbench_desktop
 
-    def start_process(executable, arguments, *rest):
-        if executable == str(browser) and "--app=http://127.0.0.1:" in arguments:
-            # Keep the application's CREATE_SUSPENDED flag and job ownership.
-            # Direct the same real Win32 launch at the test desktop and add CDP.
-            arguments += " --disable-background-networking --disable-gpu --remote-debugging-port=0"
-            info = create_desktop_process(executable, arguments, name, scratch, rest[3])
-            return info.process, info.thread, info.pid, info.tid
-        return original_create(executable, arguments, *rest)
+    class ObservedWindow(shell_win.WorkbenchWindow):
+        def __init__(self, url):
+            super().__init__(url)
+            with (scratch / "browser-launchers.jsonl").open("a", encoding="ascii") as evidence:
+                evidence.write(json.dumps({"launcherPID": self.process.pid}) + "\n")
+
+    def start_browser(arguments):
+        # Only append test-local inspection settings. Desktop selection, Windows
+        # process creation and Job assignment all go through the normal launcher.
+        assert arguments[0] == str(browser) and arguments[1].startswith("--app=http://127.0.0.1:")
+        return original_start([*arguments, "--disable-background-networking", "--disable-gpu", "--remote-debugging-port=0"])
 
     def menu_bind(api_name, result, *args):
         # The real callback and HMENU execute. Only the user's selection is
@@ -259,8 +265,11 @@ def app_child(name, scratch, data_dir, browser, entry_args):
             return lambda *_parameters: int((scratch / "menu-choice").read_text(encoding="ascii"))
         return user(api_name, result, *args)
 
-    with patch.object(shell_win, "browser_path", return_value=browser), \
-            patch.object(_winapi, "CreateProcess", start_process), patch.object(tray_win, "user", menu_bind):
+    if native_launch_only and shell_win.browser_path().resolve() != browser.resolve():
+        raise RuntimeError("Native launch fixture must use the browser selected by production.")
+    browser_choice = nullcontext() if native_launch_only else patch.object(shell_win, "browser_path", return_value=browser)
+    inspection = nullcontext() if native_launch_only else patch.object(shell_win, "_start_on_workbench_desktop", start_browser)
+    with browser_choice, inspection, patch.object(shell_win, "WorkbenchWindow", ObservedWindow), patch.object(tray_win, "user", menu_bind):
         return cli.main(["--data-dir", str(data_dir), *entry_args])
 
 
@@ -341,7 +350,7 @@ def devtools(scratch, app_port):
         yield evaluate, lambda: base64.b64decode(command("Page.captureScreenshot", {"format": "png"})["data"])
 
 
-def exercise(scratch, name, desktop, browser, evidence):
+def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False):
     from gaocaozuo.store import Store
     from tray_shell_fixture import ShellTrayFixture
 
@@ -356,7 +365,8 @@ def exercise(scratch, name, desktop, browser, evidence):
     artifact_dir.mkdir()
 
     def program(path, args):
-        return IsolatedProcess([EXE, __file__, "--app-child", name, scratch, path, browser, *args], name, scratch)
+        mode = ["--test-native-launch"] if native_launch_only else []
+        return IsolatedProcess([EXE, __file__, "--app-child", name, scratch, path, browser, *mode, *args], name, scratch)
 
     with ShellTrayFixture(desktop) as explorer, ExitStack() as stack:
         primary = program(data_dir, [])
@@ -366,6 +376,7 @@ def exercise(scratch, name, desktop, browser, evidence):
         address = json.loads(descriptor.read_text(encoding="utf-8"))
         port, token = address["port"], address["token"]
         first, first_pid = until(lambda: next(iter(find_windows(BROWSER_TITLE)), None), "workbench window")
+        first_launcher = json.loads((scratch / "browser-launchers.jsonl").read_text(encoding="ascii").splitlines()[0])["launcherPID"]
         first_stopped = watch_process(first_pid, stack)
         hwnd, owner = until(lambda: next(iter(find_windows(TRAY_CAPTION)), None), "native tray owner")
         assert owner == primary.pid, (owner, primary.pid)
@@ -390,6 +401,7 @@ def exercise(scratch, name, desktop, browser, evidence):
         early_tray_click = not first_stopped()
         post(hwnd, NOTIFY_MESSAGE, (12 << 16) | 13, (1 << 16) | 0x0400)  # NIN_SELECT, icon 1
         reopened, reopened_pid = until(lambda: next(iter(find_windows(BROWSER_TITLE)), None), "workbench reopen from tray")
+        reopened_launcher = json.loads((scratch / "browser-launchers.jsonl").read_text(encoding="ascii").splitlines()[1])["launcherPID"]
         assert reopened_pid != first_pid and len(events(0)) == 1
         until(first_stopped, "old Chromium root stopping after user closes its window")
         last_stopped = watch_process(reopened_pid, stack)
@@ -415,6 +427,16 @@ def exercise(scratch, name, desktop, browser, evidence):
         explorer.taskbar_created()
         until(lambda: len(events(4)) == 2, "native icon recovery after the shell restart notification")
         assert len(events(0)) == 2 and len(explorer.icons) == 1 and explorer.icons[0].icon_id == 1
+
+        if native_launch_only:
+            request_exit(hwnd, choice_file)
+            assert primary.wait(18) == 0
+            until(last_stopped, "browser window owner stopping after Exit", 8)
+            wait_port_closed(port)
+            assert len(events(2)) == 1 and not explorer.icons and not find_windows(BROWSER_TITLE) and saved.is_file()
+            return {"normalBrowserArguments": True, "browser": browser.name, "coldStart": True, "trayReopen": True,
+                    "windowOwnerDifferentFromLauncher": [first_pid != first_launcher, reopened_pid != reopened_launcher],
+                    "closedWindowAndSavedInBackground": True, "singleTray": True, "finishedExit": True}
 
         with devtools(scratch, port) as (evaluate, capture):
             until(lambda: evaluate("!!document.querySelector('.workbench-desktop-actions button')"), "desktop controls")
@@ -457,6 +479,7 @@ def exercise(scratch, name, desktop, browser, evidence):
         assert not descriptor.exists() and saved.is_file() and (data_dir / "settings.json").read_bytes() == before
         assert (data_dir / "OcrProvider" / request_id / "journal.json").is_file()
         return {"nativeShellCalls": "NIM_ADD, NIM_SETVERSION, NIM_DELETE", "isolatedShellReceiver": True,
+                "browser": browser.name, "windowOwnerDifferentFromLauncher": [first_pid != first_launcher, reopened_pid != reopened_launcher],
                 "realChromiumWindow": True, "singleTray": True, "oldHiddenPreferencePreserved": True,
                 "closedWindowAndSavedInBackground": True,
                 "trayReopenedWindow": True, "shortForwarderReusedInstance": True, "headlessNoTray": True,
@@ -482,6 +505,7 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", type=Path, default=browser_path())
+    parser.add_argument("--native-launch-only", action="store_true", help="Use the unmodified browser command line and validate cold start, reopen and quit.")
     parser.add_argument("--evidence", type=Path, help="Optional output directory for the synthetic exit dialog screenshot.")
     args = parser.parse_args()
     if not args.browser or not args.browser.is_file():
@@ -493,7 +517,7 @@ def main():
     try:
         with detached_desktop() as (name, desktop):
             try:
-                result = exercise(scratch, name, desktop, args.browser.resolve(), args.evidence)
+                result = exercise(scratch, name, desktop, args.browser.resolve(), args.evidence, args.native_launch_only)
             except Exception:
                 for note in scratch.glob("app-failure-*.txt"):
                     print(note.read_text(encoding="utf-8"), file=sys.stderr)

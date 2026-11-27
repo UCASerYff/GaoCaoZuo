@@ -1,4 +1,4 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+6", [switch]$LocalizationOnly)
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+7", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
@@ -72,12 +72,14 @@ try {
     if ($exeVersion.ProductVersion -ne $marketingVersion -or $exeVersion.FileVersion -ne "$marketingVersion.$expectedBuild.0") { throw 'Installed version mismatch.' }
     if (!(Test-Path -LiteralPath (Join-Path $installDir 'Licenses\Third-Party.txt'))) { throw 'Dependency notices are missing.' }
 
-    foreach ($key in @('PATH','PYTHONPATH','PYTHONHOME','TCL_LIBRARY','TK_LIBRARY','CONDA_PREFIX','PYTHONUTF8')) {
+    foreach ($key in @('PATH','PYTHONPATH','PYTHONHOME','TCL_LIBRARY','TK_LIBRARY','CONDA_PREFIX','PYTHONUTF8','LOCALAPPDATA')) {
         $previousEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
         [Environment]::SetEnvironmentVariable($key, $null, 'Process')
     }
     $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
     $env:PYTHONUTF8 = '1'
+    $env:LOCALAPPDATA = Join-Path $scratch 'Isolated Local AppData'
+    New-Item -ItemType Directory -Path $env:LOCALAPPDATA | Out-Null
     $capabilities = & $cli --capabilities | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or !($capabilities.actions | Where-Object action -eq 'ocr.files')) { throw 'Installed OCR provider discovery failed.' }
 
@@ -128,6 +130,14 @@ try {
     Post 'api/settings' @{appearance='light'} | Out-Null
     if ((Get-Content -LiteralPath $old -Raw | ConvertFrom-Json).unknownLegacyKey.mark -ne 'keep') { throw 'Unknown settings field changed.' }
     if ((Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash -ne $historyHash) { throw 'Disabled clipboard history changed.' }
+    $workflow = (Post 'api/workflows/save' @{name='Synthetic ZIP plan';steps=@(@{id='step-zip';actionID='archive.create';argument=''})}).result
+    $example = Join-Path $output 'plan-only.txt'
+    $predictedZip = Join-Path $output 'plan-only.zip'
+    $settingsBeforePreview = (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash
+    $plan = (Post 'api/rules/preview' @{kind='workflow';workflowID=$workflow.id;sample=@{paths=@($example)}}).result
+    if (!$plan.readOnly -or $plan.executed -or $plan.outcome -ne 'planned' -or $plan.steps[0].effects[0].path -ne $predictedZip -or
+        (Test-Path -LiteralPath $example) -or (Test-Path -LiteralPath $predictedZip) -or
+        (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $settingsBeforePreview) { throw 'Installed rule preview differed or wrote business data.' }
     $file = (Post 'api/action' @{id='new.text';payload=@{directory=$output}}).result.path
     [IO.File]::WriteAllText($file, 'GaoCaoZuo isolated install fixture')
     $archive = (Post 'api/action' @{id='archive.custom';payload=@{paths=@($file);format='7z';password='isolated test'}}).result.path
@@ -167,36 +177,64 @@ try {
         $now = [DateTime]::UtcNow
         $nonce = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
         $sha = (Get-FileHash -LiteralPath $png -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expiry = $now.AddSeconds(110).ToString('yyyy-MM-ddTHH:mm:ssZ')
         $manifest = @{
             schemaVersion=1; kind='request'; requestID=$requestID; nonce=$nonce
             sourceBundleID='com.gaoseries.GaoWenJian'; targetBundleID='com.gaoseries.GaoCaoZuo'; action='ocr.files'
-            createdAt=$now.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiresAt=$now.AddSeconds(110).ToString('yyyy-MM-ddTHH:mm:ssZ')
+            createdAt=$now.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiresAt=$expiry
             references=@(); parameters=@{languages=@($languages.languages[0]); outputs=@('text','searchablePDF')}
             items=@(@{id='test-image';relativePath='fixture.png';uti='public.png';byteCount=(Get-Item -LiteralPath $png).Length;sha256=$sha})
         } | ConvertTo-Json -Depth 8
         $manifestPath = Join-Path $package 'manifest.json'
         [IO.File]::WriteAllText($manifestPath, $manifest)
+        $requestDigest = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $ticketDir = Join-Path $env:LOCALAPPDATA "GaoSeries\GaoAction\OcrReturns-v1\$requestID"
+        New-Item -ItemType Directory -Path $ticketDir | Out-Null
+        $ticket = @{
+            schemaVersion=1; requestID=$requestID; action='ocr.files'; sourceBundleID='com.gaoseries.GaoWenJian'
+            targetBundleID='com.gaoseries.GaoCaoZuo'; requestManifestSHA256=$requestDigest; expiresAt=$expiry
+        } | ConvertTo-Json -Compress
+        $ticketStage = Join-Path $ticketDir 'request.tmp'
+        [IO.File]::WriteAllText($ticketStage, $ticket)
+        [IO.File]::Move($ticketStage, (Join-Path $ticketDir 'request.json'))
+        $autoResult = Join-Path $ticketDir 'result.gaoaction'
         $older = $now.AddDays(-2)
         [IO.File]::SetCreationTimeUtc($manifestPath, $older)
         [IO.File]::SetCreationTimeUtc($png, $older)
-        $review = (Post 'api/ocr-provider/review' @{path=$package}).result
-        if ($review.status -ne 'pending' -or $review.requestID -ne $requestID) { throw 'Installed OCR review did not retain request ID.' }
-        $approved = (Post 'api/ocr-provider/approve' @{requestID=$requestID;confirm=$true}).result
-        if ($approved.status -ne 'completed') { throw 'Installed OCR did not process the synthetic request.' }
+        $review = (Post 'api/activate' @{package=$package}).result.review
+        if ($review.status -ne 'pending' -or $review.requestID -ne $requestID -or $review.autoReturn.status -ne 'ready' -or
+            (Test-Path -LiteralPath $autoResult)) { throw 'Installed OCR review did not defer auto-return pending approval.' }
+        $approval = Post 'api/ocr-provider/approve' @{requestID=$requestID;confirm=$true}
+        $approved = $approval.result
+        if ($approved.status -ne 'completed' -or $approved.autoReturn.status -ne 'published') { throw 'Installed OCR did not return the synthetic result.' }
+        if ($approval.state.incomingOCRRequest.status -ne 'completed') { throw 'Installed workbench retained a stale incoming OCR review.' }
+        $autoManifestPath = Join-Path $autoResult 'manifest.json'
+        $autoHash = (Get-FileHash -LiteralPath $autoManifestPath -Algorithm SHA256).Hash
+        $autoManifest = Get-Content -LiteralPath $autoManifestPath -Raw | ConvertFrom-Json
+        if ($autoManifest.inReplyTo -ne $requestID -or $autoManifest.sourceBundleID -ne 'com.gaoseries.GaoCaoZuo' -or
+            $autoManifest.targetBundleID -ne 'com.gaoseries.GaoWenJian' -or $autoManifest.action -ne 'ocr.files' -or
+            $autoManifest.provenance.requestManifestSHA256 -cne $requestDigest -or
+            $autoManifest.provenance.sources[0].sourceSHA256 -cne $sha -or $autoManifest.provenance.sources[0].pages[0].pageNumber -ne 1) { throw 'Published OCR return provenance disagrees with the synthetic outbound request.' }
+        foreach ($ocrItem in $autoManifest.items) {
+            $autoPayload = Join-Path (Join-Path $autoResult 'payload') $ocrItem.relativePath
+            if ((Get-FileHash -LiteralPath $autoPayload -Algorithm SHA256).Hash -ne $ocrItem.sha256) { throw 'Published OCR return payload hash differed.' }
+        }
+        $retried = (Post 'api/ocr-provider/return' @{requestID=$requestID}).result
+        if ($retried.autoReturn.status -ne 'published' -or (Get-FileHash -LiteralPath $autoManifestPath -Algorithm SHA256).Hash -ne $autoHash) { throw 'Installed OCR return retry altered the published result.' }
         $result = (Post 'api/ocr-provider/result' @{requestID=$requestID;directory=$output;confirm=$true}).result.path
         $response = Get-Content -LiteralPath (Join-Path $result 'manifest.json') -Raw | ConvertFrom-Json
         if ($response.inReplyTo -ne $requestID -or $response.items.Count -ne 2 -or $response.provenance.networkUsed) { throw 'Installed OCR response differing from request.' }
         $txt = $response.items | Where-Object uti -eq 'public.utf8-plain-text' | Select-Object -First 1
         $recognized = Get-Content -LiteralPath (Join-Path (Join-Path $result 'payload') $txt.relativePath) -Raw
         if (($recognized -replace '\s','') -notmatch '1234567890') { throw 'Installed OCR response omitted synthetic digits.' }
-        $ocrCheck = 'packaged offline OCR request, approval and result'
+        $ocrCheck = 'packaged offline OCR approval, bound automatic return, idempotent retry and manual export'
     }
     Post 'api/shutdown' @{} | Out-Null
     if (!$server.WaitForExit(25000) -or $server.ExitCode -ne 0) { throw 'Installed CLI failed to shut down cleanly.' }
     Remove-IsolatedInstall
     $uninstaller = $null
     if ((Test-Path -LiteralPath $gui) -or (Test-Path -LiteralPath $cli) -or !(Test-Path -LiteralPath $old) -or !(Test-Path -LiteralPath $history)) { throw 'Uninstall did not remove binaries and retain isolated user data.' }
-    Write-Output "OK installer, optional prior build upgrade, x64 PE, version, loopback, settings migration, disabled clipboard, text, encrypted 7Z and edit preserving original, $ocrCheck, shutdown, and uninstall retaining data."
+    Write-Output "OK installer, optional prior build upgrade, x64 PE, version, loopback, settings migration, disabled clipboard, read-only rule preview, text, encrypted 7Z and edit preserving original, $ocrCheck, shutdown, and uninstall retaining data."
 } finally {
     if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force }
     Remove-IsolatedInstall

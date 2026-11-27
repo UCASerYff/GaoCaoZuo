@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None, *, console: bool = False) -> int:
             app.activation = show_requested.set
             app.capture_context = lambda: window.hidden_for_capture() if window else nullcontext()
             window = WorkbenchWindow(server.url)
-            app.desktop.set_ui_pid(window.process.pid)
+            ui_pid = None
             tray.start()
             shown_exit = None
         if instance is not None:
@@ -136,11 +136,14 @@ def main(argv: list[str] | None = None, *, console: bool = False) -> int:
                 continue
             if server.exit_accepted.is_set() and server.finish_exit():
                 break
-            if window is not None and window.process.poll() is not None:
+            if window is not None and not window.is_running():
                 window.close()
                 window = None
                 server.window_closed()
-                app.desktop.set_ui_pid(None)
+            owner_pid = window.window_pid() if window else None
+            if owner_pid != ui_pid:
+                ui_pid = owner_pid
+                app.desktop.set_ui_pid(ui_pid)
             exit_request = server.exit_request
             if exit_request is not None:
                 if window is None:
@@ -160,7 +163,6 @@ def main(argv: list[str] | None = None, *, console: bool = False) -> int:
                 if window is None:
                     try:
                         window = WorkbenchWindow(server.url)
-                        app.desktop.set_ui_pid(window.process.pid)
                     except AppError as exc:
                         if exit_request is not None:
                             server.cancel_exit(exc.message)

@@ -364,6 +364,11 @@ class App:
             self.activation()
         return {"selectionRevision": self.selection_revision, "review": review}
 
+    def remember_ocr_review(self, review):
+        if self.incoming_ocr_request and self.incoming_ocr_request["requestID"] == review["requestID"]:
+            self.incoming_ocr_request = review
+        return review
+
     def copy_text(self, text: str) -> dict:
         if self.native_clipboard:
             return self.clipboard.set_plain(text)
