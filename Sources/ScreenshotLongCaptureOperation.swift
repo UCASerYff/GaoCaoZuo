@@ -38,7 +38,7 @@ final class ScreenshotLongCaptureOperation {
     private struct DeadlineReached: Error {}
 
     static func run(operation: ScreenshotLongCaptureOperation,
-                    uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                    uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                     verifyStart: (_ check: () throws -> Void) async throws -> Void,
                     next: (_ check: () throws -> Void) async throws -> Step) async throws -> Stop {
         let deadline = uptime() + 8
