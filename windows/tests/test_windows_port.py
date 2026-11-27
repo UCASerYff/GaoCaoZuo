@@ -166,8 +166,11 @@ def test_png_and_bmp_conversion(tmp_path):
     w, h, out = decode_png(converted)
     assert (w, h) == (1, 1)
     assert source.exists()
-    with pytest.raises(AppError):
-        app.perform("images.jpeg", {"paths": [str(source)]})
+    from PIL import Image
+
+    jpeg = app.perform("images.jpeg", {"paths": [str(source)]})["paths"][0]
+    with Image.open(jpeg) as image:
+        assert image.format == "JPEG" and image.size == (2, 2)
 
 
 def test_qr_roundtrip():
@@ -336,7 +339,7 @@ def test_lock_is_not_reported_as_confirmed(tmp_path):
     assert result["confirmedLocked"] is False
     assert result["message"] == LOCK_MESSAGE
     saver = app.perform("system.screenSaver", {})
-    assert "屏保不等于锁定" in saver["message"]
+    assert saver["confirmedLocked"] is False
     assert saver["message"] == SAVER_MESSAGE
     idle = app.perform("lock.settings", {"idleSeconds": 10000})
     assert idle["idle"]["requested"] is False
@@ -425,8 +428,7 @@ def test_screenshot_requires_explicit_confirmation(tmp_path):
     assert not (tmp_path / "ScreenshotHistory").exists()
     with pytest.raises(AppError):
         app.perform("screenshot.ocr.capture", {})
-    with pytest.raises(AppError):
-        app.perform("screenshot.recording", {})
+    assert app.perform("screenshot.recording", {}) == {"section": "screenshots", "show": True}
     with pytest.raises(AppError):
         app.perform("screenshot.translate.clipboard", {})
 

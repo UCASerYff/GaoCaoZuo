@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections import OrderedDict
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gaocaozuo.archive import ExtractBatch, create_7z, create_zip, extract_zip, inspect_zip, seven_zip, split_file
-from gaocaozuo.catalog import GROUPS, UNAVAILABLE, find_action, search_actions
-from gaocaozuo.clipboard import ClipboardBook
+from gaocaozuo.archive import ExtractBatch, archive_digest, archive_parts, create_7z, create_zip, extract_archive, inspect_archive, split_file
+from gaocaozuo.catalog import GROUPS, find_action, search_actions
+from gaocaozuo.clipboard import ClipboardBook, NativeClipboardBook
 from gaocaozuo.errors import AppError
 from gaocaozuo.features import Handoff, SnippetLibrary, import_rules, run_workflow, shortcut_conflicts
 from gaocaozuo.files import (
@@ -26,7 +28,7 @@ from gaocaozuo.files import (
     unique_child,
     validate_directory,
 )
-from gaocaozuo.images import blank_office, encode_bmp, encode_png, load_image, scale
+from gaocaozuo.images import blank_office
 from gaocaozuo.layout import LayoutTransaction, Rect, matches, restore_focus, snap_target, target_frame
 from gaocaozuo.qr import encode as encode_qr
 from gaocaozuo.qr import to_png
@@ -37,6 +39,7 @@ from gaocaozuo.version import VERSION_LABEL
 
 MEDIA = {"volumeUp", "volumeDown", "mute", "playPause", "nextTrack", "previousTrack"}
 STATE_WINDOWS = {"minimize", "minimizeAll", "unminimizeAll", "close", "toggleFullScreen", "nextWindow", "previousWindow"}
+DESKTOP_ACTIONS = {"missionControl", "showDesktop", "spaceLeft", "spaceRight", "spaceCreate", "spaceClose"}
 
 
 class MemoryVault:
@@ -51,22 +54,59 @@ class MemoryVault:
 
 
 class App:
-    def __init__(self, directory: Path, system=None, window_lister=None, vault=None):
+    def __init__(self, directory: Path, system=None, window_lister=None, vault=None, interactive=False):
         self.store = Store(directory)
         self.directory = Path(directory)
-        self.clipboard = ClipboardBook(self.directory, self.store)
+        self.desktop = None
+        self.native_clipboard = None
+        self.runtime = None
+        self.tray = None
+        self.clipboard_notice = ""
+        if interactive and os.name == "nt":
+            from gaocaozuo.clipboard_win import WindowsClipboard
+            from gaocaozuo.desktop_win import WindowsDesktop
+
+            self.desktop = WindowsDesktop()
+            self.native_clipboard = WindowsClipboard()
+        try:
+            self.clipboard = self._open_clipboard()
+        except AppError:
+            if self.native_clipboard is None:
+                raise
+            self.clipboard = NativeClipboardBook(self.directory, self.store, self.native_clipboard, self.desktop, read_history=False)
         self.snippets = SnippetLibrary(self.directory / "Snippets" / "library.json")
         self.handoff = Handoff()
         self.screenshots = ScreenshotSession(self.directory)
+        from gaocaozuo.ocr_provider import OcrProvider
+
+        self.ocr_provider = OcrProvider(self.directory)
         self.system = SystemGateway(system if system is not None else (UnavailableSystem() if os.name != "nt" else _windows_system()))
         self.idle = IdlePolicy((self.store.settings or {}).get("localLock") or {"enabled": False})
         self.window_lister = window_lister or (lambda: [])
+        if vault is None and self.desktop is not None:
+            from gaocaozuo.vault_win import WindowsCredentialVault
+
+            vault = WindowsCredentialVault(self.directory)
         self.vault = vault or MemoryVault()
         self.extract_batch = ExtractBatch()
+        self.extract_batches = OrderedDict()
         self.layout = LayoutTransaction()
         self.saved_frames: dict[str, Rect] = {}
         self.selection: list[str] = []
+        self.selection_revision = 0
+        self.incoming_ocr_request = None
+        self.activation = None
+        self.capture_context = nullcontext
         self.last_message = ""
+
+    def _open_clipboard(self):
+        try:
+            if self.native_clipboard is not None:
+                return NativeClipboardBook(self.directory, self.store, self.native_clipboard, self.desktop)
+            return ClipboardBook(self.directory, self.store)
+        except AppError as exc:
+            self.clipboard_notice = exc.message
+            raise
 
     def snapshot(self) -> dict:
         settings = self.store.settings
@@ -91,22 +131,26 @@ class App:
             "clipboardEnabled": enabled,
             "clipboard": self.clipboard.items if enabled else [],
             "clipboardReads": self.clipboard.read_attempts,
+            "clipboardNotice": self.clipboard_notice or getattr(self.clipboard, "notice", ""),
             "paste": self._paste_public(),
             "receipts": _safe_receipts(self.store),
             "permissions": self.permissions(),
             "selection": list(self.selection),
+            "selectionRevision": self.selection_revision,
+            "incomingOCRRequest": self.incoming_ocr_request,
             "message": self.last_message,
-            "sevenZip": seven_zip() is not None,
+            "sevenZip": True,
             "awake": self.system.awake,
-            "idle": {"state": self.idle.state, "enabled": bool(self.idle.config.get("enabled"))},
+            "idle": self.idle.snapshot() if self.runtime else {"state": self.idle.state, "enabled": bool(self.idle.config.get("enabled"))},
+            "automation": self.runtime.snapshot() if self.runtime else None,
             "pins": self.screenshots.pins(),
         }
 
     def permissions(self) -> dict:
         return {
             "accessibility": {"status": "not-applicable", "detail": "Windows 没有辅助功能开关。窗口移动失败会直接说明，不会记为成功。"},
-            "inputMonitoring": {"status": "not-registered", "detail": "未注册全局键盘钩子。快捷键保存在规则里，可在操作面板执行。"},
-            "finderExtension": {"status": "not-installed", "detail": "没有写入资源管理器右键菜单。可以把路径粘到操作面板。"},
+            "inputMonitoring": {"status": "enabled" if self.runtime and not self.runtime.snapshot()["paused"] else "disabled", "detail": "可在规则页启用或暂停全局快捷键。自动输入受 Windows 交互桌面和目标核验限制。"},
+            "finderExtension": {"status": "available", "detail": "安装版提供资源管理器右键入口。所选文件进入工作台，由你选择要运行的动作。"},
             "clipboardHistory": {"status": "enabled" if self.store.clipboard_enabled() else "disabled", "detail": "历史默认关闭，关闭时不读取历史文件。"},
             "screenCapture": {"status": "explicit-only", "detail": "只有按下捕获并确认后才采集，不保存未确认的画面。"},
             "automation": {"status": "not-applicable", "detail": "终端和资源管理器只在对应按钮确认后启动。"},
@@ -115,25 +159,38 @@ class App:
     def create_settings(self) -> dict:
         created = self.store.create_settings()
         self.idle.apply_config(created.get("localLock") or {"enabled": False})
-        self.clipboard = ClipboardBook(self.directory, self.store)
+        self.clipboard = self._open_clipboard()
+        if self.runtime:
+            self.configure_runtime()
+        if self.tray:
+            self.tray.configure(created.get("showMenuBarIcon", True))
         return created
 
     def update_settings(self, changes: dict) -> dict:
         if self.store.settings is None:
             raise AppError(self.store.notice or "设置不可用。", self.store.status)
-        if "clipboardEnabled" in changes and changes["clipboardEnabled"] and not self.store.clipboard_enabled():
+        clipboard_before = self.store.clipboard_enabled()
+        replacement = None
+        if "clipboardEnabled" in changes and self.clipboard.transaction is not None:
+            raise AppError("请先处理待核对的粘贴，再更改剪贴板历史设置。", "busy")
+        if changes.get("clipboardEnabled") and not clipboard_before:
             self.store.settings["clipboardEnabled"] = True
             try:
-                self.clipboard = ClipboardBook(self.directory, self.store)
-            except AppError:
+                replacement = self._open_clipboard()
+            finally:
                 self.store.settings["clipboardEnabled"] = False
-                self.clipboard = ClipboardBook(self.directory, self.store)
-                raise
         updated = self.store.update_settings(changes)
         if "localLock" in changes:
             self.idle.apply_config(updated.get("localLock") or {"enabled": False})
         if "clipboardEnabled" in changes and not changes["clipboardEnabled"]:
-            self.clipboard = ClipboardBook(self.directory, self.store)
+            replacement = self._open_clipboard()
+        if replacement is not None:
+            self.clipboard = replacement
+            self.clipboard_notice = ""
+        if self.runtime and {"inputPaused", "windowSnapEnabled", "windowDragEnabled", "windowsAutomationEnabled"} & changes.keys():
+            self.configure_runtime()
+        if self.tray and "showMenuBarIcon" in changes:
+            self.tray.configure(updated["showMenuBarIcon"])
         return updated
 
     def search(self, query: str) -> list[dict]:
@@ -164,12 +221,12 @@ class App:
         if action_id in {"new.text", "new.markdown", "new.folder", "new.custom", "new.template", "file.new.docx", "file.new.xlsx", "file.new.pptx"}:
             return self._create(action_id, payload)
         if action_id == "path.copy":
-            return {"text": path_lines(_paths(payload)), "copiedToSystemClipboard": False}
+            return self.copy_text(path_lines(_paths(payload)))
         if action_id == "name.copy":
-            return {"text": name_lines(_paths(payload)), "copiedToSystemClipboard": False}
+            return self.copy_text(name_lines(_paths(payload)))
         if action_id == "hash.sha256":
             lines = [sha256(path) for path in _paths(payload)]
-            return {"text": "\n".join(lines), "copiedToSystemClipboard": False}
+            return self.copy_text("\n".join(lines))
         if action_id in {"files.copy", "files.move"}:
             records = transfer(_paths(payload), Path(payload["destination"]), action_id == "files.move")
             self.store.append_receipts(_stamp(records))
@@ -196,9 +253,9 @@ class App:
         if action_id in {"archive.extract", "archive.extract.custom"}:
             return self._extract(payload)
         if action_id == "archive.list":
-            return {"members": inspect_zip(Path(payload["path"]), payload.get("password"))}
-        if action_id in {"images.png", "images.bmp", "images.convert"}:
-            return self._convert(payload, "bmp" if action_id == "images.bmp" else payload.get("format") or "png")
+            return {"members": inspect_archive(Path(payload["path"]), payload.get("password"))}
+        if action_id in {"images.png", "images.bmp", "images.jpeg", "images.heic", "images.tiff", "images.webp", "images.icns", "images.convert"}:
+            return self._convert(payload, (payload.get("format") or "png") if action_id == "images.convert" else action_id.split(".", 1)[1])
         if action_id in {"text.qrcode", "text.qrcode.clipboard"}:
             return self._qr(payload)
         if action_id == "terminal.open":
@@ -208,8 +265,11 @@ class App:
         if action_id == "folder.favorite.add":
             return self._favorite(payload)
         if action_id == "clipboard.copyplain":
-            return self.clipboard.set_plain(payload.get("text") or "")
+            return self.clipboard.set_plain(payload.get("text") if "text" in payload else self.clipboard_text())
         if action_id == "clipboard.pasteplain":
+            if self.native_clipboard:
+                text = payload.get("text") if "text" in payload else self.clipboard_text()
+                return self.clipboard.begin_native(self.native_clipboard.plain_formats(text, temporary=True), payload.get("targetID"), payload.get("sendEnter"))
             transaction = self.clipboard.begin_paste(
                 payload.get("text") or "",
                 bool(payload.get("sendEnter")),
@@ -227,24 +287,126 @@ class App:
             return self.system.set_awake(not self.system.awake)
         if action_id.startswith("system.") and action_id.split(".", 1)[1] in MEDIA:
             return self.system.media(action_id.split(".", 1)[1])
+        if action_id.startswith("system.") and action_id.split(".", 1)[1] in DESKTOP_ACTIONS:
+            return self.system.desktop(action_id.split(".", 1)[1])
         if action_id.startswith("window."):
-            return self._window(action_id.split(".", 1)[1], payload)
+            name = action_id.split(".", 1)[1]
+            if self.desktop and "backend" not in payload and not ("frame" in payload or "screens" in payload):
+                return self.desktop.perform(name, payload.get("targetID"), payload.get("mode", "frontmost"),
+                                            identity=payload.get("nativeTarget"), confirmed=bool(payload.get("confirm")))
+            return self._window(name, payload)
         if action_id == "windows.overview":
+            if self.desktop:
+                return self.desktop.overview(same_application=bool(payload.get("sameApplication")))
             return {"windows": self.window_lister(), "pixels": None}
+        if action_id == "system.applicationWindows":
+            if self.desktop:
+                return self.desktop.overview(same_application=True)
+            raise AppError("此会话没有 Windows 交互桌面。", "unavailable")
+        if action_id == "desktop.openSettings":
+            if self.desktop:
+                return self.desktop.open_settings()
+            raise AppError("此会话没有 Windows 系统设置。", "unavailable")
         if action_id == "screenshot.capture":
             backend = payload.get("backend")
-            if backend is None:
-                backend = _capture_backend()
-            return self.screenshots.capture(bool(payload.get("confirm")), backend)
+            window_id = payload.get("windowID") or payload.get("targetID")
+            if window_id is not None and backend is None:
+                if not self.desktop:
+                    raise AppError("此会话没有可选的外部窗口。", "unavailable")
+                window_id = self.desktop.target(window_id).hwnd
+            confirmed = payload.get("confirm") is True
+            with self.capture_context() if confirmed and backend is None else nullcontext():
+                return self.screenshots.capture(confirmed, backend, mode=payload.get("mode", "region"),
+                                                bounds=payload.get("bounds"), window_id=window_id, delay=payload.get("delay", 0))
         if action_id in {"screenshot.ocr.capture", "screenshot.ocr.clipboard"}:
-            self.screenshots.ocr()
+            confirmed = payload.get("confirm") is True
+            if not confirmed:
+                raise AppError("请先确认本次 OCR 操作。", "confirmation")
+            if action_id == "screenshot.ocr.clipboard":
+                if not self.native_clipboard:
+                    raise AppError("此会话没有系统剪贴板。", "unavailable")
+                return self.screenshots.ocr(True, clipboard_data=self.native_clipboard.image_bytes(), languages=payload.get("languages"))
+            captured = self.perform("screenshot.capture", payload)
+            return self.screenshots.ocr(True, image_id=captured["id"], languages=payload.get("languages"))
+        if action_id in {"ocr.files", "file.ocr"}:
+            return self.screenshots.ocr(payload.get("confirm") is True, paths=_paths(payload), languages=payload.get("languages"))
         if action_id.startswith("screenshot.translate"):
             self.screenshots.translate()
-        if action_id == "screenshot.recording":
-            self.screenshots.record()
+        if action_id in {"panel.show", "clipboard.show", "workflow.show", "screenshot.workspace", "screenshot.recording", "finder.popup"}:
+            return {"section": (action or {}).get("section", "home"), "show": True}
+        if action_id == "screenshot.pins.restore":
+            if payload.get("confirm") is True:
+                return self.screenshots.restore_pins(payload.get("names"))
+            return {"pins": self.screenshots.pins()}
         if action_id == "lock.settings":
-            return {"idle": self.idle.tick(float(payload.get("idleSeconds") or 0), bool(payload.get("activity")), bool(payload.get("busy")))}
+            return {"idle": self.idle.snapshot() if self.runtime else self.idle.tick(float(payload.get("idleSeconds") or 0), bool(payload.get("activity")), bool(payload.get("busy")))}
         raise AppError("这个动作还没有接到 Windows 执行入口。", "unavailable")
+
+    def configure_runtime(self):
+        settings = self.store.settings or {}
+        self.runtime.configure(self.rules(), paused=not settings.get("windowsAutomationEnabled") or bool(settings.get("inputPaused")) or self.store.status != "ready",
+                               snap=bool(settings.get("windowSnapEnabled")), drag=bool(settings.get("windowDragEnabled")))
+
+    def activate(self, payload):
+        paths = payload.get("paths") or []
+        if not isinstance(paths, list) or len(paths) > 100 or any(not isinstance(path, str) or not Path(path).is_absolute() for path in paths):
+            raise AppError("资源管理器所选文件路径无效。", "invalid")
+        if paths:
+            self.selection = paths
+            self.selection_revision += 1
+            self.incoming_ocr_request = None
+        review = self.ocr_provider.receive(Path(payload["package"])) if payload.get("package") else None
+        if review:
+            self.incoming_ocr_request = review
+            self.selection_revision += 1
+        if self.activation:
+            self.activation()
+        return {"selectionRevision": self.selection_revision, "review": review}
+
+    def copy_text(self, text: str) -> dict:
+        if self.native_clipboard:
+            return self.clipboard.set_plain(text)
+        return {"text": text, "copiedToSystemClipboard": False}
+
+    def clipboard_text(self) -> str:
+        if self.native_clipboard:
+            return self.native_clipboard.text()
+        return self.clipboard.snapshot.get("text") or ""
+
+    def clipboard_item(self, payload):
+        if not self.store.clipboard_enabled():
+            raise AppError("剪贴板历史未启用。", "disabled")
+        item = next((record for record in self.clipboard.items if record.get("id") == payload.get("id")), None)
+        if item is None:
+            raise AppError("找不到这条剪贴板记录。", "missing")
+        operation = payload.get("operation")
+        if operation in {"pin", "delete", "metadata"}:
+            updated = dict(item)
+            if operation == "pin":
+                updated["pinned"] = not item.get("pinned")
+            if operation == "metadata":
+                tags = payload.get("tags") or []
+                if not isinstance(tags, list) or len(tags) > 40 or any(not isinstance(tag, str) or len(tag) > 80 for tag in tags):
+                    raise AppError("标签最多 40 个，每个不超过 80 字。", "invalid")
+                updated.update(group=str(payload.get("group") or "")[:80], tags=tags)
+            records = [(updated if record is item else record) for record in self.clipboard.items if operation != "delete" or record is not item]
+            self.clipboard.replace_items(records)
+            return {"item": updated, "deleted": operation == "delete"}
+        if operation == "plain":
+            return self.copy_text(item.get("text") or "")
+        if not self.native_clipboard:
+            raise AppError("此会话没有可操作的 Windows 系统剪贴板。", "unavailable")
+        if operation == "copy":
+            return self.clipboard.copy_item(item)
+        if operation == "paste":
+            return self.clipboard.begin_native(self.clipboard.formats_for(item, temporary=True), payload.get("targetID"))
+        if operation == "stack":
+            if len(self.clipboard.multiple) >= 512:
+                raise AppError("剪贴板堆栈已达大小限制。", "budget")
+            parts = item.get("parts") or [{"kind": "text", "text": item.get("text")}]
+            self.clipboard.multiple.extend(parts)
+            return {"parts": list(self.clipboard.multiple)}
+        raise AppError("不支持此剪贴板操作。", "invalid")
 
     def run_workflow(self, workflow_id: str, payload: dict) -> dict:
         workflows = (self.store.settings or {}).get("workflows") or []
@@ -321,33 +483,39 @@ class App:
     def _zip(self, payload: dict, password: str | None) -> dict:
         sources = _paths(payload)
         destination = unique_child(sources[0].parent, sources[0].stem, ".zip")
-        if password and payload.get("savePassword"):
-            self.vault.put(sha256(sources[0]), password)
-        create_zip(sources, destination, password)
+        method = "zipcrypto" if payload.get("encryption") == "zipcrypto" else "aes"
+        create_zip(sources, destination, password, method)
         record = {"id": str(uuid.uuid4()), "kind": "create", "source": None, "destination": str(destination), "fingerprint": fingerprint(destination)}
         self.store.append_receipts(_stamp([record]))
-        return {"path": str(destination), "encryption": "zipcrypto" if password else None}
+        if password and payload.get("savePassword") is True:
+            self.vault.put(archive_digest(destination), password)
+        return {"path": str(destination), "encryption": method if password else None}
 
     def _seven(self, payload: dict, solid: bool) -> dict:
         sources = _paths(payload)
         destination = unique_child(sources[0].parent, sources[0].stem, ".7z")
-        create_7z(sources, destination, payload.get("password"), solid=solid, split_mb=payload.get("splitMB"))
-        return {"path": str(destination), "solid": solid}
+        created = create_7z(sources, destination, payload.get("password"), solid=solid, split_mb=payload.get("splitMB"))
+        _base, outputs = archive_parts(created)
+        self.store.append_receipts(_stamp([{"id": str(uuid.uuid4()), "kind": "create", "source": None, "destination": str(path), "fingerprint": fingerprint(path)} for path in outputs]))
+        if payload.get("savePassword") is True and payload.get("password"):
+            self.vault.put(archive_digest(created), payload["password"])
+        return {"path": str(created), "parts": [str(path) for path in outputs] if payload.get("splitMB") else [], "solid": solid}
 
     def _extract(self, payload: dict) -> dict:
         archives = _paths(payload)
 
         def destination_for(archive: Path) -> Path:
+            base, _parts = archive_parts(archive)
             if payload.get("destination"):
                 root = Path(payload["destination"])
-                return unique_child(root, archive.stem, "")
-            return unique_child(archive.parent, archive.stem, "")
+                return unique_child(root, base.stem, "")
+            return unique_child(archive.parent, base.stem, "")
 
         def password_for(archive: Path, incorrect: bool):
             if payload.get("password"):
                 return payload.get("password")
-            if payload.get("useSaved"):
-                return self.vault.get(sha256(archive))
+            if payload.get("useSaved") is True:
+                return self.vault.get(archive_digest(archive))
             return None
 
         limits = {}
@@ -356,30 +524,65 @@ class App:
         if payload.get("maxEntries"):
             limits["max_entries"] = int(payload["maxEntries"])
         if payload.get("members") and len(archives) == 1:
-            destination = extract_zip(archives[0], destination_for(archives[0]), payload.get("password"), payload.get("members"), **limits)
+            password = password_for(archives[0], False)
+            destination = extract_archive(archives[0], destination_for(archives[0]), password, payload.get("members"), **limits)
             return {"items": [{"archive": str(archives[0]), "destination": str(destination), "skipped": False}]}
-        return self.extract_batch.run(archives, destination_for, password_for, **limits)
+        batch = self.extract_batch
+        if payload.get("batchID"):
+            try:
+                key = str(uuid.UUID(payload["batchID"]))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise AppError("解压批次编号无效。", "invalid") from exc
+            batch_key = (key, tuple(str(path.resolve()) for path in archives), payload.get("destination"))
+            batch = self.extract_batches.setdefault(batch_key, ExtractBatch())
+            self.extract_batches.move_to_end(batch_key)
+            while len(self.extract_batches) > 32:
+                self.extract_batches.popitem(last=False)
+        return batch.run(archives, destination_for, password_for, **limits)
 
     def _convert(self, payload: dict, fmt: str) -> dict:
         fmt = "jpeg" if fmt == "jpg" else fmt
-        if fmt in {"jpeg", "heic", "tiff", "webp"}:
-            raise AppError(UNAVAILABLE.get(f"images.{fmt}") or "这种图片格式不能编码。", "unavailable")
-        if fmt not in {"png", "bmp"}:
-            raise AppError("Windows 版可写 PNG 和 BMP。", "unsupported")
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
+        if fmt not in {"png", "bmp", "jpeg", "heic", "tiff", "webp", "icns"}:
+            raise AppError("请选择程序支持的图像格式。", "unsupported")
+        if fmt == "heic" or any(path.suffix.lower() in {".heic", ".heif"} for path in _paths(payload)):
+            from pillow_heif import register_heif_opener
+
+            register_heif_opener()
+        max_edge = int(payload["maxEdge"]) if payload.get("maxEdge") else None
+        if max_edge and not 1 <= max_edge <= 16384:
+            raise AppError("最长边须为 1 至 16384 像素。", "invalid")
         outputs = []
         for source in _paths(payload):
-            width, height, rgb = load_image(source)
-            width, height, rgb = scale(width, height, rgb, payload.get("maxEdge"))
-            blob = encode_png(width, height, rgb) if fmt == "png" else encode_bmp(width, height, rgb)
-            destination = unique_child(source.parent, source.stem, "." + fmt)
-            destination.write_bytes(blob)
+            destination = unique_child(source.parent, source.stem, "." + ("jpg" if fmt == "jpeg" else fmt))
+            try:
+                with Image.open(source) as original:
+                    if original.width * original.height > 50_000_000:
+                        raise AppError("图像超过 5000 万像素。", "budget")
+                    image = ImageOps.exif_transpose(original).convert("RGB" if fmt in {"jpeg", "bmp"} else "RGBA")
+                    image.info.clear()
+                    if max_edge:
+                        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                    if fmt == "icns":
+                        icon_size = 1024 if max_edge is None else min(1024, max_edge)
+                        image = ImageOps.pad(image, (icon_size, icon_size), method=Image.Resampling.LANCZOS, color=(0, 0, 0, 0))
+                    with destination.open("xb") as handle:
+                        try:
+                            image.save(handle, "HEIF" if fmt == "heic" else fmt.upper())
+                        except Exception:
+                            handle.close()
+                            destination.unlink(missing_ok=True)
+                            raise
+            except (OSError, ValueError, UnidentifiedImageError) as exc:
+                raise AppError(f"无法转换图像：{source.name}", "invalid") from exc
             record = {"id": str(uuid.uuid4()), "kind": "convert", "source": str(source), "destination": str(destination), "fingerprint": fingerprint(destination)}
             self.store.append_receipts(_stamp([record]))
             outputs.append(str(destination))
         return {"paths": outputs}
 
     def _qr(self, payload: dict) -> dict:
-        text = payload.get("text") or ""
+        text = payload.get("text") if "text" in payload else self.clipboard_text()
         modules = encode_qr(text)
         blob = to_png(modules)
         directory = Path(payload["directory"]) if payload.get("directory") else None
@@ -395,15 +598,15 @@ class App:
         path = Path(payload["path"])
         if path.is_symlink() or not path.is_dir():
             raise AppError("请选择真实目录。", "invalid")
-        command = ["cmd", "/K", "cd", "/d", str(path)]
+        command = [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"), "/D", "/K"]
         if not payload.get("launch"):
-            return {"command": command, "launched": False}
+            return {"command": command, "directory": str(path), "launched": False}
         if os.name != "nt":
             raise AppError("当前系统不是 Windows，未启动终端。", "unavailable")
         import subprocess
 
-        subprocess.Popen(command)
-        return {"command": command, "launched": True}
+        subprocess.Popen(command, cwd=path, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return {"command": command, "directory": str(path), "launched": True}
 
     def _reveal(self, payload: dict) -> dict:
         path = Path(payload["path"])
@@ -510,6 +713,8 @@ class App:
         path.parent.mkdir(parents=True, exist_ok=True)
         document = {"schema": 1, "rules": rules, **preserved}
         atomic_replace(path, (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode())
+        if self.runtime:
+            self.configure_runtime()
         return {"rules": rules}
 
     def import_input(self, remote: list[dict], tombstones: list[str] | None = None) -> dict:

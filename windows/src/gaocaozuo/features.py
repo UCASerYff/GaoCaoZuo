@@ -191,14 +191,24 @@ def semantic(rule: dict) -> tuple:
         rule.get("kind") or "action",
         tuple(rule.get("include") or []),
         tuple(rule.get("exclude") or []),
+        *(rule.get(field) or "" for field in ("application", "appBundleID", "trigger", "mouseButton", "mouseModifiers", "direction", "modifiers")),
     )
 
 
 def scopes_overlap(left: dict, right: dict) -> bool:
-    inc_a = set(left.get("include") or [])
-    inc_b = set(right.get("include") or [])
-    exc_a = set(left.get("exclude") or [])
-    exc_b = set(right.get("exclude") or [])
+    def includes(rule):
+        application = rule.get("application") or rule.get("appBundleID")
+        return [application] if application else rule.get("include") or []
+
+    def normalized(values):
+        from pathlib import PureWindowsPath
+
+        return {PureWindowsPath(value.strip()).name.casefold() for value in values if isinstance(value, str)}
+
+    inc_a = normalized(includes(left))
+    inc_b = normalized(includes(right))
+    exc_a = normalized(left.get("exclude") or [])
+    exc_b = normalized(right.get("exclude") or [])
     if not inc_a and not inc_b:
         return True
     if not inc_a:
@@ -209,11 +219,16 @@ def scopes_overlap(left: dict, right: dict) -> bool:
 
 
 def shortcut_conflicts(rules: list[dict]) -> list[tuple[str, str]]:
-    active = [rule for rule in rules if rule.get("enabled") and not rule.get("paused") and rule.get("shortcut")]
+    from gaocaozuo.rules_win import trigger_key
+
+    def key(rule):
+        return trigger_key(rule) or rule.get("shortcut")
+
+    active = [(key(rule), rule) for rule in rules if rule.get("enabled") and not rule.get("paused")]
     found = []
-    for index, left in enumerate(active):
-        for right in active[index + 1 :]:
-            if left.get("shortcut") == right.get("shortcut") and scopes_overlap(left, right):
+    for index, (left_key, left) in enumerate(active):
+        for right_key, right in active[index + 1 :]:
+            if left_key and left_key == right_key and scopes_overlap(left, right):
                 found.append((left.get("id", ""), right.get("id", "")))
     return found
 
@@ -297,6 +312,7 @@ def cloud_payload(rules: list[dict]) -> dict:
                 "exclude": list(rule.get("exclude") or []),
                 "script": rule.get("script") or "",
                 "kind": rule.get("kind") or "action",
+                **{field: rule[field] for field in ("application", "appBundleID", "trigger", "mouseButton", "mouseModifiers", "direction", "modifiers") if field in rule},
             }
         )
     return {"schema": SCHEMA_VERSION, "rules": exported, "clipboard": None, "snippets": None, "passwords": None}

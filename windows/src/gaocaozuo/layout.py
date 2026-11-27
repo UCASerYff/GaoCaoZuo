@@ -283,6 +283,9 @@ class LayoutTransaction:
                     backend.validate_rollback()
                 else:
                     backend.validate()
+                if hasattr(backend, "set_frame"):
+                    backend.set_frame(frame, resizing)
+                    return
                 if resizing:
                     try:
                         backend.set_size(frame.w, frame.h)

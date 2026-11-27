@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
+import time
+from threading import RLock
+
 from gaocaozuo.errors import AppError
 
-LOCK_MESSAGE = "已提交系统锁屏快捷键请求；系统是否已锁定尚未确认。"
-SAVER_MESSAGE = "已提交屏保启动请求；屏保不等于锁定屏幕，是否要求密码由系统设置决定。"
-SLEEP_MESSAGE = "已提交系统睡眠请求；是否已经进入睡眠尚未确认。"
+LOCK_MESSAGE = "已提交 Windows 锁屏请求，系统锁定结果尚未确认。"
+SAVER_MESSAGE = "已提交屏保启动请求。屏保不等于锁定屏幕，密码要求由 Windows 设置决定。"
+SLEEP_MESSAGE = "已提交 Windows 睡眠请求，系统睡眠结果尚未确认。"
 
 
 class IdlePolicy:
@@ -14,15 +18,105 @@ class IdlePolicy:
         self.config = config
         self.state = "disabled"
         self.requested = False
+        self._lock = RLock()
+        self._observed_at: float | None = None
+        self._last_poll: float | None = None
+        self._last_input: int | None = None
+        self._deadline: float | None = None
+        self._settles_at = 0.0
+        self._remaining: int | None = None
+        self._detail = ""
         self.apply_config(config)
 
     def apply_config(self, config: dict) -> None:
-        self.config = config
-        if not config.get("enabled"):
-            self.state = "disabled"
+        with self._lock:
+            self.config = dict(config)
             self.requested = False
-        elif self.state == "disabled":
-            self.state = "observing"
+            self.cancel()
+
+    def cancel(self) -> dict:
+        with self._lock:
+            self._observed_at = self._last_poll = self._deadline = None
+            self._remaining = None
+            self._detail = ""
+            if not self.config.get("enabled"):
+                self.state = "disabled"
+            else:
+                self.state = "waitingForActivity" if self.requested else "observing"
+            return self.snapshot()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "state": self.state,
+                "enabled": bool(self.config.get("enabled")),
+                "remaining": self._remaining,
+                "detail": self._detail,
+                "confirmedLocked": False,
+            }
+
+    def sample(self, read_idle, safety, alert, execute, now=time.monotonic) -> None:
+        """Observe real session activity and run only an on-screen warning's live deadline."""
+        with self._lock:
+            if not self.config.get("enabled") or self.state == "failed":
+                alert(None)
+                return
+            moment = now()
+            unsafe = safety()
+            try:
+                timestamp, elapsed = read_idle() if not unsafe else (None, 0)
+            except AppError as exc:
+                unsafe = exc.message
+                timestamp, elapsed = None, 0
+            if unsafe:
+                alert(None)
+                self._observed_at = self._deadline = self._last_poll = self._remaining = None
+                self.state = "paused"
+                self._detail = unsafe
+                return
+            changed = self._last_input is not None and self._last_input != timestamp
+            stale = self._last_poll is None or not 0 <= moment - self._last_poll <= 5
+            if stale or (changed and moment >= self._settles_at) or self._observed_at is None:
+                self._observed_at = moment
+                self._deadline = self._remaining = None
+                alert(None)
+            if changed and moment >= self._settles_at:
+                self.requested = False
+            self._last_input = timestamp
+            self._last_poll = moment
+            if self.requested:
+                self.state = "waitingForActivity"
+                return
+            self._detail = ""
+            if min(elapsed, moment - self._observed_at) < float(self.config.get("idleSeconds") or 300):
+                self.state = "observing"
+                return
+            action = self.config.get("action") or "lockScreen"
+            if self._deadline is None:
+                self._deadline = moment + float(self.config.get("warningSeconds") or 15)
+            if moment < self._deadline:
+                self._remaining = max(1, math.ceil(self._deadline - moment))
+                if not alert((action, self._remaining)):
+                    self._observed_at = self._deadline = self._remaining = None
+                    self.state = "paused"
+                    self._detail = "Windows 未显示闲置提醒。"
+                    return
+                self.state = "countdown"
+                return
+            alert(None)
+            self._remaining = self._deadline = None
+            try:
+                if safety() or read_idle()[0] != timestamp:
+                    self._observed_at = moment
+                    self.state = "observing"
+                    return
+                self.requested = True
+                self._settles_at = now() + 2
+                self._detail = execute(action).get("message", "")
+                self.state = "waitingForActivity"
+            except AppError as exc:
+                self.state = "failed"
+                self._detail = exc.message
 
     def tick(self, idle_seconds: float, activity: bool = False, busy: bool = False) -> dict:
         if not self.config.get("enabled"):
@@ -90,6 +184,19 @@ class SystemGateway:
         if not self.backend.media(name):
             raise AppError(f"系统没有接受“{name}”媒体键，未伪造成功。", "rejected")
         return {"submitted": name}
+
+    def desktop(self, name: str) -> dict:
+        operation = getattr(self.backend, "desktop", None)
+        if operation is None:
+            raise AppError("当前系统没有 Windows 桌面快捷键接口。", "unavailable")
+        if not operation(name):
+            raise AppError("Windows 未接受桌面快捷键。请先松开修饰键并回到当前交互桌面。", "rejected")
+        return {"submitted": name, "message": "已向 Windows 提交桌面快捷键。"}
+
+    def close(self) -> None:
+        close = getattr(self.backend, "close", None)
+        if close is not None:
+            close()
 
 
 class FakeSystem:

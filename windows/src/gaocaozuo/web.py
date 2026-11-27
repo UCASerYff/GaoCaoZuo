@@ -6,6 +6,7 @@ import json
 import mimetypes
 import secrets
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -39,6 +40,8 @@ class Handler(BaseHTTPRequestHandler):
     server: OperationServer
 
     def do_GET(self) -> None:
+        if not self._local_request():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._page()
@@ -63,15 +66,39 @@ class Handler(BaseHTTPRequestHandler):
                 text = self.server.app.snippets.export_csv()
             self._bytes(text.encode("utf-8"), "text/csv; charset=utf-8")
             return
+        if parsed.path == "/api/export/snippets.xlsx":
+            if not self._authorized():
+                return
+            with self.server.lock:
+                contents = self.server.app.snippets.export_xlsx()
+            self._bytes(contents, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            return
+        if parsed.path == "/api/screenshot/preview":
+            if not self._authorized():
+                return
+            try:
+                with self.server.lock:
+                    png = self.server.app.screenshots.preview(parse_qs(parsed.query).get("id", [""])[0])
+                self._bytes(png, "image/png")
+            except AppError as exc:
+                self._json({"error": exc.message, "code": exc.code}, 404)
+            return
         root = asset_dir().resolve()
         asset = (root / parsed.path.lstrip("/")).resolve()
-        if asset.is_file() and root in asset.parents:
+        if parsed.path == "/operation-icon.png" and not asset.exists() and len(root.parents) > 3:
+            asset = root.parents[3] / "Assets" / "AppIcon.png"
+            if asset.is_file():
+                self._bytes(asset.read_bytes(), "image/png")
+                return
+        if asset.suffix.lower() in {".js", ".css", ".png", ".svg", ".woff2"} and asset.is_file() and root in asset.parents:
             mime = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
             self._bytes(asset.read_bytes(), mime)
             return
         self._json({"error": "没有这个页面。"}, 404)
 
     def do_POST(self) -> None:
+        if not self._local_request():
+            return
         parsed = urlparse(self.path)
         if not self._authorized():
             return
@@ -92,6 +119,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "result": result, "state": state})
         except AppError as exc:
             self._json({"ok": False, "error": exc.message, "code": exc.code}, 400)
+        except (KeyError, TypeError, ValueError, OSError):
+            self._json({"ok": False, "error": "操作所需的参数无效，或系统无法读取或写入指定文件。", "code": "invalid"}, 400)
 
     def _page(self) -> None:
         html = (asset_dir() / "index.html").read_text(encoding="utf-8")
@@ -99,14 +128,27 @@ class Handler(BaseHTTPRequestHandler):
         self._bytes(html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _authorized(self) -> bool:
-        if self.headers.get("X-Gao-Token") == self.server.token:
+        supplied = self.headers.get("X-Gao-Token", "")
+        if supplied.isascii() and secrets.compare_digest(supplied, self.server.token):
             return True
         self._json({"error": "缺少本机会话令牌。"}, 403)
         return False
 
+    def _local_request(self) -> bool:
+        port = self.server.server_address[1]
+        host = self.headers.get("Host", "").lower()
+        origin = self.headers.get("Origin")
+        if host in {f"127.0.0.1:{port}", f"localhost:{port}"} and origin in {None, f"http://{host}"} and self.headers.get("Sec-Fetch-Site") in {None, "none", "same-origin"}:
+            return True
+        self._json({"error": "请求并非来自本机工作台。"}, 403)
+        return False
+
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 32 * 1024 * 1024:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise AppError("请求大小声明无效。", "invalid") from exc
+        if length < 0 or length > 32 * 1024 * 1024:
             raise AppError("上传超过 32 MiB。", "invalid")
         raw = self.rfile.read(length) if length else b"{}"
         if not raw:
@@ -128,6 +170,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -136,14 +182,37 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def dispatch(app: App, path: str, payload: dict):
+    if path == "/api/activate":
+        return app.activate(payload)
+    if path == "/api/ocr-provider/review":
+        return app.ocr_provider.receive(Path(payload["path"]))
+    if path == "/api/ocr-provider/approve":
+        return app.ocr_provider.approve(payload["requestID"], payload.get("confirm") is True)
+    if path == "/api/ocr-provider/result":
+        return app.ocr_provider.export_result(payload["requestID"], Path(payload["directory"]), payload.get("confirm") is True)
+    if path == "/api/ocr-provider/jobs":
+        return {"jobs": app.ocr_provider.jobs()}
+    if path == "/api/ocr-provider/capabilities":
+        from gaocaozuo.ocr_provider import capabilities
+
+        return capabilities()
     if path == "/api/settings/create":
         return app.create_settings()
     if path == "/api/settings":
         return app.update_settings(payload)
+    if path == "/api/files/pick":
+        from gaocaozuo.shell_win import pick_file
+
+        if not app.desktop:
+            raise AppError("此会话未打开交互工作台。", "unavailable")
+        return {"paths": pick_file(payload.get("kind", "files"), bool(payload.get("multiple")))}
     if path == "/api/favorites/toggle":
         return {"favorites": app.store.toggle_favorite(payload["id"])}
     if path == "/api/action":
-        return app.perform(payload["id"], payload.get("payload") or {})
+        arguments = payload.get("payload") or {}
+        if not isinstance(arguments, dict) or {"nativeTarget", "backend"} & arguments.keys():
+            raise AppError("此请求含仅可由 Windows 内部设置的参数。", "invalid")
+        return app.perform(payload["id"], arguments)
     if path == "/api/workflows/save":
         return app.save_workflow(payload)
     if path == "/api/undo":
@@ -153,6 +222,11 @@ def dispatch(app: App, path: str, payload: dict):
         return {"stored": item is not None, "item": item}
     if path == "/api/clipboard/search":
         return {"items": app.clipboard.search(payload.get("query") or "")}
+    if path == "/api/clipboard/item":
+        return app.clipboard_item(payload)
+    if path == "/api/clipboard/clear":
+        app.clipboard.replace_items([] if payload.get("includePinned") else [item for item in app.clipboard.items if item.get("pinned")])
+        return {"items": app.clipboard.items}
     if path == "/api/paste/confirm":
         return app.clipboard.confirm()
     if path == "/api/paste/cancel":
@@ -161,6 +235,19 @@ def dispatch(app: App, path: str, payload: dict):
         return app.clipboard.enter(payload.get("role"), bool(payload.get("editable")))
     if path == "/api/paste/stack":
         return {"parts": app.clipboard.push_stack(payload.get("parts") or [])}
+    if path == "/api/paste/stack/current":
+        return {"parts": getattr(app.clipboard, "multiple", [])}
+    if path == "/api/paste/stack/clear":
+        if app.native_clipboard:
+            if app.clipboard.transaction:
+                raise AppError("请先处理等待核对的粘贴。", "busy")
+            app.clipboard.multiple.clear()
+        return {"parts": []}
+    if path == "/api/paste/stack/paste":
+        if not app.native_clipboard:
+            raise AppError("此会话没有系统剪贴板。", "unavailable")
+        contents = app.clipboard.native.part_formats(app.clipboard.multiple, temporary=True)
+        return app.clipboard.begin_native(contents, payload.get("targetID"), stack_count=len(app.clipboard.multiple))
     if path == "/api/snippets/save":
         record = app.snippets.save_snippet(payload)
         if app.store.settings is not None:
@@ -174,6 +261,8 @@ def dispatch(app: App, path: str, payload: dict):
         return {"text": text}
     if path == "/api/rules/save":
         return app.save_rules(payload.get("rules") or [])
+    if path == "/api/rules/list":
+        return {"rules": app.rules()}
     if path == "/api/rules/import":
         return app.import_input(payload.get("remote") or [], payload.get("tombstones") or [])
     if path == "/api/exchange/ticket":
@@ -188,15 +277,42 @@ def dispatch(app: App, path: str, payload: dict):
     if path == "/api/exchange/package":
         return validate_package(payload.get("document") or {}, payload.get("now") or "")
     if path == "/api/screenshot/annotate":
-        return app.screenshots.annotate(payload["id"], payload.get("rects") or [])
+        return app.screenshots.annotate(payload["id"], payload.get("rects") or [], payload.get("commands"))
     if path == "/api/screenshot/stitch":
-        return app.screenshots.stitch(payload.get("ids") or [], int(payload.get("overlap") or 0))
+        return app.screenshots.stitch(payload.get("ids") or [], payload.get("overlap"))
     if path == "/api/screenshot/save":
-        return {"path": app.screenshots.save(payload["id"], __import__("pathlib").Path(payload["directory"]))}
+        return {"path": app.screenshots.save(payload["id"], Path(payload["directory"]), payload.get("filename"))}
     if path == "/api/screenshot/pin":
-        return {"path": app.screenshots.pin(payload["id"])}
+        return {"path": app.screenshots.pin(payload["id"], payload.get("persistent", True))}
+    if path == "/api/screenshot/open":
+        return app.screenshots.open(Path(payload["path"]))
+    if path == "/api/screenshot/history":
+        return app.screenshots.history(payload.get("enabled"))
+    if path == "/api/screenshot/history/open":
+        return app.screenshots.history_open(payload["name"], bool(payload.get("pin")))
+    if path == "/api/screenshot/long":
+        return app.screenshots.long_capture(payload["command"], bool(payload.get("confirm")), payload.get("delay"),
+                                            payload.get("bounds"), payload.get("overlap"))
+    if path == "/api/screenshot/ocr":
+        paths = payload.get("paths") or None
+        return app.screenshots.ocr(bool(payload.get("confirm")), image_id=payload.get("id"),
+                                   paths=[Path(path) for path in paths] if paths else None, languages=payload.get("languages"))
+    if path == "/api/screenshot/ocr/languages":
+        return app.screenshots.ocr_languages()
+    if path == "/api/screenshot/ocr/export":
+        return app.screenshots.ocr_export(payload["id"], Path(payload["directory"]), payload.get("format", "txt"))
+    if path == "/api/screenshot/ocr/edit":
+        return app.screenshots.recognizer.edit(payload["id"], int(payload["sourceIndex"]), int(payload["pageNumber"]), int(payload["lineIndex"]), payload["text"])
+    if path == "/api/screenshot/copy":
+        if not app.native_clipboard:
+            raise AppError("此会话没有系统剪贴板。", "unavailable")
+        return app.clipboard.copy_image(app.screenshots.preview(payload["id"]))
     if path == "/api/lock/tick":
+        if app.runtime:
+            return app.idle.snapshot()
         return app.idle.tick(float(payload.get("idleSeconds") or 0), bool(payload.get("activity")), bool(payload.get("busy")))
+    if path == "/api/lock/cancel":
+        return app.idle.cancel()
     if path == "/api/snap":
         return app.snap(float(payload["x"]), float(payload["y"]), payload.get("screens") or [])
     raise AppError("没有这个操作。", "invalid")

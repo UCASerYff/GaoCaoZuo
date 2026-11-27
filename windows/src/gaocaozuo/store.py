@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -52,6 +53,7 @@ MANAGED_KEYS = {
     "localLock",
     "cleanerDurationSeconds",
     "inputPaused",
+    "windowsAutomationEnabled",
 }
 
 
@@ -98,6 +100,7 @@ def default_settings() -> dict:
         },
         "cleanerDurationSeconds": 180,
         "inputPaused": False,
+        "windowsAutomationEnabled": False,
     }
 
 
@@ -196,27 +199,27 @@ class JsonDocument:
             return self.raw or {}
         if self.status != "missing":
             raise AppError(self.notice, self.status)
-        self.raw = json.loads(json.dumps(self.empty))
-        self._write()
-        return self.raw
+        return self.replace(copy.deepcopy(self.empty))
 
     def replace(self, raw: dict) -> dict:
         if self.status not in {"ready", "missing"}:
             raise AppError(self.notice, self.status)
         if not isinstance(raw, dict) or raw.get("schema") != SCHEMA_VERSION:
             raise AppError("拒绝写入无效资料。", "invalid")
+        self._write(raw)
         self.raw = raw
-        self._write()
-        return self.raw
+        return raw
 
-    def _write(self) -> None:
+    def _write(self, raw) -> None:
         if self.path.exists():
             current = _digest(self.path.read_bytes())
             if self.digest is not None and current != self.digest:
                 raise AppError(f"{self.path.name} 在读取后已变化，已停止写入。", "conflict")
-        payload = (json.dumps(self.raw, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        elif self.digest is not None:
+            raise AppError(f"{self.path.name} 在读取后已移除，已停止写入。", "conflict")
+        payload = (json.dumps(raw, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         atomic_replace(self.path, payload)
-        self.digest = _digest(self.path.read_bytes())
+        self.digest = _digest(payload)
         self.status = "ready"
         self.notice = ""
 
@@ -273,7 +276,7 @@ class Store:
     def update_settings(self, changes: dict) -> dict:
         if self.settings_doc.status != "ready" or self.settings_doc.raw is None:
             raise AppError(self.notice or "设置尚未创建或不能写入。", self.status)
-        raw = self.settings_doc.raw
+        raw = copy.deepcopy(self.settings_doc.raw)
         for key, value in changes.items():
             if key not in MANAGED_KEYS:
                 raise AppError(f"这个字段由原有资料保留，Windows 版不从这里改写：{key}", "invalid")
@@ -285,7 +288,7 @@ class Store:
         return raw
 
     def toggle_favorite(self, action_id: str) -> list[str]:
-        raw = self._ready()
+        raw = copy.deepcopy(self._ready())
         favorites = list(raw.get("favorites") or [])
         if action_id in favorites:
             favorites = [item for item in favorites if item != action_id]
@@ -309,7 +312,7 @@ class Store:
             raise AppError(self.receipts_doc.notice, self.receipts_doc.status)
         if self.receipts_doc.status == "missing":
             self.receipts_doc.create_if_missing()
-        raw = self.receipts_doc.raw or {"schema": SCHEMA_VERSION, "records": []}
+        raw = copy.deepcopy(self.receipts_doc.raw) or {"schema": SCHEMA_VERSION, "records": []}
         raw.setdefault("records", [])
         if not isinstance(raw["records"], list):
             raise AppError("恢复记录格式无效，已停止写入。", "corrupt")

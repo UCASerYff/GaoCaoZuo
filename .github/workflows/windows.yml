@@ -2,7 +2,9 @@ name: Windows
 
 on:
   push:
+    paths: ['windows/**', 'Assets/AppIcon.png', '.github/workflows/windows.yml']
   pull_request:
+    paths: ['windows/**', 'Assets/AppIcon.png', '.github/workflows/windows.yml']
 
 jobs:
   package:
@@ -10,67 +12,35 @@ jobs:
     defaults:
       run:
         working-directory: windows
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Test and build executables
-        run: powershell -ExecutionPolicy Bypass -File .\build.ps1
-      - name: Smoke-test the packaged exe
+          python-version: '3.12'
+          architecture: x64
+      - name: Prepare Inno Setup compiler
         run: |
-          $ErrorActionPreference = "Stop"
-          $dest = Join-Path $env:TEMP ("gaocaozuo-smoke-" + [guid]::NewGuid().ToString("n"))
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          $settings = Join-Path $dest "settings.json"
-          if (Test-Path $settings) { throw "temp data dir already has settings.json" }
-          $port = 18771
-          $exe = Join-Path (Get-Location) "dist\GaoCaoZuo.exe"
-          $started = Get-Date
-          $proc = Start-Process -FilePath $exe -ArgumentList @(
-            "--data-dir", $dest, "--serve", "--no-browser", "--port", "$port"
-          ) -PassThru -WindowStyle Hidden
-          try {
-            $page = $null
-            $deadline = (Get-Date).AddSeconds(90)
-            do {
-              if ($proc.HasExited) { throw "GaoCaoZuo.exe exited early with code $($proc.ExitCode)" }
-              try {
-                $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/" -UseBasicParsing -TimeoutSec 3 -NoProxy
-                if ($response.StatusCode -eq 200) { $page = $response; break }
-              } catch {}
-              Start-Sleep -Seconds 1
-            } while ((Get-Date) -lt $deadline)
-            if (-not $page) { throw "packaged exe did not return HTTP 200" }
-            $token = [regex]::Match($page.Content, 'name="gao-token" content="([^"]+)"').Groups[1].Value
-            if (-not $token) { throw "HTTP 200 page did not include a session token" }
-            $headers = @{ "X-Gao-Token" = $token }
-            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/settings/create" -Headers $headers -ContentType "application/json" -Body "{}" -NoProxy | Out-Null
-            if (-not (Test-Path $settings)) { throw "creating settings did not write settings.json" }
-            $out = Join-Path $dest "out"
-            New-Item -ItemType Directory -Force -Path $out | Out-Null
-            $body = @{ id = "new.text"; payload = @{ directory = $out } } | ConvertTo-Json -Compress
-            Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/action" -Headers $headers -ContentType "application/json; charset=utf-8" -Body $body -NoProxy | Out-Null
-            $created = Get-ChildItem -Path $out -Filter "*.txt"
-            if (-not $created) { throw "new text action did not create a file" }
-            Start-Sleep -Seconds 3
-            if ($proc.HasExited) { throw "GaoCaoZuo.exe exited during the smoke window" }
-            if (((Get-Date) - $started).TotalSeconds -lt 3) { throw "packaged exe did not stay running for several seconds" }
-            Write-Output "smoke ok: HTTP 200, wrote settings.json and a text file"
-            try {
-              Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/api/shutdown" -Headers $headers -ContentType "application/json" -Body "{}" -NoProxy | Out-Null
-            } catch {}
-            $exitDeadline = (Get-Date).AddSeconds(20)
-            while (-not $proc.HasExited -and (Get-Date) -lt $exitDeadline) { Start-Sleep -Milliseconds 500 }
-            if (-not $proc.HasExited) { throw "GaoCaoZuo.exe did not exit after shutdown" }
-          } finally {
-            if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
-            if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path (Get-Location).Path 'build'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $setup = Join-Path $root 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $setup
+          if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') {
+              throw 'Inno Setup checksum differs.'
           }
+          $path = Join-Path $root 'inno'
+          $arguments = '/PORTABLE=1 /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR="' + $path + '"'
+          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Inno Setup compiler exited $($process.ExitCode)." }
+      - name: Test and package x64
+        run: .\build.ps1 -InnoCompiler (Join-Path (Get-Location).Path 'build\inno\ISCC.exe')
+      - name: Smoke-test the installed app
+        run: .\smoke.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: GaoCaoZuo-Windows-1.16
+          name: GaoCaoZuo-Windows-1.16-x64
           if-no-files-found: error
           path: |
-            windows/dist/GaoCaoZuo.exe
-            windows/dist/GaoCaoZuo-cli.exe
+            windows/dist/GaoCaoZuo-Windows-1.16-x64-Setup.exe
+            windows/dist/GaoCaoZuo-Windows-1.16-x64-Setup.exe.sha256
