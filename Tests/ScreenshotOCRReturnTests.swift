@@ -4,7 +4,8 @@ enum ScreenshotOCRReturnTests {
     static func run(in root: URL) throws {
         let now = ScreenshotGaoActionContract.date("2026-11-27T02:00:00.250Z")!
         let files = try Fixture(root, source: "com.gaoseries.GaoWenJian", now: now, uppercase: true)
-        let research = try Fixture(root, source: "com.academic-achievement.manager", now: now, uppercase: false)
+        let research = try Fixture(root, source: "com.academic-achievement.manager", now: now.addingTimeInterval(0.0008), uppercase: false)
+        try checkWriterMilliseconds(research)
         for fixture in [files, research] {
             try check(!fixture.ready(), "Absent ticket must never permit automatic publication")
             try check(fixture.publish() == .unavailable && !exists(fixture.destination), "No result before a bound ticket")
@@ -17,7 +18,7 @@ enum ScreenshotOCRReturnTests {
             let first = try Data(contentsOf: fixture.destination.appendingPathComponent("manifest.json"))
             try check(fixture.publish() == .published, "A matching existing result must be idempotent")
             try check(try Data(contentsOf: fixture.destination.appendingPathComponent("manifest.json")) == first, "Retry changed result bytes")
-            let received = try ScreenshotGaoActionTransport.receive(packageURL: fixture.destination, exchangeRoot: fixture.exchange, expectedTargetBundleID: fixture.binding.sourceBundleID, now: now)
+            let received = try ScreenshotGaoActionTransport.receive(packageURL: fixture.destination, exchangeRoot: fixture.exchange, expectedTargetBundleID: fixture.binding.sourceBundleID, now: fixture.clock)
             try check(received.manifest.inReplyTo == fixture.binding.requestID, "The original UUID spelling must be preserved")
             let sentAt = ScreenshotGaoActionContract.date(received.manifest.createdAt)!
             let requestedAt = ScreenshotGaoActionContract.date(fixture.binding.createdAt)!
@@ -100,6 +101,37 @@ enum ScreenshotOCRReturnTests {
             throw testFailure("Changed staged OCR attachment was accepted")
         } catch let error as ScreenshotGaoActionIssue where error.code == "digestMismatch" {}
         print("Screenshot OCR automatic return PASS: both senders, original digest, expiry, conflicts, symlinks and retained result")
+    }
+
+    private static func checkWriterMilliseconds(_ fixture: Fixture) throws {
+        let contract = ScreenshotGaoActionContract.self
+        let manifest = try ScreenshotGaoActionTransport.decodeManifest(Data(contentsOf: fixture.result.appendingPathComponent("manifest.json")))
+        try check(manifest.createdAt == "2026-11-27T02:00:00.250Z" &&
+                  manifest.expiresAt == "2026-11-27T02:02:00.250Z", "A .2508-second result must floor creation and retain its 120-second TTL")
+
+        let edges = [("2026-11-27T02:00:00.125Z", "2026-11-27T02:02:00.125Z", 0.0),
+                     ("2026-11-27T02:00:00.999Z", "2026-11-27T02:02:00.999Z", 0.0008)]
+        for (createdAt, expiresAt, offset) in edges {
+            let time = contract.date(createdAt)!.addingTimeInterval(offset)
+            let url = try ScreenshotGaoActionWriter.writeResult(inReplyTo: fixture.request.manifest, status: "cancelled", exchangeRoot: fixture.exchange, now: time)
+            let payload = try Data(contentsOf: url.appendingPathComponent("manifest.json"))
+            let result = try ScreenshotGaoActionTransport.decodeManifest(payload)
+            try check(result.createdAt == createdAt && result.expiresAt == expiresAt, "Writer lost an exact or last millisecond of a second")
+        }
+
+        let requestTime = contract.date(fixture.binding.createdAt)!
+        do {
+            _ = try ScreenshotGaoActionWriter.writeResult(inReplyTo: fixture.request.manifest, status: "cancelled", exchangeRoot: fixture.exchange, now: requestTime.addingTimeInterval(-0.0002))
+            throw testFailure("Writer accepted an OCR result before its request")
+        } catch let error as ScreenshotGaoActionIssue where error.code == "expired" {}
+
+        let creation = contract.date(manifest.createdAt)!, expiry = contract.date(manifest.expiresAt)!
+        for outside in [creation.addingTimeInterval(-0.0001), expiry] {
+            do {
+                try contract.validate(manifest, expectedTargetBundleID: fixture.binding.sourceBundleID, now: outside)
+                throw testFailure("Validator accepted a future or expired OCR result")
+            } catch let error as ScreenshotGaoActionIssue where error.code == "expired" {}
+        }
     }
 
     private struct Fixture {

@@ -281,9 +281,32 @@ enum ScreenshotGaoActionWriter {
     static func writeResult(inReplyTo request: ScreenshotGaoActionManifest, status: String, items: [ScreenshotGaoOutgoingFile] = [], references: [ScreenshotGaoActionReference] = [], errorCode: String? = nil, provenance: [String:ScreenshotGaoJSONValue] = [:], exchangeRoot: URL, now: Date = Date()) throws -> URL {
         // Research requests have fractional timestamps. Truncating the response's second would make an immediate result precede its request.
         let fractional = request.action == ScreenshotOCRReturnBinding.action
-        let manifest = ScreenshotGaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:ScreenshotGaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:ScreenshotGaoActionContract.timestamp(now, fractional:fractional),expiresAt:ScreenshotGaoActionContract.timestamp(now.addingTimeInterval(ScreenshotGaoActionContract.ttl), fractional:fractional),nonce:try nonce(),items:[],references:references,parameters:[:],inReplyTo:request.requestID,status:status,errorCode:errorCode,provenance:provenance)
+        let time: (encoded: String, instant: Date)
+        if fractional {
+            time = try ocrResultTime(now: now, requestCreatedAt: request.createdAt)
+        } else {
+            time = (ScreenshotGaoActionContract.timestamp(now), now)
+        }
+        let expires = ScreenshotGaoActionContract.timestamp(time.instant.addingTimeInterval(ScreenshotGaoActionContract.ttl), fractional: fractional)
+        let manifest = ScreenshotGaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:ScreenshotGaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:time.encoded,expiresAt:expires,nonce:try nonce(),items:[],references:references,parameters:[:],inReplyTo:request.requestID,status:status,errorCode:errorCode,provenance:provenance)
         return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now)
     }
+
+    private static func ocrResultTime(now: Date, requestCreatedAt: String) throws -> (encoded: String, instant: Date) {
+        let contract = ScreenshotGaoActionContract.self
+        var encoded = contract.timestamp(now, fractional: true)
+        // Use the formatter's round trip to floor to a wire millisecond without
+        // moving an exact parsed millisecond backward due to floating-point error.
+        if let rounded = contract.date(encoded), rounded > now {
+            encoded = contract.timestamp(rounded.addingTimeInterval(-0.001), fractional: true)
+        }
+        guard let instant = contract.date(encoded), let requested = contract.date(requestCreatedAt),
+              requested <= instant, instant <= now else {
+            throw contract.reject("expired", "交接包已过期或时间无效，请重新发送。")
+        }
+        return (encoded, instant)
+    }
+
     private static func nonce() throws -> String {
         var bytes = [UInt8](repeating:0,count:32)
         guard SecRandomCopyBytes(kSecRandomDefault,bytes.count,&bytes) == errSecSuccess else { throw ScreenshotGaoActionContract.reject("randomFailure","无法建立安全随机交接标记。") }
