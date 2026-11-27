@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image
@@ -36,7 +37,14 @@ def synthetic_document() -> Image.Image:
     return Image.frombytes("RGB", (WIDTH, PAGE), data)
 
 
-def serve_document(startup: Path, name: str, x: int, y: int) -> None:
+def offscreen_document() -> Image.Image:
+    image = Image.new("RGB", (WIDTH, PAGE), (37, 167, 72))
+    image.paste((189, 52, 86), (0, 0, WIDTH // 3, PAGE))
+    image.paste((44, 83, 192), (2 * WIDTH // 3, 0, WIDTH, PAGE))
+    return image
+
+
+def serve_document(startup: Path, name: str, x: int, y: int, activate: bool = True) -> None:
     class Paint(c.Structure):
         _fields_ = [("dc", w.HDC), ("erase", w.BOOL), ("region", w.RECT), ("restore", w.BOOL),
                     ("update", w.BOOL), ("reserved", c.c_byte * 32)]
@@ -51,7 +59,7 @@ def serve_document(startup: Path, name: str, x: int, y: int) -> None:
     default = user("DefWindowProcW", c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
     invalidate = user("InvalidateRect", w.BOOL, w.HWND, c.POINTER(w.RECT), w.BOOL)
     update = user("UpdateWindow", w.BOOL, w.HWND)
-    document = synthetic_document()
+    document = synthetic_document() if activate else offscreen_document()
     position = 0
     bitmap = capture_win.BitmapInfo(size=40, width=WIDTH, height=-VIEWPORT, planes=1, bits=32)
     stretch = bind("gdi32", "StretchDIBits", c.c_int, w.HDC, *([c.c_int] * 8), w.LPCVOID,
@@ -95,14 +103,18 @@ def serve_document(startup: Path, name: str, x: int, y: int) -> None:
     try:
         create = user("CreateWindowExW", w.HWND, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD,
                       c.c_int, c.c_int, c.c_int, c.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
-        hwnd = create(0, name, name, 0x80000000, x, y, WIDTH, VIEWPORT, None, None, instance, None)
+        # WS_EX_NOACTIVATE prevents the off-screen fixture from taking focus or
+        # appearing on the taskbar; its position is verified before capture.
+        hwnd = create(0 if activate else 0x08000000, name, name, 0x80000000, x, y, WIDTH, VIEWPORT,
+                      None, None, instance, None)
         if not hwnd:
             raise RuntimeError(f"Synthetic HWND creation was refused ({c.get_last_error()}).")
-        user("ShowWindow", w.BOOL, w.HWND, c.c_int)(hwnd, 1)
-        user("SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)(
-            hwnd, c.c_void_p(-1), 0, 0, 0, 0, 0x0003
-        )
-        user("SetForegroundWindow", w.BOOL, w.HWND)(hwnd)
+        user("ShowWindow", w.BOOL, w.HWND, c.c_int)(hwnd, 1 if activate else 8)
+        if activate:
+            user("SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)(
+                hwnd, c.c_void_p(-1), 0, 0, 0, 0, 0x0003
+            )
+            user("SetForegroundWindow", w.BOOL, w.HWND)(hwnd)
         update(hwnd)
         capture_win._flush_desktop()
         startup.write_text(json.dumps({"hwnd": hwnd, "pid": os.getpid()}), encoding="utf-8")
@@ -140,6 +152,61 @@ def wait_until(predicate, limit=5):
             return result
         time.sleep(.05)
     return None
+
+
+@contextmanager
+def offscreen_fixture(directory: Path):
+    if not is_input_desktop() or not is_session_active():
+        raise RuntimeError("The test host is not on the active ordinary Windows desktop.")
+    with physical_coordinates():
+        screen = capture_win.desktop_bounds()
+    startup = directory / "offscreen-hwnd.json"
+    title = f"GaoMediaOnlyFixture-{os.getpid()}-{time.monotonic_ns()}"
+    # Start the interpreter directly. The Windows venv shim would otherwise own job.pid.
+    interpreter = getattr(sys, "_base_executable", sys.executable)
+    fixture_env = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
+    job = subprocess.Popen([interpreter, str(Path(__file__).resolve()), "--child", str(startup), title,
+                            str(screen[2] + 64), str(screen[1]), "--passive-child"],
+                           creationflags=subprocess.CREATE_NO_WINDOW, env=fixture_env)
+    hwnd = None
+    try:
+        if not wait_until(lambda: startup.exists() and startup.stat().st_size > 0):
+            raise RuntimeError("The off-screen fixture did not report its window handle.")
+        hwnd = json.loads(startup.read_text(encoding="utf-8"))["hwnd"]
+        identity = capture_win.window_identity(hwnd)
+        if identity is None or identity.pid != job.pid or identity.class_name != title:
+            raise RuntimeError("The off-screen fixture window identity changed.")
+        verify_offscreen_bound(hwnd)
+        yield hwnd, title
+        verify_offscreen_bound(hwnd)
+    finally:
+        if hwnd and job.poll() is None:
+            identity = capture_win.window_identity(hwnd)
+            if identity is not None and identity.pid == job.pid and identity.class_name == title:
+                user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(hwnd, 0x0010, 0, 0)
+        try:
+            job.wait(3)
+        except subprocess.TimeoutExpired:
+            job.terminate()
+            job.wait(3)
+
+
+def verify_offscreen_bound(hwnd):
+    with physical_coordinates():
+        frame = capture_win.window_frame(hwnd)
+        if not frame or frame[0] <= capture_win.desktop_bounds()[2] or capture_win.foreground_window() == hwnd:
+            raise RuntimeError("The synthetic window boundary or foreground state did not pass validation.")
+
+
+def exercise_offscreen(directory: Path):
+    with offscreen_fixture(directory) as (hwnd, _title):
+        session = ScreenshotSession(directory / "data")
+        result = session.capture(True, mode="window", window_id=hwnd)
+        with Image.open(io.BytesIO(session.preview(result["id"]))) as captured:
+            expected = offscreen_document().crop((0, 0, WIDTH, VIEWPORT))
+            assert captured.size == expected.size and captured.tobytes() == expected.tobytes(), "Off-screen fixture pixels differ."
+        return {"offscreenWindowPixels": [WIDTH, VIEWPORT], "foregroundActivated": False,
+                "captureTarget": "verified synthetic HWND only"}
 
 
 def exercise(directory: Path) -> dict:
@@ -252,18 +319,22 @@ def exercise(directory: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--child", nargs=4, help=argparse.SUPPRESS)
-    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--passive-child", action="store_true", help=argparse.SUPPRESS)
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--run", action="store_true")
+    scope.add_argument("--offscreen-window", action="store_true", help="Capture only a nonactivating synthetic window beyond every display")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("Windows is required.")
     if args.child:
-        serve_document(Path(args.child[0]), args.child[1], int(args.child[2]), int(args.child[3]))
+        serve_document(Path(args.child[0]), args.child[1], int(args.child[2]), int(args.child[3]), activate=not args.passive_child)
         return
-    if not args.run:
-        parser.error("Use --run only with a coordinated foreground slot and ordinary active desktop.")
+    if not (args.run or args.offscreen_window):
+        parser.error("Choose --offscreen-window, or use --run with a coordinated foreground slot.")
     try:
         with tempfile.TemporaryDirectory(prefix="gaocaozuo-synthetic-window-") as path, physical_coordinates():
-            print(json.dumps(exercise(Path(path)), ensure_ascii=False))
+            check = exercise_offscreen if args.offscreen_window else exercise
+            print(json.dumps(check(Path(path)), ensure_ascii=False))
     except (RuntimeError, AppError) as exc:
         parser.exit(2, f"Foreground test stopped: {exc}\n")
 

@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from gaocaozuo.app import App
 from gaocaozuo.errors import AppError
+from gaocaozuo.localization import native_locale
 from gaocaozuo.features import validate_package
 from gaocaozuo.resources import asset_dir
 from gaocaozuo.version import VERSION_LABEL
@@ -122,8 +123,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             with self.server.lock:
-                result = dispatch(self.server.app, parsed.path, payload)
-                state = self.server.app.snapshot()
+                app = self.server.app
+                with native_locale((app.store.settings or {}).get("language", "system")):
+                    result = dispatch(app, parsed.path, payload)
+                    state = app.snapshot()
             self._json({"ok": True, "result": result, "state": state})
         except AppError as exc:
             self._json({"ok": False, "error": exc.message, "code": exc.code}, 400)

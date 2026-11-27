@@ -1,4 +1,4 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+2")
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+3", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
@@ -46,10 +46,11 @@ try {
     $historyHash = (Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash
     if ($PreviousInstaller) {
         $PreviousInstaller = (Resolve-Path -LiteralPath $PreviousInstaller).Path
+        $previousVersion = (Get-Item -LiteralPath $PreviousInstaller).VersionInfo.FileVersion.Trim()
         $oldArguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $installDir + '"'
         $prior = Start-Process -FilePath $PreviousInstaller -ArgumentList $oldArguments -Wait -PassThru -WindowStyle Hidden
         if ($prior.ExitCode -ne 0) { throw "Previous installer exited $($prior.ExitCode)." }
-        if ((Get-Item -LiteralPath (Join-Path $installDir 'GaoCaoZuo.exe')).VersionInfo.FileVersion -ne '1.16.1.0') { throw 'Previous installed build mismatch.' }
+        if ((Get-Item -LiteralPath (Join-Path $installDir 'GaoCaoZuo.exe')).VersionInfo.FileVersion -ne $previousVersion) { throw 'Previous installed build mismatch.' }
     }
     $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=2 /SMOKETOKEN=' + $smokeToken + ' /DIR="' + $installDir + '" /LOG="' + $setupLog + '"'
     $setup = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
@@ -102,6 +103,26 @@ try {
 
     $state = Invoke-RestMethod -Uri ($base + 'api/state') -Headers $headers -TimeoutSec 10 -NoProxy
     if ($state.version -ne $ExpectedVersion -or $state.status -ne 'ready' -or $state.clipboardReads -ne 0 -or $state.settings.appearance -ne 'dark') { throw 'Legacy startup or disabled clipboard regression.' }
+    if ($LocalizationOnly) {
+        $sourceMessage = '按应用设置的规则可限定到指定的 Windows 程序。'
+        $archiveMessage = '请选择与原包同格式的本机目标文件。'
+        $distinct = @{}
+        foreach ($language in @('zh-Hant','en','ja','de','fr','es','it','ko','pt')) {
+            $strings = (Invoke-RestMethod -Uri ($base + 'api/localization?lang=' + $language) -Headers $headers -TimeoutSec 10 -NoProxy).strings
+            if (!$strings.$sourceMessage -or !$strings.$archiveMessage -or $strings.$sourceMessage -eq $sourceMessage) { throw "Missing packaged Windows prompts for $language." }
+            $distinct[$strings.$sourceMessage] = $true
+        }
+        if ($distinct.Count -ne 9) { throw 'A packaged Windows prompt is falling back across multiple locales.' }
+        $baseStrings = (Invoke-RestMethod -Uri ($base + 'api/localization?lang=zh-Hans') -Headers $headers -TimeoutSec 10 -NoProxy).strings
+        if ($null -eq $baseStrings -or @($baseStrings.PSObject.Properties).Count -ne 0) { throw 'The Chinese UI must retain the authored prompt.' }
+        Post 'api/shutdown' @{} | Out-Null
+        if (!$server.WaitForExit(25000) -or $server.ExitCode -ne 0) { throw 'Installed CLI failed to shut down cleanly.' }
+        Remove-IsolatedInstall
+        $uninstaller = $null
+        if ((Test-Path -LiteralPath $gui) -or (Test-Path -LiteralPath $cli) -or !(Test-Path -LiteralPath $old) -or !(Test-Path -LiteralPath $history)) { throw 'Uninstall did not remove binaries and retain isolated user data.' }
+        Write-Output 'OK x64 installer, previous build upgrade, legacy data, nine translated dictionaries and Chinese default, and uninstall retaining data.'
+        return
+    }
     Post 'api/settings' @{appearance='light'} | Out-Null
     if ((Get-Content -LiteralPath $old -Raw | ConvertFrom-Json).unknownLegacyKey.mark -ne 'keep') { throw 'Unknown settings field changed.' }
     if ((Get-FileHash -LiteralPath $history -Algorithm SHA256).Hash -ne $historyHash) { throw 'Disabled clipboard history changed.' }

@@ -106,7 +106,7 @@ function capturePage() {
     button("生成长截图", () => longCapture("finish"), {disabled: shotBusy || shotLong.frames < 2}),
     button("取消", () => longCapture("cancel"), {disabled: shotBusy}),
   ] : [button("长截图", () => longCapture("start"), {disabled: shotBusy})];
-  const manualOverlap = input(shotLongOverlap, {type:"number", min:0, step:1, placeholder:"自动检测"});
+  const manualOverlap = input(shotLongOverlap, {type:"number", min:0, step:1, placeholder:tr("自动检测")});
   manualOverlap.oninput = () => { shotLongOverlap = manualOverlap.value; };
   const info = "捕获前通过当前按钮选择要采集的区域、窗口或屏幕。受保护区域和安全桌面由 Windows 控制。";
   return box("shot-home", el("h2", "捕获所选内容"), note("截图后可以保存、复制或进入标注。"),
@@ -118,7 +118,7 @@ function capturePage() {
       note("手动添加时，在 3 秒内切回并向下滚动，保留一段重叠内容。"),
       field("手动续拍重叠像素", manualOverlap),
       shotLong.automatic && note(shotLong.automatic.reason),
-      note("已添加 " + shotLong.frames + " 帧 · " + shotLong.width + " × " + shotLong.height + " 像素")),
+      note(mediaText("已添加 {count} 帧 · {width} × {height} 像素", {count:shotLong.frames, width:shotLong.width, height:shotLong.height}))),
     panel("捕获选项", box("row", el("span", "延时"), delay, delayLabel)), panel("权限与范围", note(info)));
 }
 async function sampleColor() {
@@ -170,7 +170,8 @@ async function longCapture(command) {
       say("长截图已生成");
     } else {
       shotLong = command === "cancel" ? null : result;
-      const message = result.automatic ? `自动滚动新增 ${result.automatic.added} 帧。${result.automatic.reason}` : "长截图已添加 " + result.frames + " 帧";
+      const message = result.automatic ? mediaText("自动滚动新增 {count} 帧。", {count:result.automatic.added}) + " " + tr(result.automatic.reason) :
+        mediaText("长截图已添加 {count} 帧", {count:result.frames});
       say(command === "cancel" ? "已取消长截图" : message);
     }
   });

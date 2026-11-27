@@ -121,9 +121,10 @@ def test_printwindow_reads_only_synthetic_window_on_separate_desktop():
             hwnd = assign_window(0, klass, "Synthetic capture fixture", 0x90000000, 50, 50, 320, 180,
                                  None, None, instance, None)
             assert hwnd
-            with pytest.raises(AppError) as blocked:
-                capture("window", hwnd=hwnd)
-            assert blocked.value.code == "unavailable"
+            for mode in ("window", "region", "display", "virtual"):
+                with pytest.raises(AppError) as blocked:
+                    capture(mode, hwnd=hwnd)
+                assert blocked.value.code == "unavailable"
             try:
                 output = _capture_window(hwnd)
             except AppError as exc:

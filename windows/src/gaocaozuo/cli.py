@@ -66,14 +66,19 @@ def main(argv: list[str] | None = None) -> int:
             instance.publish(server)
         if interactive:
             from gaocaozuo.runtime_win import WindowsRuntime
+            from gaocaozuo.localization import native_locale
             from gaocaozuo.shell_win import WorkbenchWindow
             from gaocaozuo.tray_win import WindowsTray
+
+            def read_language():
+                return (app.store.settings or {}).get("language", "system")
 
             def invoke(action_id, payload):
                 if not server.lock.acquire(blocking=False):
                     raise AppError("另一个搞操作任务正在运行。", "busy")
                 try:
-                    result = app.perform(action_id, payload)
+                    with native_locale(read_language()):
+                        result = app.perform(action_id, payload)
                     if result.get("show") and app.activation:
                         app.activation()
                 finally:
@@ -86,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
                     finally:
                         server.lock.release()
 
-            app.runtime = WindowsRuntime(app.desktop, app.system, app.idle, invoke, busy=server.lock.locked, on_tick=on_tick)
+            app.runtime = WindowsRuntime(app.desktop, app.system, app.idle, invoke, busy=server.lock.locked,
+                                         on_tick=on_tick, read_language=read_language)
             try:
                 app.configure_runtime()
             except AppError as exc:
@@ -134,9 +140,11 @@ def main(argv: list[str] | None = None) -> int:
     except (AppError, OSError) as exc:
         message = exc.message if isinstance(exc, AppError) else "Windows 无法启动搞操作或打开指定资料目录。"
         if interactive and sys.stderr is None:
+            from gaocaozuo.localization import native_locale, native_text
             from gaocaozuo.shell_win import show_error
 
-            show_error(message)
+            with native_locale((app.store.settings or {}).get("language", "system") if app else "system"):
+                show_error(native_text(message))
         else:
             _write(message, error=True)
         return 2

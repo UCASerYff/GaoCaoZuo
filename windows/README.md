@@ -1,6 +1,6 @@
 # 搞操作 1.16 Windows x64
 
-运行 `GaoCaoZuo-Windows-1.16-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.16+2`。安装范围是当前 Windows 用户。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。设置里的通知区域图标开关控制关闭窗口后是否继续后台运行，从图标菜单可再次打开或退出。
+运行 `GaoCaoZuo-Windows-1.16-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.16+3`。安装范围是当前 Windows 用户。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。设置里的通知区域图标开关控制关闭窗口后是否继续后台运行，从图标菜单可再次打开或退出。
 
 Windows 资料沿用 `%APPDATA%\GaoSeries\GaoCaoZuo`，安装与卸载均保留这个目录。隔离运行可用 `GaoCaoZuo.exe --data-dir "D:\GaoTest"`。旧设置的未知字段继续保留。损坏、版本过新或已有别的资料却缺失主设置的目录会提示并停止写入。剪贴板历史默认关闭，关闭时不读取已有历史。用户明确保存的压缩包密码依压缩包指纹存入 Windows 凭据管理器。
 
@@ -38,7 +38,10 @@ Windows 资料沿用 `%APPDATA%\GaoSeries\GaoCaoZuo`，安装与卸载均保留�
 - Windows 压缩包编辑由工作台预览承载。Finder Sync、Quick Look 插件、系统服务、Dock 和 AppleEvent 仍属 macOS 入口。
 - 标注工程为 Windows 格式。录制使用浏览器媒体授权，系统音频与麦克风混合为单轨。部分窗口忽略定向滚动请求，可改为手动长截图。
 - 部分外部窗口会限制激活、缩放、最小化或直接粘贴。自动粘贴面向可核验的非密码原生文本框。Windows 任务视图可管理虚拟桌面，程序没有任意桌面定位接口。
-- Windows 复用 Mac 语言资源及本地补充词条。部分 Windows 专用长提示仍回退到英语或简体中文。原始触控、逐设备调校、部分电源与硬件控制、清洁模式输入遮罩，以及 Mac 版其他 GaoAction 能力仍有差距。
+- Windows 复用 Mac 语言资源，补齐工作台长提示、Windows 长错误消息及原生截图和锁屏倒计时的 10 语言词条。系统文件选择器的系统控件采用 Windows 的语言。Windows 版提供原生窗口、Explorer、Windows 交互桌面及 Chromium 录制入口。原始触控、逐设备调校、部分电源与硬件控制、清洁模式输入遮罩，以及 Mac 版其他 GaoAction 能力不在此 Windows 交付范围内。
+- 可在独立 Windows 窗口站验证应用的剪贴板写入、目标文本读取、确认和取消恢复以及并发内容保护。全局 `SendInput` 仍受 Windows 交互桌面限制。
+- Windows 原生窗口截图已用显示器外的合成窗口做像素比对。Chromium 标签页录制已解码并核对合成画面与 M4A 音调。另用 Windows WASAPI 按测试进程回录了独立会话的合成音调。整屏录制与整机系统音频待有隔离交互桌面和专用音频端点时验证。本轮验收机器为 Windows 11，未接入 Windows 10 实机或实体输入、音频设备。
+- iCloud Drive 的 Windows 注册、目录发现及同步读写使用 Windows Cloud Files 验证过合成提供方。实际 Apple 传输需要安装并登录 iCloud for Windows。本机没有安装该客户端。
 
 ## 构建与验证
 
@@ -50,4 +53,4 @@ pwsh -File .\build.ps1 -InnoCompiler 'C:\Program Files (x86)\Inno Setup 6\ISCC.e
 pwsh -File .\smoke.ps1
 ```
 
-安装包和 `.sha256` 在 `dist`。构建候选时可用 `-DistDirectory build\candidate` 保留原发行文件，再运行 `smoke.ps1 -Installer <候选> -PreviousInstaller <上一版>`。冒烟用单独的安装目录、资料和随机卸载登记，覆盖升级及卸载保留资料。开始菜单和资源管理器右键登记留给正式安装。浏览器回归及定向截图、媒体和翻译冒烟源代码保存在 `tests`。
+安装包和 `.sha256` 在 `dist`。构建候选时可用 `-DistDirectory build\candidate` 保留原发行文件，再运行 `smoke.ps1 -Installer <候选> -PreviousInstaller <上一版>`。仅验收安装、升级、卸载与界面词条时可加 `-LocalizationOnly`。冒烟用单独的安装目录、资料和随机卸载登记。开始菜单和资源管理器右键登记留给正式安装。浏览器回归、独立窗口站剪贴板、原生截图、媒体及 Cloud Files 测试源码保存在 `tests`。

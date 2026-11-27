@@ -337,12 +337,14 @@ class ExtractBatch:
                     ) from exc
                 supplied = password_for(archive, incorrect=False)
                 if supplied is None:
-                    raise AppError(f"需要输入解压密码。已完成的 {len(done)} 项保留。", "password") from exc
+                    completed_count = len(done)
+                    raise AppError(f"需要输入解压密码。已完成的 {completed_count} 项保留。", "password") from exc
                 try:
                     destination = extract_archive(archive, destination_for(archive), supplied, **limits)
                 except AppError as again:
                     if again.code == "password":
-                        raise AppError(f"密码不正确。已完成的 {len(self.completed)} 项保留，未重新解压。", "password") from again
+                        completed_count = len(self.completed)
+                        raise AppError(f"密码不正确。已完成的 {completed_count} 项保留，未重新解压。", "password") from again
                     raise
                 password = supplied
             self.completed[digest] = str(destination)

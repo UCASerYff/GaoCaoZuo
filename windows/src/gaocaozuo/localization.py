@@ -1,6 +1,9 @@
 """Use the repository's Mac language resources in the Windows workbench."""
 
 import json
+import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
@@ -8,6 +11,7 @@ from gaocaozuo.resources import asset_dir
 
 LANGUAGES = ("zh-Hans", "zh-Hant", "en", "ja", "de", "fr", "es", "it", "ko", "pt")
 MAC_TSV_LANGUAGES = ("zh-Hans", "en", "ja", "de", "fr", "es", "ko", "pt")
+_native_language = ContextVar("native_language", default="zh-Hans")
 
 
 def build_catalog(repository):
@@ -38,7 +42,7 @@ def build_catalog(repository):
     for extra in sorted((repository / "windows").glob("localization-*.tsv")):
         for line in extra.read_text(encoding="utf-8").splitlines():
             if line and not line.startswith("#"):
-                values = line.split("|")
+                values = [value.replace("\\n", "\n") for value in line.split("|")]
                 for lang, value in zip(LANGUAGES, values, strict=True):
                     if value:
                         result[lang][values[0]] = value
@@ -53,11 +57,43 @@ def catalog():
     return build_catalog(Path(__file__).resolve().parents[3])
 
 
+@lru_cache(maxsize=len(LANGUAGES))
 def language_dictionary(lang):
     if lang == "zh-Hans" or lang not in LANGUAGES:
         return {}
     dictionaries = catalog()
     return {**dictionaries["en"], **dictionaries[lang]}
+
+
+def resolve_native_language(setting):
+    if setting in LANGUAGES:
+        return setting
+    if setting != "system" or os.name != "nt":
+        return "zh-Hans"
+    from ctypes import wintypes
+    from locale import windows_locale
+
+    from gaocaozuo.native_win import kernel
+
+    identifier = kernel("GetUserDefaultUILanguage", wintypes.WORD)()
+    parts = windows_locale.get(identifier, "en_US").split("_")
+    if parts[0] == "zh":
+        return "zh-Hant" if parts[-1] in {"TW", "HK", "MO", "CHT"} else "zh-Hans"
+    return parts[0] if parts[0] in LANGUAGES else "en"
+
+
+@contextmanager
+def native_locale(setting):
+    token = _native_language.set(resolve_native_language(setting))
+    try:
+        yield
+    finally:
+        _native_language.reset(token)
+
+
+def native_text(key, **values):
+    text = language_dictionary(_native_language.get()).get(key, key)
+    return text.format_map(values) if values else text
 
 
 if __name__ == "__main__":

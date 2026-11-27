@@ -82,6 +82,7 @@ let clipboardPoll = 0;
 let selectionRevision = null;
 let statePollInFlight = false;
 let uiStrings = {};
+let uiErrorTemplates = [];
 let cloud = {};
 const interfaceLanguages = [["system", "跟随系统"], ["zh-Hans", "简体中文"], ["zh-Hant", "繁體中文"], ["en", "English"],
   ["ja", "日本語"], ["de", "Deutsch"], ["fr", "Français"], ["es", "Español"], ["it", "Italiano"], ["ko", "한국어"], ["pt", "Português"]];
@@ -92,6 +93,40 @@ function tr(value) {
   const base = value.replace(/…$/, "");
   return base !== value && Object.hasOwn(uiStrings, base) ? uiStrings[base] + "…" : value;
 }
+const messageVariable = /\{([a-zA-Z][a-zA-Z0-9_]*)\}/g;
+const quotePattern = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function formatMessage(key, values) {
+  return tr(key).replace(messageVariable, (match, name) => Object.hasOwn(values, name) ? String(values[name]) : match);
+}
+const layoutErrorDetails = ["已确认恢复操作前的位置；原位置记录保留。", "未能确认恢复操作前的位置；原位置记录已保留，请用“恢复原位置”重试。"];
+function errorTemplates(strings) {
+  const templates = [];
+  for (const key of Object.keys(strings)) {
+    const matches = [...key.matchAll(messageVariable)];
+    if (!matches.length || (key.replace(messageVariable, "").match(/[\u3400-\u9fff]/g) || []).length < 8) continue;
+    const parts = [];
+    let offset = 0;
+    for (const capture of matches) {
+      parts.push(quotePattern(key.slice(offset, capture.index)), "([\\s\\S]*?)");
+      offset = capture.index + capture[0].length;
+    }
+    parts.push(quotePattern(key.slice(offset)));
+    templates.push({key, names: matches.map(match => match[1]), pattern: new RegExp("^" + parts.join("") + "$")});
+  }
+  return templates.sort((left, right) => right.key.length - left.key.length);
+}
+function trError(value) {
+  const exact = tr(value);
+  if (exact !== value || typeof value !== "string" || value.length > 4096) return exact;
+  for (const entry of uiErrorTemplates) {
+    const match = entry.pattern.exec(value);
+    if (match) return formatMessage(entry.key, Object.fromEntries(entry.names.map((name, index) => [name, match[index + 1]])));
+  }
+  for (const detail of layoutErrorDetails) {
+    if (value.endsWith(" " + detail)) return tr(value.slice(0, -detail.length - 1)) + " " + tr(detail);
+  }
+  return value;
+}
 async function loadInterfaceLanguage() {
   let language = state.settings?.language || "system";
   if (language === "system") {
@@ -101,6 +136,7 @@ async function loadInterfaceLanguage() {
   if (!interfaceLanguages.some(([id]) => id === language)) language = "en";
   const result = await api("/api/localization?lang=" + encodeURIComponent(language));
   uiStrings = result.strings || {};
+  uiErrorTemplates = errorTemplates(uiStrings);
   document.documentElement.lang = language;
 }
 
@@ -225,7 +261,7 @@ function say(text, error = false) {
 function report(error) {
   if (dialog?.open) {
     const message = dialog.querySelector(".modal-error");
-    message.textContent = tr(error.message);
+    message.textContent = trError(error.message);
     message.hidden = false;
   }
   say(error.message, true);
@@ -242,7 +278,7 @@ async function progress(message, operation) {
 function drawFooter() {
   if (!footer) return;
   const text = banner.text || state.message || "就绪";
-  const status = el("span", text, banner.error ? "error" : "");
+  const status = el("span", banner.error ? trError(text) : text, banner.error ? "error" : "", banner.error);
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   const actions = box("row");
@@ -866,7 +902,7 @@ async function applyWindow(id, selected = targetID) {
   };
   if (id === "window.close") {
     const item = windows.find(row => row.id === selected);
-    confirmAction("关闭所选窗口？", windowName(item || {id: selected}) + "。若存在未保存内容，请在目标应用处理保存提示。", async () => {
+    confirmAction("关闭所选窗口？", windowName(item || {id: selected}) + tr("。若存在未保存内容，请在目标应用处理保存提示。"), async () => {
       await run();
       if (section === "overview") refreshWindows(false, false);
     }, "关闭窗口");
@@ -1185,7 +1221,7 @@ async function refreshRules() {
 }
 async function cloudAction(action, payload = {}) {
   cloud = await api("/api/rules/cloud/" + action, payload);
-  if (cloud.message) say(cloud.message);
+  if (cloud.message) say(cloud.message, cloud.status !== "localSynced");
   await refreshRules();
   render();
 }
@@ -1201,7 +1237,7 @@ function rulesCloudPanel() {
     status !== "off" && button("停止同步", () => confirmAction("停止规则同步？", "本机规则和云端修订会保留。", () => cloudAction("configure", {confirm: true})))),
     status === "conflict" && box("stack", el("strong", "选择冲突规则要采用的版本"),
       button("保留本机改动", () => resolve("local", "保留本机改动")),
-      ...cloud.choices.map(branch => button("采用远端分支 " + branch.id.slice(0, 10), () => resolve(branch.id, "采用这个远端分支？")))));
+      ...cloud.choices.map(branch => button(formatMessage("采用远端分支 {id}", {id: branch.id.slice(0, 10)}), () => resolve(branch.id, "采用这个远端分支？")))));
 }
 async function saveRules(next) {
   const result = await api("/api/rules/save", {rules: next});

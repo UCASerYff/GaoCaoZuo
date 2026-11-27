@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from gaocaozuo.errors import AppError
+from gaocaozuo.localization import native_text
 
 
 def pick_file(kind: str, multiple: bool) -> list[str]:
@@ -28,11 +29,11 @@ def pick_file(kind: str, multiple: bool) -> list[str]:
         window.attributes("-topmost", True)
         try:
             if kind == "directory":
-                result = filedialog.askdirectory(parent=window, title="搞操作 · 选择目录", mustexist=True)
+                result = filedialog.askdirectory(parent=window, title="搞操作 · " + native_text("选择目录"), mustexist=True)
             elif multiple:
-                result = filedialog.askopenfilenames(parent=window, title="搞操作 · 选择文件")
+                result = filedialog.askopenfilenames(parent=window, title="搞操作 · " + native_text("选择文件"))
             else:
-                result = filedialog.askopenfilename(parent=window, title="搞操作 · 选择文件")
+                result = filedialog.askopenfilename(parent=window, title="搞操作 · " + native_text("选择文件"))
         finally:
             window.destroy()
     except tk.TclError as exc:

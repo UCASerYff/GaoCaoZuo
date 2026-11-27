@@ -82,9 +82,10 @@ def _rules(rows, *, remote=False):
     return indexed
 
 
-def _apple_provider(path):
+def _cloud_provider(path):
+    """Return the provider name from Windows registration for this path."""
     if os.name != "nt":
-        return False
+        return None
     import ctypes as c
     from ctypes import wintypes as w
 
@@ -99,8 +100,13 @@ def _apple_provider(path):
                      w.DWORD, c.POINTER(w.DWORD))
         status = query(str(path), 2, c.byref(info), c.sizeof(info), None)
     except (OSError, AttributeError):
-        return False
-    return status == 0 and "icloud" in info.name.casefold()
+        return None
+    return info.name if status == 0 else None
+
+
+def _apple_provider(path):
+    name = " ".join((_cloud_provider(path) or "").casefold().split())
+    return name in {"icloud", "iclouddrive", "icloud drive", "icloud for windows", "icloud 云盘", "icloud 雲碟", "icloud 雲端硬碟"}
 
 
 def _item(path, directory):
@@ -121,7 +127,7 @@ def _node(info):
 
 
 class Workspace:
-    def __init__(self, selected: Path, provider):
+    def __init__(self, selected: Path, provider, *, create=False):
         if not selected.is_absolute() or (os.name == "nt" and selected.drive.startswith("\\")):
             raise AppError("请选择 Windows iCloud Drive 下的本机目录。", "invalid")
         for part in (*reversed(selected.parents), selected):
@@ -131,8 +137,12 @@ class Workspace:
         self.selected = selected
         self.selected_id = _node(_item(selected, True))
         self.root = selected / ROOT_NAME
-        self.root.mkdir(exist_ok=True)
-        self.root_id = _node(_item(self.root, True))
+        if create:
+            self.root.mkdir(exist_ok=True)
+        try:
+            self.root_id = _node(_item(self.root, True))
+        except FileNotFoundError as exc:
+            raise AppError("同步目录暂不可用，已保留本机规则。", "cloudPending") from exc
 
     def check(self):
         if _node(_item(self.selected, True)) != self.selected_id or _node(_item(self.root, True)) != self.root_id:
@@ -282,8 +292,10 @@ class RuleCloud:
             raise AppError("请确认此 iCloud Drive 同步范围。", "confirmation")
         doc = self.read_document()
         if folder:
-            workspace = Workspace(Path(folder), self.provider)
-            old = doc.get("windowsCloud") or {}
+            workspace = Workspace(Path(folder), self.provider, create=True)
+            old = doc.get("windowsCloud")
+            if not isinstance(old, dict):
+                old = {}
             same = str(workspace.selected) == old.get("folder") and list(workspace.root_id) == old.get("identity")
             doc["windowsCloud"] = old if same else {"folder": str(workspace.selected), "identity": list(workspace.root_id), "applied": []}
         else:

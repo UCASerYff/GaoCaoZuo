@@ -12,6 +12,7 @@ from PIL import Image, ImageGrab, ImageTk
 
 from gaocaozuo.desktop_win import WindowIdentity, _identity, physical_coordinates
 from gaocaozuo.errors import AppError
+from gaocaozuo.localization import native_text
 from gaocaozuo.native_win import bind, is_input_desktop, user
 
 MAX_PIXELS = 48_000_000
@@ -48,7 +49,8 @@ def _monitor_bounds() -> tuple[int, int, int, int]:
         raise AppError("无法读取当前屏幕。", "rejected")
     if len(displays) == 1:
         return displays[0][2]
-    labels = [f"{name}{' · 主屏幕' if primary else ''} · {box[2]-box[0]} × {box[3]-box[1]}" for name, primary, box in displays]
+    main_screen = " · " + native_text("主屏幕")
+    labels = [f"{name}{main_screen if primary else ''} · {box[2]-box[0]} × {box[3]-box[1]}" for name, primary, box in displays]
     return displays[_pick_sources("选择屏幕截图", "选择要截图的屏幕", labels)[0]][2]
 
 
@@ -76,7 +78,7 @@ def choose_region(single_point=False) -> tuple[int, int, int, int]:
             window.geometry(f"{right-left}x{bottom-top}+0+0")
             canvas = tk.Canvas(window, bg="#101018", cursor="crosshair", highlightthickness=0)
             canvas.pack(fill="both", expand=True)
-            instruction = "点击要取色的像素，Esc 取消" if single_point else "拖动选择截图区域，Esc 取消"
+            instruction = native_text("点击要取色的像素，Esc 取消" if single_point else "拖动选择截图区域，Esc 取消")
             canvas.create_text(30, 25, text=instruction, anchor="nw", fill="white", font=("Microsoft YaHei UI", 16))
             mark = canvas.create_rectangle(0, 0, 0, 0, outline="#7dbdff", width=4, fill="#85bbf4")
 
@@ -269,10 +271,10 @@ def _pick_sources(title: str, message: str, labels: list[str], multi=False) -> t
     root = tk.Tk()
     result = []
     try:
-        root.title(title)
+        root.title(native_text(title))
         root.attributes("-topmost", True)
         root.geometry("560x400")
-        ttk.Label(root, text=message).pack(anchor="w", padx=15, pady=12)
+        ttk.Label(root, text=native_text(message), wraplength=525).pack(anchor="w", padx=15, pady=12)
         options = tk.Listbox(root, exportselection=False, activestyle="dotbox", selectmode="extended" if multi else "browse")
         options.pack(fill="both", expand=True, padx=15)
         for label in labels:
@@ -288,7 +290,7 @@ def _pick_sources(title: str, message: str, labels: list[str], multi=False) -> t
             options.bind("<Double-Button-1>", select)
             options.selection_set(0)
         options.bind("<Return>", select)
-        ttk.Button(root, text="选择", command=select).pack(pady=12)
+        ttk.Button(root, text=native_text("选择"), command=select).pack(pady=12)
         root.bind("<Escape>", lambda _event: root.quit())
         root.protocol("WM_DELETE_WINDOW", root.quit)
         root.after(90_000, root.quit)
@@ -446,12 +448,13 @@ def show_pin(image: Image.Image) -> None:
     _interactive()
     result = []
     ready = threading.Event()
+    title = "搞操作 · " + native_text("贴图")
 
     def display():
         try:
             with physical_coordinates():
                 root = tk.Tk()
-                root.title("搞操作 · 贴图")
+                root.title(title)
                 root.attributes("-topmost", True)
                 preview = image.copy()
                 preview.thumbnail((int(root.winfo_screenwidth() * 0.75), int(root.winfo_screenheight() * 0.70)))

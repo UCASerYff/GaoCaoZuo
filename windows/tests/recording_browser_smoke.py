@@ -217,23 +217,54 @@ def check_recording(client):
     client.evaluate("testRecording.stop()")
 
 
-def check_browser_tab_capture(client, title):
+def check_browser_tab_capture(client, title, debug_port, share_audio=False):
     html = ('<title>' + title + '</title><style>html {background: rgb(0, 160, 30);}</style>'
             '<script>let shade=156; setInterval(() => {shade=shade===156?164:156; '
             'document.documentElement.style.background=`rgb(0,${shade},30)`}, 80)</script>')
     fixture = client.call("Target.createTarget", url="data:text/html," + quote(html), background=True)["targetId"]
+    source_socket = None
     try:
         client.call("Page.bringToFront")
         client.wait("synthetic tab ready", "document.hasFocus() && document.querySelector('h1')?.textContent === '工作台'")
-        client.evaluate("""(() => {
+        client.evaluate("""(shareAudio => {
           [...document.querySelectorAll('.nav button')].find(b => b.textContent.trim() === '截图与录制').click();
           [...document.querySelectorAll('[role=tab]')].find(b => b.textContent.trim() === '录屏与录音').click();
-          recording.systemAudio = false;
+          recording.systemAudio = shareAudio;
+          if (shareAudio) {
+            const nativeCapture = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getDisplayMedia = options => {
+              if (options.audio !== true) throw new Error('expected the app to request shared audio');
+              return nativeCapture({...options, systemAudio:'exclude', windowAudio:'exclude',
+                audio:{suppressLocalAudioPlayback:true}});
+            };
+          }
           render();
-        })()""")
+        })(""" + json.dumps(share_audio) + ")")
         client.click("开始录制")
         client.wait("native Chromium tab capture", "recording.status === 'recording' && recording.streams[0].getVideoTracks()[0].getSettings().displaySurface === 'browser'")
-        time.sleep(1.1)
+        if share_audio:
+            client.wait("selected tab audio with local playback suppressed", "recording.streams[0].getAudioTracks()[0]?.getSettings().suppressLocalAudioPlayback === true")
+            source_socket = websocket.create_connection(f"ws://127.0.0.1:{debug_port}/devtools/page/{fixture}", timeout=12, suppress_origin=True)
+            DevTools(source_socket).evaluate("""(async () => {
+              const context = new AudioContext();
+              await context.resume();
+              const oscillator = context.createOscillator();
+              const gain = context.createGain();
+              oscillator.frequency.value = 733;
+              gain.gain.value = 0.12;
+              oscillator.connect(gain).connect(context.destination);
+              try {
+                await new Promise(resolve => {
+                  oscillator.onended = resolve;
+                  oscillator.start();
+                  oscillator.stop(context.currentTime + 1.2);
+                });
+              } finally { await context.close(); }
+            })()""")
+            # Release the share only after the tone and its audio context have ended.
+            time.sleep(0.2)
+        else:
+            time.sleep(1.1)
         client.click("停止并完成")
         client.wait("native tab export source ready", "recording.status === 'ready'")
         client.call("Page.bringToFront")
@@ -259,8 +290,29 @@ def check_browser_tab_capture(client, title):
         })()""")
         assert sample[0] < 35 and 126 <= sample[1] <= 190 and sample[2] < 65, sample
         assert not client.external, client.external
+        if share_audio:
+            client.click("导出 M4A…")
+            client.wait("captured tab audio exported", "mediaTools.prepared?.format === 'm4a'")
+            peaks = client.evaluate("""(async () => {
+              const context = new OfflineAudioContext(1, 1, 48000);
+              const decoded = await context.decodeAudioData(await mediaTools.prepared.blob.arrayBuffer());
+              const pcm = decoded.getChannelData(0);
+              const strength = frequency => {
+                let sine = 0, cosine = 0;
+                for (let i = 0; i < pcm.length; i++) {
+                  const position = 2 * Math.PI * frequency * i / decoded.sampleRate;
+                  sine += pcm[i] * Math.sin(position);
+                  cosine += pcm[i] * Math.cos(position);
+                }
+                return 2 * Math.hypot(sine, cosine) / pcm.length;
+              };
+              return [strength(733), strength(593), strength(877)];
+            })()""")
+            assert peaks[0] > 0.015 and peaks[0] > 5 * max(peaks[1:]), peaks
         client.evaluate("mediaTools.prepared = null; recording.result = null")
     finally:
+        if source_socket is not None:
+            source_socket.close()
         client.call("Target.closeTarget", targetId=fixture)
 
 
@@ -304,6 +356,7 @@ def main():
     parser.add_argument("--browser", type=Path, default=browser_path())
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument("--native-tab", action="store_true", help="Exercise Chromium tab capture using only a uniquely titled synthetic tab")
+    sources.add_argument("--native-tab-audio", action="store_true", help="Capture only the synthetic tab's test tone with speaker playback suppressed")
     sources.add_argument("--virtual-microphone", action="store_true", help="Exercise Chromium microphone recording using a generated audio file")
     options = parser.parse_args()
     if not options.browser or not options.browser.is_file():
@@ -320,7 +373,7 @@ def main():
         flags = ["--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
                  "--remote-debugging-port=0", "--enable-logging=stderr", f"--user-data-dir={profile}"]
         title = "GaoMediaFixture-" + uuid.uuid4().hex
-        if options.native_tab:
+        if options.native_tab or options.native_tab_audio:
             flags.append(f"--auto-select-tab-capture-source-by-title={title}")
         if options.virtual_microphone:
             wav = root / "virtual-microphone.wav"
@@ -346,8 +399,8 @@ def main():
                 client = DevTools(socket)
                 client.call("Network.enable")
                 client.call("Page.navigate", url=server.url)
-                if options.native_tab:
-                    check_browser_tab_capture(client, title)
+                if options.native_tab or options.native_tab_audio:
+                    check_browser_tab_capture(client, title, port, share_audio=options.native_tab_audio)
                 elif options.virtual_microphone:
                     check_virtual_microphone(client)
                 else:
@@ -366,7 +419,9 @@ def main():
                     browser.wait(timeout=8)
                 server.shutdown()
                 server.server_close()
-    if options.native_tab:
+    if options.native_tab_audio:
+        print("Native Chromium captured only the synthetic tab's picture and its 733 Hz tone, with speaker playback suppressed; MOV pixels and M4A tone passed.")
+    elif options.native_tab:
         print("Chromium getDisplayMedia captured only a synthetic tab and delivered its expected pixels in the exported MOV.")
     elif options.virtual_microphone:
         print("Chromium getUserMedia recorded a virtual microphone with generated audio and the M4A decoded to a verified non-silent signal.")

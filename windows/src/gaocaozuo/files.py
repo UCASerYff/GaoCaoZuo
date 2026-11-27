@@ -343,7 +343,8 @@ def undo(records: list[dict], trash) -> int:
     except AppError:
         raise
     except Exception as exc:
-        raise AppError(f"恢复中断：本次已完成 {restored}/{len(pending)} 项；请保留恢复记录，可重试其余项目。{exc}", "partial") from exc
+        total = len(pending)
+        raise AppError(f"恢复中断：本次已完成 {restored}/{total} 项；请保留恢复记录，可重试其余项目。{exc}", "partial") from exc
 
 
 def sha256(path: Path) -> str:

@@ -16,6 +16,7 @@ from PIL import Image
 repo = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo / "windows" / "src"))
 from gaocaozuo.app import App
+from gaocaozuo.localization import LANGUAGES, language_dictionary
 from gaocaozuo.shell_win import browser_path
 from gaocaozuo.web import serve
 
@@ -74,6 +75,7 @@ class PackagedApp:
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--browser", type=pathlib.Path, default=browser_path())
 parser.add_argument("--packaged-cli", type=pathlib.Path)
+parser.add_argument("--localization-only", action="store_true")
 options = parser.parse_args()
 if not options.browser or not options.browser.is_file():
     parser.error("Specify an installed Chromium executable with --browser.")
@@ -142,6 +144,25 @@ with tempfile.TemporaryDirectory(prefix=".ui-qa-", dir=repo) as temp:
             command("Runtime.enable")
             command("Page.navigate", {"url": server.url})
             wait("document.querySelector('h1')?.textContent === '工作台'")
+            if options.localization_only:
+                command("Emulation.setDeviceMetricsOverride", {"width": 900, "height": 680, "deviceScaleFactor": 1.25, "mobile": False})
+                intro = "处理文件、整理窗口、记录灵感。\n从这里开始，少点几下。"
+                template = "新增文件与压缩包成员重名：{name}"
+                fixture = r"C:\Fixture folder\draft {text}.zip"
+                for language in LANGUAGES:
+                    pref = json.dumps({"language": language})
+                    result = command("Runtime.evaluate", {"expression": f"api('/api/settings', {pref})", "awaitPromise": True})
+                    assert not result.get("exceptionDetails"), result
+                    command("Page.reload")
+                    expect = language_dictionary(language)
+                    expected = json.dumps(expect.get(intro, intro))
+                    wait(f"document.documentElement.lang === {json.dumps(language)} && document.querySelector('.hero p')?.textContent === {expected}")
+                    message = template.format(name=fixture)
+                    translated = expect.get(template, template).format(name=fixture)
+                    assert js(f"trError({json.dumps(message)})") == translated, language
+                assert not exceptions, exceptions
+                print("All 10 workbench locales render long prompts and preserve path placeholders at 125%.")
+                raise SystemExit(0)
             assert js("document.querySelectorAll('.nav button').length") == 12
             assert js("document.querySelectorAll('.destination').length") == 4
             set_theme("light")

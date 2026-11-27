@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from threading import Event, RLock, Thread
 
 from gaocaozuo.errors import AppError
+from gaocaozuo.localization import native_locale, native_text
 from gaocaozuo.native_win import is_input_desktop, is_session_active, kernel, user
 from gaocaozuo.platform_win import last_input
 from gaocaozuo.rules_win import ALT, CTRL, SHIFT, WIN, Binding, direction_between
@@ -33,9 +34,10 @@ class _Drag:
 
 
 class _IdleWarning:
-    def __init__(self):
+    def __init__(self, read_language):
         self.hwnd = 0
         self.label = None
+        self.read_language = read_language
 
     def update(self, warning) -> bool:
         if warning is None:
@@ -44,11 +46,12 @@ class _IdleWarning:
                 self.hwnd = 0
             self.label = None
             return True
-        if warning == self.label:
-            return bool(self.hwnd)
         action, remaining = warning
-        name = "锁定屏幕" if action == "lockScreen" else "启动屏保"
-        message = f"搞操作 · 将在 {remaining} 秒后{name}\r\n\r\n移动鼠标或按键可取消"
+        key = "将在 {remaining} 秒后锁定屏幕。" if action == "lockScreen" else "将在 {remaining} 秒后启动屏保。"
+        with native_locale(self.read_language()):
+            message = "搞操作 · " + native_text(key, remaining=remaining) + "\r\n\r\n" + native_text("移动鼠标或按键可取消。")
+        if message == self.label:
+            return bool(self.hwnd)
         if not self.hwnd:
             flags = 0x08000000 | 0x00000080 | 0x00000008  # WS_EX_NOACTIVATE | TOOLWINDOW | TOPMOST
             style = 0x80000000 | 0x00800000 | 0x08000000 | 0x00000001  # POPUP | BORDER | DISABLED | SS_CENTER
@@ -56,7 +59,7 @@ class _IdleWarning:
                         c.c_int, c.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
             metric = user("GetSystemMetrics", c.c_int, c.c_int)
             inst = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
-            width, height = 370, 74
+            width, height = min(620, max(250, metric(0) - 48)), 106
             self.hwnd = hwnd(flags, "STATIC", message, style, max(0, (metric(0) - width) // 2),
                              max(0, (metric(1) - height) // 2), width, height, None, None, inst, None)
             if not self.hwnd:
@@ -64,20 +67,21 @@ class _IdleWarning:
             user("ShowWindow", w.BOOL, w.HWND, c.c_int)(self.hwnd, 4)
         else:
             user("SetWindowTextW", w.BOOL, w.HWND, w.LPCWSTR)(self.hwnd, message)
-        self.label = warning
+        self.label = message
         return bool(user("IsWindowVisible", w.BOOL, w.HWND)(self.hwnd))
 
 
 class WindowsRuntime:
     """Run opt-in rules and idle policy while the app is active."""
 
-    def __init__(self, desktop, system, idle, invoke, busy=None, on_tick=None):
+    def __init__(self, desktop, system, idle, invoke, busy=None, on_tick=None, read_language=None):
         self.desktop = desktop
         self.system = system
         self.idle = idle
         self.invoke = invoke
         self.busy = busy or (lambda: False)
         self.on_tick = on_tick or (lambda: None)
+        self.read_language = read_language or (lambda: "zh-Hans")
         self._lock = RLock()
         self._stop = Event()
         self._rules: tuple[Binding, ...] = ()
@@ -204,7 +208,7 @@ class WindowsRuntime:
         self.idle.sample(last_input, safety, warning.update, execute)
 
     def _message_loop(self) -> None:
-        show_warning = _IdleWarning()
+        show_warning = _IdleWarning(self.read_language)
         peek = user("PeekMessageW", w.BOOL, c.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT)
         translate = user("TranslateMessage", w.BOOL, c.POINTER(w.MSG))
         dispatch = user("DispatchMessageW", c.c_ssize_t, c.POINTER(w.MSG))
