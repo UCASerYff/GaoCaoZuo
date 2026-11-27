@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 @MainActor struct InputRulesView: View {
     @ObservedObject var store: OperationStore
     @State private var editing: InputBinding?
+    @State private var previewing: InputBinding?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -44,9 +45,11 @@ import UniformTypeIdentifiers
                             }
                         }
                         Spacer()
-                        Button("编辑") { editing = binding }
+                        Button(L10n.text("试跑…")) { previewing = binding }
+                        Button("编辑") { editing = binding }.disabled(!store.dataHealthy)
                         Button(role: .destructive) { store.update { $0.bindings.removeAll { $0.id == binding.id } } } label: { Image(systemName: "trash") }
-                    }.padding(.vertical, 5).disabled(!store.dataHealthy)
+                            .disabled(!store.dataHealthy)
+                    }.buttonStyle(.borderless).padding(.vertical, 5)
                 }
             }.listStyle(.inset).overlay { if store.settings.bindings.isEmpty { ContentUnavailableView("还没有输入规则", systemImage: "keyboard", description: Text("添加一个快捷键来打开操作面板。")) } }
             Text("绘图手势使用 Option＋右键向一个方向拖动。事件只作监听，原应用可能同时显示右键菜单。高级规则与实验多点触控可在设置的“输入”页配置；实验功能默认关闭，需实机验证。")
@@ -57,6 +60,7 @@ import UniformTypeIdentifiers
             }
         }.padding(24)
         .sheet(item: $editing) { binding in InputBindingEditor(store: store, original: binding) }
+        .sheet(item: $previewing) { AutomationPreviewView(rule: $0, store: store, paused: store.input.isPaused) }
     }
 }
 
@@ -80,6 +84,7 @@ import UniformTypeIdentifiers
     @Environment(\.dismiss) private var dismiss
     @State private var draft: InputBinding
     @State private var wasPaused = false
+    @State private var previewing: InputBinding?
     init(store: OperationStore, original: InputBinding) { self.store = store; _draft = State(initialValue: original) }
     private var validation: String? {
         if let error = InputRules.validationError(draft) { return error }
@@ -136,6 +141,7 @@ import UniformTypeIdentifiers
             if let validation { Text(validation).font(.callout).foregroundStyle(.orange) }
             Text("编辑期间已暂停输入规则，关闭后恢复之前的状态。").font(.caption).foregroundStyle(.secondary)
             HStack {
+                Button(L10n.text("试跑…")) { previewing = draft }
                 Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("保存") {
                     draft.appBundleID = draft.appBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -147,6 +153,7 @@ import UniformTypeIdentifiers
                 }.keyboardShortcut(.defaultAction).disabled(validation != nil || !store.dataHealthy)
             }
         }.padding(24).frame(width: 580, height: 510)
+        .sheet(item: $previewing) { AutomationPreviewView(rule: $0, store: store, paused: wasPaused) }
         .onAppear { wasPaused = store.input.isPaused; store.input.pause(true) }
         .onDisappear { store.input.pause(wasPaused) }
     }
@@ -197,6 +204,7 @@ import UniformTypeIdentifiers
 @MainActor struct WorkflowListView: View {
     @ObservedObject var store: OperationStore
     @State private var editing: OperationWorkflow?
+    @State private var previewing: OperationWorkflow?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -218,16 +226,18 @@ import UniformTypeIdentifiers
                         Image(systemName: "square.stack.3d.up").font(.title2).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 4) { Text(workflow.name).fontWeight(.medium); Text(L10n.format("%@ 个步骤", String(describing: (workflow.steps.count)))).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
+                        Button(L10n.text("试跑…")) { previewing = workflow }
                         Button("运行") { store.runWorkflow(workflow) }.disabled(store.workflowRunning || store.busy || !store.dataHealthy)
                         Button("编辑") { editing = workflow }.disabled(store.workflowRunning || !store.dataHealthy)
                         Button(role: .destructive) { store.update { $0.workflows.removeAll { $0.id == workflow.id } } } label: { Image(systemName: "trash") }.disabled(store.workflowRunning || !store.dataHealthy)
-                    }.padding(.vertical, 6)
+                    }.buttonStyle(.borderless).padding(.vertical, 6)
                 }
             }.listStyle(.inset)
             Text("步骤按顺序执行，失败时停止。停止或失败会保留已经完成的步骤，不会整体回滚。保持唤醒步骤会切换当前状态；运行前请查看当前状态。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(24)
         .sheet(item: $editing) { workflow in WorkflowEditor(store: store, original: workflow) }
+        .sheet(item: $previewing) { AutomationPreviewView(workflow: $0, store: store) }
     }
 }
 
@@ -245,6 +255,7 @@ private struct WorkflowActionChoice: Identifiable {
     @ObservedObject var store: OperationStore
     @Environment(\.dismiss) private var dismiss
     @State private var draft: OperationWorkflow
+    @State private var previewing: OperationWorkflow?
     init(store: OperationStore, original: OperationWorkflow) { self.store = store; _draft = State(initialValue: original) }
     private var validation: String? {
         if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请填写组合操作名称。" }
@@ -282,10 +293,13 @@ private struct WorkflowActionChoice: Identifiable {
                 Spacer(); Text(L10n.format("%@/50 个步骤", String(describing: (draft.steps.count)))).foregroundStyle(.secondary)
             }
             if let validation { Text(validation).font(.caption).foregroundStyle(.orange) }
-            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+            HStack {
+                Button(L10n.text("试跑…")) { previewing = draft }
+                Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("保存") { draft.name = draft.name.trimmingCharacters(in:.whitespacesAndNewlines); store.saveWorkflow(draft); dismiss() }.keyboardShortcut(.defaultAction).disabled(validation != nil || !store.dataHealthy)
             }
         }.padding(24).frame(width:660,height:570)
+        .sheet(item: $previewing) { AutomationPreviewView(workflow: $0, store: store) }
     }
 }
 
@@ -599,5 +613,16 @@ private struct WorkflowActionChoice: Identifiable {
     @ObservedObject var store:OperationStore
     @ObservedObject var input:InputController
     init(store:OperationStore){self.store=store;self.input=store.input}
-    var body:some View {InputEnhancementSettingsView(configuration:Binding(get:{store.settings.inputEnhancements},set:{next in store.update{$0.inputEnhancements=next}}),cloudSync:store.inputCloudSync,actions:store.actionChoices.map{InputActionChoice(id:$0.id,title:$0.title)},status:input.enhancementStatus,devices:input.touchDevices)}
+    var body: some View {
+        InputEnhancementSettingsView(
+            configuration: Binding(get: { store.settings.inputEnhancements }, set: { next in store.update { $0.inputEnhancements = next } }),
+            cloudSync: store.inputCloudSync, actions: store.actionChoices.map { InputActionChoice(id: $0.id, title: $0.title) },
+            status: input.enhancementStatus, devices: input.touchDevices,
+            preview: { rule in
+                AutomationPreviewView(rule: rule, configuration: store.settings.inputEnhancements,
+                                      excludedApps: store.settings.inputExcludedApps, paused: input.isPaused,
+                                      healthy: store.dataHealthy, catalog: store.automationPreviewCatalog)
+            }
+        )
+    }
 }

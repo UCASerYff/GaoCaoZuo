@@ -99,3 +99,6 @@ PDF 无法读取或超过 100 页内嵌预览预算。	The PDF cannot be read or
 未获得所选位置的访问权限，未执行操作。	Access to the selected location was not granted. No operation was performed.
 已取消选择，未执行操作，原压缩包保持不变。	Selection cancelled. No operation was performed; the original archive is unchanged.
 预览宿主无法显示选择窗口，请用搞操作打开后重试。	The preview host cannot display the chooser. Open the archive in GaoCaoZuo to retry.
+ZIP/7Z 可输入密码读取目录。保存时可另存保留加密的副本，或校验后更新原包。其他格式按实际支持提供预览或提取。	Enter a password to list a ZIP or 7Z archive. Save an encrypted copy, or verify the changes and update the original. Other formats offer preview or extraction where supported.
+编辑副本的扩展名须与原压缩包一致。	The edited copy must use the same extension as the original archive.
+请选择原压缩包所在文件夹。保存前会校验原包；检测到外部改动时停止。	Choose the folder containing the original archive. Its identity is verified before saving and saving stops if the archive changed externally.

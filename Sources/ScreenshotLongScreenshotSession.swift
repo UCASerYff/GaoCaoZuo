@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import CoreGraphics
 
 struct ScreenshotScrollTargetIdentity: Equatable {
@@ -181,27 +182,75 @@ final class ScreenshotLongScreenshotSession {
     /// No frame is committed until the second target check and cancellation check both pass.
     @discardableResult
     func captureNext(capturing capture: () async throws -> CGImage) async throws -> ScreenshotScrollSeamEstimate? {
+        let image = try await verifiedCurrentFrame(capturing: capture)
+        return try addFrame(image)
+    }
+
+    private func verifiedCurrentFrame(capturing capture: () async throws -> CGImage) async throws -> CGImage {
         try Task.checkCancellation()
         try validateCurrentTarget(stage: .preCapture)
         let image = try await capture()
         try Task.checkCancellation()
         try validateCurrentTarget(stage: .postCapture)
         try Task.checkCancellation()
-        return try addFrame(image)
+        return image
     }
 
-    /// A single explicit scroll action, never a hidden global loop. A changed target immediately pauses.
+    /// Verify the viewport has not changed since the last accepted frame before the first scroll.
+    func verifyAutomaticStart(using service: ScreenshotCaptureService, source: ScreenshotCaptureSource,
+                              options: ScreenshotCaptureOptions, checking: () throws -> Void) async throws {
+        try checking()
+        guard let previous = segments.last, pendingSeam == nil else { throw ScreenshotCaptureFailure.invalidRegion }
+        let width = previous.image.width, height = previous.image.height
+        guard width >= 24, height >= 96, width <= 8_000_000 / height else {
+            throw ScreenshotCaptureFailure.unsupported(L10n.text("连续捕获需要至少 24 × 96 像素、且不超过 800 万像素的选区。可手动续拍。"))
+        }
+        let currentFrame = try await verifiedCurrentFrame {
+            try await self.captureBoundWindowRegion(using: service, source: source, options: options)
+        }
+        try checking()
+        let current = try normalized(currentFrame)
+        let currentBytes = try ScreenshotLongCaptureWindowCrop.imageBytes(currentFrame)
+        let available = try ScreenshotLongCaptureWindowCrop.remainingBytes(maximum: min(options.maximumMemoryBytes, budget.maximumMemoryBytes),
+                                                                           retained: segments.map(\.backingBytes))
+        // Account for the current backing and both provider data copies.
+        guard currentBytes <= available / 2, previous.backingBytes <= available - currentBytes * 2 else {
+            throw ScreenshotCaptureFailure.budgetExceeded
+        }
+        guard Self.samePixels(previous.image, current, previousBytes: previous.backingBytes, currentBytes: currentBytes) else {
+            throw ScreenshotCaptureFailure.unsupported(L10n.text("当前画面与上次捕获不同，请先手动添加当前画面。"))
+        }
+    }
+
+    static func samePixels(_ first: CGImage, _ second: CGImage, previousBytes: Int, currentBytes: Int) -> Bool {
+        guard first.width == second.width, first.height == second.height, first.bytesPerRow == second.bytesPerRow,
+              first.bitsPerPixel == second.bitsPerPixel, first.bitmapInfo == second.bitmapInfo,
+              let left = first.dataProvider?.data, let right = second.dataProvider?.data,
+              CFDataGetLength(left) <= previousBytes, CFDataGetLength(right) <= currentBytes else { return false }
+        return CFEqual(left, right)
+    }
+
+    /// One verified native scroll transaction. A changed target immediately pauses.
     @discardableResult
     func scrollAndCapture(using service: ScreenshotCaptureService, source: ScreenshotCaptureSource, downwardPoints: Int32 = 240,
-                          options: ScreenshotCaptureOptions = .init(), waitingForPointer: () -> Void = {}) async throws -> ScreenshotScrollSeamEstimate? {
+                          options: ScreenshotCaptureOptions = .init(), waitingForPointer: () -> Void = {},
+                          checking: () throws -> Void = {}) async throws -> ScreenshotScrollSeamEstimate? {
+        try checking()
         guard let target else { throw ScreenshotCaptureFailure.unsupported("自动滚动需要明确的目标窗口；无目标时请手动滚动。") }
         guard AXIsProcessTrusted() else { throw ScreenshotCaptureFailure.unsupported("辅助功能权限未授权，仍可使用手动滚动逐帧拼接。") }
         return try await scrollAndCapture(downwardPoints: downwardPoints, performScroll: { anchor in
+            try checking()
             guard let windowIdentity = self.targetGuard?.boundAccessibilityIdentity else { throw ScreenshotCaptureFailure.sourceMissing }
             try await ScreenshotScrollAccessibilityAction.scrollDown(target: target, anchor: anchor, requestedPoints: CGFloat(downwardPoints), windowIdentity: windowIdentity, cursor: self.accessibilityScrollCursor, waitingForPointer: waitingForPointer) {
+                try checking()
                 _ = try self.validateCurrentTarget(stage: .preScroll)
             }
-        }, capturing: { try await self.captureBoundWindowRegion(using: service, source: source, options: options) })
+        }, capturing: {
+            try checking()
+            let frame = try await self.captureBoundWindowRegion(using: service, source: source, options: options)
+            try checking()
+            return frame
+        })
     }
 
     /// Injects only the producer and explicit one-shot action, keeping all production guard stages.

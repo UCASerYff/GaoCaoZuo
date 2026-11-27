@@ -41,6 +41,48 @@ enum ArchiveOriginalCommit {
         var after=stat();guard fstat(input,&after)==0,identity(before)==identity(after),try QuickLookArchiveIdentity(url:source)==identity(before),try digest(input)==digest(output) else {throw failure("文件在准备期间发生变化，原件保留。")}
         if let sha256 {guard try digest(output)==sha256 else {throw failure("压缩包在编辑期间发生变化，未保存到原包。")}}
     }
+
+    static func publishCopy(_ candidate: URL, to destination: URL, directory: Int32, beforeCommit: () throws -> Void) throws -> String {
+        let name = destination.lastPathComponent
+        let parent = destination.deletingLastPathComponent()
+        let temporary = ".gaocaozuo-archive-copy-" + UUID().uuidString
+        let input = try GaoActionFiles.openRegular(candidate, owned: true)
+        defer { close(input) }
+        let inputInfo = try GaoActionFiles.info(input)
+        guard inputInfo.st_size <= 128 * 1_024 * 1_024 else { throw failure("压缩包超过原位保存预算。") }
+        let output = openat(directory, temporary, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard output >= 0 else { throw posix() }
+        defer { close(output) }
+        let outputInfo = try GaoActionFiles.info(output)
+        func sameNode(_ left: stat, _ right: stat) -> Bool {
+            left.st_dev == right.st_dev && left.st_ino == right.st_ino && left.st_mode & S_IFMT == right.st_mode & S_IFMT
+        }
+        defer {
+            var file = stat()
+            if fstatat(directory, temporary, &file, AT_SYMLINK_NOFOLLOW) == 0, sameNode(file, outputInfo) {
+                _ = unlinkat(directory, temporary, 0)
+            }
+        }
+        guard fcopyfile(input, output, nil, copyfile_flags_t(COPYFILE_DATA)) == 0, fsync(output) == 0 else { throw posix() }
+        let hash = try digest(input)
+        guard try GaoActionFiles.same(inputInfo, GaoActionFiles.info(input)), try digest(output) == hash else {
+            throw failure("编辑副本完整性核验失败，原压缩包未改变。")
+        }
+        try beforeCommit()
+        let reopened = try GaoActionFiles.openPath(parent, directory: true, owned: false)
+        defer { close(reopened) }
+        var named = stat()
+        guard try sameNode(GaoActionFiles.info(reopened), GaoActionFiles.info(directory)),
+              fstatat(directory, temporary, &named, AT_SYMLINK_NOFOLLOW) == 0, sameNode(named, outputInfo) else {
+            throw failure("目标目录已变化，未提交结果。")
+        }
+        guard renameatx_np(directory, temporary, directory, name, UInt32(RENAME_EXCL)) == 0 else {
+            if errno == EEXIST { throw FileToolsError.conflict(destination) }
+            throw posix()
+        }
+        _ = fsync(directory)
+        return hash
+    }
     private static func metadata(_ fd:Int32)throws->(mode:mode_t,uid:uid_t,gid:gid_t,flags:UInt32,xattrs:[String:Data],acl:String) {
         var info=stat();guard fstat(fd,&info)==0 else {throw posix()}
         let length=flistxattr(fd,nil,0,0);guard length>=0,length<=1_048_576 else {throw failure("无法安全保留原包的扩展属性。")}

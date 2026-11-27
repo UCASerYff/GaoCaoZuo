@@ -12,13 +12,18 @@ LANGUAGES = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'de', 'fr', 'es', 'it', 'ko', 'pt
 def catalog():
     result = json.loads((ROOT/'Resources/LocalizationCatalog.json').read_text())
     for lang in LANGUAGES: result.setdefault(lang, {})
-    for filename in ['LocalizationEnglish.tsv','LocalizationExchange.tsv','LocalizationInput.tsv']:
+    for filename in ['LocalizationEnglish.tsv','LocalizationExchange.tsv','LocalizationInput.tsv',
+                     'LocalizationAutomationPreview.tsv','LocalizationOCRReturn.tsv','LocalizationLongCaptureBatch.tsv']:
         path=ROOT/'Resources'/filename
         if not path.exists():continue
         for line in path.read_text().splitlines():
             if not line or line.startswith('#'): continue
             key,value=line.split('\t',1)
             result['zh-Hans'][key]=key;result['en'][key]=value
+    for line in (ROOT/'QuickLookExtension/NativeArchiveEnglish.tsv').read_text().splitlines():
+        if not line or line.startswith('#'): continue
+        key,value=line.split('\t',1)
+        result['zh-Hans'].setdefault(key,key);result['en'].setdefault(key,value)
     for filename in ['LocalizationCommon.tsv', 'LocalizationWindow.tsv', 'LocalizationArchiveNative.tsv', 'LocalizationExtensions.tsv', 'LocalizationFinder.tsv', 'LocalizationSafety.tsv', 'LocalizationInputSafety.tsv', 'LocalizationCompletion.tsv', 'LocalizationDynamic.tsv', 'LocalizationFinalCloud.tsv', 'LocalizationClipboardFinal.tsv', 'LocalizationArchiveFinal.tsv']:
         if not (ROOT/'Resources'/filename).exists(): continue
         for line in (ROOT/'Resources'/filename).read_text().splitlines():

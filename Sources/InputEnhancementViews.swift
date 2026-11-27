@@ -9,7 +9,9 @@ import UniformTypeIdentifiers
     let actions:[InputActionChoice]
     var status:String=""
     var devices:[String]=[]
+    let preview: (EnhancedInputRule) -> AutomationPreviewView
     @State private var message:String?
+    @State private var previewing: EnhancedInputRule?
     var body:some View {
         Form {
             Section("高级输入") {
@@ -35,9 +37,10 @@ import UniformTypeIdentifiers
                     DisclosureGroup {
                         EnhancedInputRuleEditor(rule:$rule,actions:actions,devices:devices,scripts:configuration.scriptLibrary)
                         HStack {
+                            Button(L10n.text("试跑…")) { previewing = rule }
                             Button("复制规则") {var copy=rule;copy.id=UUID();copy.name += " 副本";copy.enabled=false;copy.migrationOrigin=nil;configuration.rules.append(copy)}
                             Button("删除规则",role:.destructive) {configuration.rules.removeAll{$0.id==rule.id}}
-                        }
+                        }.buttonStyle(.borderless)
                     } label: {HStack {Toggle("",isOn:$rule.enabled).labelsHidden().disabled(EnhancedInputValidation.migrationBlockReason(rule) != nil);Text(rule.name);Spacer();Text(L10n.text(rule.trigger.title)).foregroundStyle(.secondary)}}
                 }
             }
@@ -126,7 +129,10 @@ import UniformTypeIdentifiers
             }
             Section("HID 鼠标设备") {HIDDeviceConfigurationView(profiles:$configuration.hidProfiles,actions:actions)}
             Section("设备实测") {InputDeviceTestView()}
-        }.formStyle(.grouped).onAppear{scrollDevices.start(recordButtons:false)}.onDisappear{scrollDevices.stop()}
+        }.formStyle(.grouped)
+            .sheet(item: $previewing, content: preview)
+            .onAppear { scrollDevices.start(recordButtons: false) }
+            .onDisappear { scrollDevices.stop() }
     }
     private func importRules() {
         let panel=NSOpenPanel();panel.allowedContentTypes=[.json,.propertyList];panel.allowsMultipleSelection=false

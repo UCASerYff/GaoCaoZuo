@@ -8,10 +8,14 @@ struct ScreenshotPendingActionResult: Identifiable {
     var packageURL: URL
     var status: String
     var createdAt: Date
+    var automaticReturn: ScreenshotOCRReturnStatus? = nil
     var id: String { request.requestID }
     var requestID: String { request.requestID }
     var action: String { request.action }
     var sourceBundleID: String { request.sourceBundleID }
+    var automaticReturnRecipient: String? {
+        action == ScreenshotOCRReturnBinding.action ? ScreenshotOCRReturnBinding.recipient(sourceBundleID) : nil
+    }
 }
 
 @MainActor
@@ -20,6 +24,7 @@ final class ScreenshotExchangeController {
     /// after the user chooses Send; restoring a pending result never calls it.
     static var localResultReceiver: ((URL) async throws -> Void)?
     unowned let model: ScreenshotAppModel
+    private let automaticReturnRoot: URL
     private var ledger: ScreenshotGaoProcessedRequestStore?
     private var active = false
     private var ocrCancellation: ScreenshotOCRCancellationToken?
@@ -32,8 +37,9 @@ final class ScreenshotExchangeController {
         model.externalAnnotation != nil || model.externalTranslation != nil
     }
 
-    init(model: ScreenshotAppModel) {
+    init(model: ScreenshotAppModel, automaticReturnRoot: URL = ScreenshotOCRReturn.userRoot) {
         self.model = model
+        self.automaticReturnRoot = automaticReturnRoot
         reloadStore()
     }
 
@@ -58,6 +64,8 @@ final class ScreenshotExchangeController {
             let package = try ScreenshotGaoActionTransport.receive(packageURL: url, exchangeRoot: model.store.exchange)
             switch try ledger.receive(package) {
             case .duplicate(let old):
+                // Only this delivery's fresh, private copy is redundant.
+                defer { try? FileManager.default.removeItem(at: package.stagingURL) }
                 if old.resultPackageName != nil {
                     try restoreStoredResult(old, originalRequest: package.manifest)
                     model.message = "该请求已处理：\(old.phase.rawValue)。已有结果已恢复到待发送列表，没有再次执行。"
@@ -79,8 +87,17 @@ final class ScreenshotExchangeController {
             model.showMain()
             let alert = NSAlert(); alert.messageText = "确认执行外部请求：\(manifest.action)？"
             alert.informativeText = "来源声明：\(manifest.sourceBundleID)（未认证）\n输入：\(package.stagedItems.map { $0.url.lastPathComponent }.joined(separator: "、"))\n\(manifest.action.hasPrefix("capture.") ? "接下来由你选择实际屏幕、窗口或区域。" : "只处理本机核验副本，原件不修改。")"
+            if let binding = ScreenshotOCRReturnBinding(package), let recipient = ScreenshotOCRReturnBinding.recipient(binding.sourceBundleID) {
+                let ready = ScreenshotOCRReturn.isReady(binding, root: automaticReturnRoot)
+                let detail = ready ? L10n.format("识别完成后会回传给 %@ 待审核。回传失败时可手工导出。", recipient)
+                    : L10n.text("自动回传暂不可用。识别后可手工导出，或在有效期内重试回传。")
+                alert.informativeText += "\n\n" + detail
+            }
             alert.addButton(withTitle: "确认启动"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { try finish(package, status: "cancelled", provenance: [:]); return }
+            if manifest.action == ScreenshotOCRReturnBinding.action {
+                try await Task.detached(priority: .userInitiated) { try ScreenshotGaoActionTransport.verifyStagedOCR(package) }.value
+            }
             try ScreenshotGaoActionContract.validate(manifest, expectedTargetBundleID: ScreenshotGaoActionContract.bundleID, now: Date())
             _ = try ledger.transition(requestID: manifest.requestID, to: .approved)
             _ = try ledger.transition(requestID: manifest.requestID, to: .executing)
@@ -168,6 +185,10 @@ final class ScreenshotExchangeController {
         let document = try await ScreenshotOCRService().recognize(urls: package.stagedItems.map(\.url), options: options, cancellation: cancellation) { [weak model] progress in
             Task { @MainActor in model?.message = "交接 OCR：\(progress.completedPages)/\(progress.totalPages) 页；可取消交接。" }
         }
+        guard document.sources.count == package.stagedItems.count,
+              zip(document.sources, package.stagedItems).allSatisfy({ source, staged in source.sha256.isEmpty || source.sha256 == staged.item.sha256 }) else {
+            throw ScreenshotGaoActionContract.reject("sourceChanged", "OCR 交接输入在识别期间发生变化，请重新发送。")
+        }
         // Keep completed work before a cancellable PDF export. It is local recovery, not a new requested output.
         var recoveryURL: URL?
         if formats.contains("searchablePDF") || document.isPartial || document.wasCancelled {
@@ -230,8 +251,9 @@ final class ScreenshotExchangeController {
         let errorCode = status == "completed" ? nil : status == "cancelled" ? "userCancelled" : "pageOrExportFailed"
         var provenance: [String: ScreenshotGaoJSONValue] = ["sources": .array(sourceRecords), "outputs": .array(outputRecords), "engine": .string(document.engine), "engineRevision": .number(Double(document.engineRevision)), "networkUsed": .bool(false), "exportFailures": .array(failures.map(ScreenshotGaoJSONValue.string))]
         if recoveryURL != nil, status != "completed" { provenance["localRecovery"] = .object(["available": .bool(true), "filename": .string("OCR-recovery.json"), "requestID": .string(manifest.requestID)]) }
-        try finish(package, status: status, files: files, error: errorCode, provenance: provenance)
+        let result = try finish(package, status: status, files: files, error: errorCode, provenance: provenance)
         if let recoveryURL, status == "completed" { try? FileManager.default.removeItem(at: recoveryURL) }
+        if status == "completed" { await publishOCRReturn(result) }
     }
 
     func completeAnnotation(_ package: ScreenshotGaoValidatedPackage, url: URL) throws {
@@ -305,11 +327,51 @@ final class ScreenshotExchangeController {
         let url = try ScreenshotGaoActionWriter.writeResult(inReplyTo: package.manifest, status: "pending", provenance: ["workflowState": .string(workflow)], exchangeRoot: model.store.exchange)
         queue(ScreenshotPendingActionResult(request: package.manifest, packageURL: url, status: "pending", createdAt: Date()))
     }
-    private func finish(_ package: ScreenshotGaoValidatedPackage, status: String, files: [ScreenshotGaoOutgoingFile] = [], error: String? = nil, provenance: [String: ScreenshotGaoJSONValue]) throws {
-        let url = try ScreenshotGaoActionWriter.writeResult(inReplyTo: package.manifest, status: status, items: files, errorCode: error, provenance: provenance, exchangeRoot: model.store.exchange)
-        if let phase = ScreenshotGaoRequestPhase(rawValue: status) { _ = try ledger?.transition(requestID: package.manifest.requestID, to: phase, resultPackageName: url.lastPathComponent, errorCode: error) }
-        queue(ScreenshotPendingActionResult(request: package.manifest, packageURL: url, status: status, createdAt: Date()))
+    @discardableResult private func finish(_ package: ScreenshotGaoValidatedPackage, status: String, files: [ScreenshotGaoOutgoingFile] = [], error: String? = nil, provenance: [String: ScreenshotGaoJSONValue]) throws -> ScreenshotPendingActionResult {
+        var resultProvenance = provenance
+        if package.manifest.action == ScreenshotOCRReturnBinding.action { resultProvenance["requestManifestSHA256"] = .string(package.manifestSHA256) }
+        let url = try ScreenshotGaoActionWriter.writeResult(inReplyTo: package.manifest, status: status, items: files, errorCode: error, provenance: resultProvenance, exchangeRoot: model.store.exchange)
+        let automatic = status == "completed" && ScreenshotOCRReturnBinding(package) != nil
+        let resultDigest = automatic ? ScreenshotFileSafety.digest(try storedManifestBytes(at: url)) : nil
+        if let phase = ScreenshotGaoRequestPhase(rawValue: status) {
+            _ = try ledger?.transition(requestID: package.manifest.requestID, to: phase, resultPackageName: url.lastPathComponent, errorCode: error, resultManifestSHA256: resultDigest)
+        }
+        let result = ScreenshotPendingActionResult(request: package.manifest, packageURL: url, status: status, createdAt: Date())
+        queue(result)
         model.message = "交接结果：\(status)。已保存在私有目录，请在“历史与交接”主动发送。"
+        return result
+    }
+
+    func retryAutomaticReturn(_ result: ScreenshotPendingActionResult) {
+        guard model.canBeginOperation(), !active, result.status == "completed", result.automaticReturn != .published,
+              sending.insert(result.id).inserted else { return }
+        Task { [self] in
+            defer { sending.remove(result.id) }
+            await publishOCRReturn(result)
+        }
+    }
+
+    private func publishOCRReturn(_ result: ScreenshotPendingActionResult) async {
+        guard let ledger, let record = ledger.lookup(result.requestID), record.ocrReturnBinding != nil,
+              let resultDigest = record.resultManifestSHA256, let resultName = record.resultPackageName,
+              resultName == result.packageURL.lastPathComponent, record.phase == .completed,
+              record.requestID == result.requestID, record.automaticReturn != .published else { return }
+        let root = automaticReturnRoot
+        let url = result.packageURL
+        let status = await Task.detached(priority: .userInitiated) {
+            ScreenshotOCRReturn.publish(record, resultURL: url, root: root)
+        }.value
+        // The OCR output stayed complete regardless of delivery. Retry will use the same saved package identity.
+        try? ledger.recordAutomaticOCRReturn(requestID: result.requestID, packageName: resultName, digest: resultDigest, status: status)
+        var updated = result; updated.automaticReturn = status; queue(updated)
+        switch status {
+        case .published:
+            model.message = L10n.format("已回传给 %@，待发起应用审核。", result.automaticReturnRecipient ?? result.sourceBundleID)
+        case .expired:
+            model.message = L10n.text("回传期限已过。已保存识别结果，可手工导出。")
+        case .unavailable:
+            model.message = L10n.text("自动回传未完成。已保存识别结果，可手工导出。")
+        }
     }
     private func queue(_ result: ScreenshotPendingActionResult) {
         if let index = model.pendingResults.firstIndex(where: { $0.id == result.id }) {
@@ -324,23 +386,15 @@ final class ScreenshotExchangeController {
     func sendResult(_ result: ScreenshotPendingActionResult) {
         guard model.canBeginOperation() else { return }
         guard sending.insert(result.id).inserted else { return }
-        let exchangeRoot = model.store.exchange
         model.message = "正在核验并重新包装所选结果，原业务不会再次执行。"
         Task { [self] in
             defer { sending.remove(result.id) }
             do {
-                let savedManifest = try storedManifest(at: result.packageURL)
-                guard savedManifest.kind == "result", savedManifest.sourceBundleID == ScreenshotGaoActionContract.bundleID,
-                      savedManifest.inReplyTo == result.requestID, savedManifest.targetBundleID == result.sourceBundleID,
-                      savedManifest.action == result.action, savedManifest.status == result.status,
-                      let created = ScreenshotGaoActionContract.date(savedManifest.createdAt) else { throw ScreenshotGaoActionContract.reject("resultChanged", "已保存结果的关联信息发生变化，停止发送。") }
-                let refreshed = try await Task.detached(priority: .userInitiated) {
-                    let checked = try ScreenshotGaoActionTransport.receive(packageURL: result.packageURL, exchangeRoot: exchangeRoot, expectedTargetBundleID: result.sourceBundleID, now: created)
-                    defer { try? FileManager.default.removeItem(at: checked.stagingURL) }
-                    let files = checked.stagedItems.map { ScreenshotGaoOutgoingFile(url: $0.url, uti: $0.item.uti, id: $0.item.id) }
-                    return try ScreenshotGaoActionWriter.writeResult(inReplyTo: result.request, status: result.status, items: files, references: checked.manifest.references, errorCode: checked.manifest.errorCode, provenance: checked.manifest.provenance ?? [:], exchangeRoot: exchangeRoot, now: Date())
-                }.value
-                queue(ScreenshotPendingActionResult(request: result.request, packageURL: refreshed, status: result.status, createdAt: Date()))
+                let refreshed = try await refreshSavedResult(result)
+                // Keep the ledger-owned package unchanged for automatic retries, even after a manual send.
+                if ledger?.lookup(result.requestID)?.resultManifestSHA256 == nil {
+                    queue(ScreenshotPendingActionResult(request: result.request, packageURL: refreshed, status: result.status, createdAt: Date()))
+                }
                 if result.sourceBundleID == ScreenshotGaoActionContract.bundleID {
                     guard let receiver = Self.localResultReceiver else { model.message = "结果包已保留；宿主接收入口尚未就绪，未递送。"; return }
                     try await receiver(refreshed)
@@ -359,26 +413,89 @@ final class ScreenshotExchangeController {
         }
     }
 
-    private func storedManifest(at url: URL) throws -> ScreenshotGaoActionManifest {
+    func exportResult(_ result: ScreenshotPendingActionResult) {
+        guard model.canBeginOperation(), sending.insert(result.id).inserted else { return }
+        let panel = NSOpenPanel()
+        panel.title = L10n.text("导出交接结果")
+        panel.prompt = L10n.text("选择导出目录")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let directory = panel.url else { sending.remove(result.id); return }
+        Task { [self] in
+            defer { sending.remove(result.id) }
+            do {
+                let refreshed = try await refreshSavedResult(result)
+                defer { try? FileManager.default.removeItem(at: refreshed) }
+                try await Task.detached(priority: .userInitiated) {
+                    let destination = try ScreenshotGaoPrivateIO.directory(directory)
+                    let package = try ScreenshotGaoSavedPackage(refreshed)
+                    try package.publish(to: destination, name: refreshed.lastPathComponent) {
+                        let current = try ScreenshotGaoPrivateIO.directory(directory)
+                        guard try ScreenshotGaoSavedPackage.sameObject(destination, current) else {
+                            throw ScreenshotGaoActionContract.reject("resultChanged", "已选目录发生变化，未导出交接结果。")
+                        }
+                    }
+                }.value
+                model.message = L10n.text("已导出交接结果。发起应用仍需核验与复核。")
+            } catch { model.fail(error) }
+        }
+    }
+
+    private func refreshSavedResult(_ result: ScreenshotPendingActionResult) async throws -> URL {
+        let bytes = try storedManifestBytes(at: result.packageURL)
+        let saved = try ScreenshotGaoActionTransport.decodeManifest(bytes)
+        let record = ledger?.lookup(result.requestID)
+        let savedDigest = ScreenshotFileSafety.digest(bytes)
+        guard saved.kind == "result", saved.sourceBundleID == ScreenshotGaoActionContract.bundleID,
+              saved.inReplyTo == result.requestID, saved.targetBundleID == result.sourceBundleID,
+              saved.action == result.action, saved.status == result.status,
+              record?.resultManifestSHA256 == nil || record?.resultManifestSHA256 == savedDigest,
+              let created = ScreenshotGaoActionContract.date(saved.createdAt) else {
+            throw ScreenshotGaoActionContract.reject("resultChanged", "已保存结果的关联信息发生变化，停止发送。")
+        }
+        let rawRequestDigest = result.action == ScreenshotOCRReturnBinding.action ? record?.manifestSHA256 : nil
+        let exchangeRoot = model.store.exchange
+        return try await Task.detached(priority: .userInitiated) {
+            let checked = try ScreenshotGaoActionTransport.receive(packageURL: result.packageURL, exchangeRoot: exchangeRoot, expectedTargetBundleID: result.sourceBundleID, now: created)
+            defer { try? FileManager.default.removeItem(at: checked.stagingURL) }
+            guard checked.manifestSHA256 == savedDigest else {
+                throw ScreenshotGaoActionContract.reject("resultChanged", "已保存结果的关联信息发生变化，停止发送。")
+            }
+            let files = checked.stagedItems.map { ScreenshotGaoOutgoingFile(url: $0.url, uti: $0.item.uti, id: $0.item.id) }
+            var provenance = checked.manifest.provenance ?? [:]
+            if let rawRequestDigest { provenance["requestManifestSHA256"] = .string(rawRequestDigest) }
+            return try ScreenshotGaoActionWriter.writeResult(inReplyTo: result.request, status: result.status, items: files, references: checked.manifest.references, errorCode: checked.manifest.errorCode, provenance: provenance, exchangeRoot: exchangeRoot)
+        }.value
+    }
+
+    private func storedManifestBytes(at url: URL) throws -> Data {
         let outgoing = model.store.exchange.appendingPathComponent("Outgoing", isDirectory: true).standardizedFileURL
         guard url.deletingLastPathComponent().standardizedFileURL == outgoing, url.pathExtension == "gaoaction" else { throw ScreenshotGaoActionContract.reject("invalidResultPath", "结果包不属于本应用私有发送目录。") }
         let directory = try ScreenshotGaoPrivateIO.directory(url, requirePrivate: true)
-        let data = try ScreenshotGaoPrivateIO.read(ScreenshotGaoPrivateIO.regular(directory, components: ["manifest.json"]), maximum: Int64(ScreenshotGaoActionContract.maximumManifestBytes))
-        return try ScreenshotGaoActionTransport.decodeManifest(data)
+        return try ScreenshotGaoPrivateIO.read(ScreenshotGaoPrivateIO.regular(directory, components: ["manifest.json"]), maximum: Int64(ScreenshotGaoActionContract.maximumManifestBytes))
     }
 
     private func restoreStoredResult(_ record: ScreenshotGaoProcessedRequest, originalRequest: ScreenshotGaoActionManifest? = nil) throws {
         guard record.kind == "request", let name = record.resultPackageName else { return }
         let url = model.store.exchange.appendingPathComponent("Outgoing/" + name)
-        let result = try storedManifest(at: url)
+        let bytes = try storedManifestBytes(at: url)
+        let result = try ScreenshotGaoActionTransport.decodeManifest(bytes)
         guard result.kind == "result", result.sourceBundleID == ScreenshotGaoActionContract.bundleID,
-              result.inReplyTo == record.requestID, result.targetBundleID == record.sourceBundleID,
+              let reply = result.inReplyTo, UUID(uuidString: reply) == UUID(uuidString: record.requestID),
+              record.ocrReturnBinding == nil || record.ocrReturnBinding?.requestID == reply,
+              record.resultManifestSHA256 == nil || record.resultManifestSHA256 == ScreenshotFileSafety.digest(bytes),
+              result.targetBundleID == record.sourceBundleID,
               result.action == record.action, result.status == record.phase.rawValue,
               let created = ScreenshotGaoActionContract.date(result.createdAt) else { throw ScreenshotGaoActionContract.reject("resultChanged", "已保存交接结果与历史记录不一致。") }
         try ScreenshotGaoActionContract.validate(result, expectedTargetBundleID: record.sourceBundleID, now: created)
         // Only metadata needed to re-envelope a result, never a replayable request.
-        let request = originalRequest ?? ScreenshotGaoActionManifest(kind: "request", requestID: record.requestID, sourceBundleID: record.sourceBundleID, targetBundleID: ScreenshotGaoActionContract.bundleID, action: record.action, createdAt: result.createdAt, expiresAt: result.expiresAt, nonce: result.nonce, items: [], references: [], parameters: result.parameters)
-        queue(ScreenshotPendingActionResult(request: request, packageURL: url, status: record.phase.rawValue, createdAt: created))
+        let request = originalRequest ?? ScreenshotGaoActionManifest(kind: "request", requestID: reply, sourceBundleID: record.sourceBundleID, targetBundleID: ScreenshotGaoActionContract.bundleID, action: record.action, createdAt: record.ocrReturnBinding?.createdAt ?? result.createdAt, expiresAt: record.ocrReturnBinding?.expiresAt ?? result.expiresAt, nonce: result.nonce, items: [], references: [], parameters: result.parameters)
+        let automatic = record.resultManifestSHA256.map { _ -> ScreenshotOCRReturnStatus in
+            if record.automaticReturn == .published { return .published }
+            return (record.ocrReturnBinding?.isCurrent(at: Date()) == true) ? .unavailable : .expired
+        }
+        queue(ScreenshotPendingActionResult(request: request, packageURL: url, status: record.phase.rawValue, createdAt: created, automaticReturn: automatic))
     }
 
     func restorePendingResults() {

@@ -58,7 +58,7 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         extractName.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         copyName.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         let names = row([NSTextField(labelWithString: L10n.text("提取目录名称")), extractName, NSTextField(labelWithString: L10n.text("编辑副本名称")), copyName])
-        let explanation = NSTextField(wrappingLabelWithString: L10n.text("ZIP/7Z 可在此输入密码读取目录并保存到原包；原位保存先核验重建结果并保留安全备份。也可另存未加密编辑副本。其他格式按实际支持提供预览或提取。"))
+        let explanation = NSTextField(wrappingLabelWithString: L10n.text("ZIP/7Z 可输入密码读取目录。保存时可另存保留加密的副本，或校验后更新原包。其他格式按实际支持提供预览或提取。"))
         explanation.font = .systemFont(ofSize: 11); explanation.textColor = .secondaryLabelColor
         let cancel = button("取消操作", #selector(cancelArchiveOperation)), main = button("用搞操作打开", #selector(openInMainApp))
         let bottom = row([explanation, cancel, main]); heading.font = .boldSystemFont(ofSize: 14)
@@ -182,7 +182,7 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         let ready = !working && selectionPanel == nil && document != nil
         actionButtons.forEach { $0.isEnabled = ready }; editButtons.forEach { $0.isEnabled = ready && canEditOriginal }
         cleanHidden.isEnabled = ready && canEditOriginal
-        copyButton?.isEnabled=ready && document?.canEditCopy == true
+        copyButton?.isEnabled = ready && document.map { $0.canEditCopy || $0.canEditEncryptedCopy } == true
         unlockButton?.isEnabled = !working && selectionPanel == nil && archiveURL.map{["zip","7z"].contains($0.pathExtension.lowercased())} == true
         let reason = document?.editCopyUnavailableReason.map { L10n.text($0) }
         editButtons.forEach { $0.toolTip = canEditOriginal ? nil:reason }; cleanHidden.toolTip = canEditOriginal ? nil:reason; copyName.toolTip = reason;copyButton?.toolTip=reason
@@ -242,14 +242,35 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
     @objc private func clearPlan() { guard !working else { return }; deletions = []; additions = []; cleanHidden.state = .off; outline.reloadData(); planChanged() }
     @objc private func planChanged() { status.stringValue = L10n.format("计划删除 %ld 项，添加 %ld 项；原压缩包尚未改变。", deletions.count, additions.count); updateButtons() }
     @objc private func saveEditedCopy() {
-        guard !working, let document, document.canEditCopy else { return }
+        guard !working, let document, document.canEditCopy || document.canEditEncryptedCopy else { return }
         let context = currentContext()
         let deleted = deletions, added = additions, hidden = cleanHidden.state == .on, name = copyName.stringValue
         guard !deleted.isEmpty || !added.isEmpty || hidden else { status.stringValue = L10n.text("请先选择增删或隐藏项目清理计划。") ; return }
+        guard let password = requestedPassword(for: document.canEditEncryptedCopy, context: context), isCurrent(context) else { return }
         chooseDirectory(context: context) { [weak self] directory, scope in
             guard let self, self.isCurrent(context) else { return }
             self.perform("正在生成并完整核验编辑副本…", retaining: (self.access.map { [$0] } ?? []) + added + [scope], work: { stop in
-                try NativeArchive.editedCopy(document, deleting: deleted, adding: added.map(\.url), cleanHidden: hidden, directory: directory, name: name, cancellation: stop)
+                if document.canEditCopy {
+                    return try NativeArchive.editedCopy(document, deleting: deleted, adding: added.map(\.url), cleanHidden: hidden, directory: directory, name: name, cancellation: stop)
+                }
+                guard try NativeArchive.safePath(name, directory: false, maxDepth: 1) == name else {
+                    throw NativeArchive.Failure(message: "结果名称必须是单个有效名称。")
+                }
+                let destination = directory.appendingPathComponent(name, isDirectory: false)
+                guard destination.pathExtension.lowercased() == document.format else {
+                    throw NativeArchive.Failure(message: "编辑副本的扩展名须与原压缩包一致。")
+                }
+                let request = try QuickLookEditEngine.request(kind: .saveCopy, url: document.url, password: password,
+                    adding: added.map(\.url), removing: Array(deleted), removeHidden: hidden, copyDestination: destination, cancellation: stop)
+                guard request.sha256 == document.digest else {
+                    throw NativeArchive.Failure(message: "原压缩包已变化，未提交编辑副本。")
+                }
+                let response = try QuickLookEditEngine.run(request, directory: directory, cancellation: stop)
+                guard let digest = response.resultSHA256,
+                      try NativeArchive.originalDigest(destination, cancellation: NativeArchive.Cancellation()) == digest else {
+                    throw NativeArchive.Failure(message: "编辑副本完整性核验失败，原压缩包未改变。")
+                }
+                return destination
             }) { [weak self] result in guard let self, self.isCurrent(context) else { return }; self.showOutput(result) }
         }
     }
@@ -281,7 +302,7 @@ class NativeArchiveBrowserController: NSViewController, QLPreviewingController, 
         guard let password=requestedPassword(for:document.items.contains(where:\.encrypted),context:context),isCurrent(context) else{return}
         let panel=NSOpenPanel();panel.canChooseFiles=false;panel.canChooseDirectories=true;panel.canCreateDirectories=false
         panel.directoryURL=document.url.deletingLastPathComponent();panel.prompt=L10n.text("授权并保存到原包")
-        panel.message=L10n.text("请选择原压缩包所在文件夹。保存前会保留原件备份；不会覆盖编辑期间被其他程序更改的文件。")
+        panel.message=L10n.text("请选择原压缩包所在文件夹。保存前会校验原包；检测到外部改动时停止。")
         presentSelectionPanel(panel,context:context){[weak self] urls in
             guard let self,let directory=urls.first,self.isCurrent(context),directory.resolvingSymlinksInPath()==document.url.deletingLastPathComponent().resolvingSymlinksInPath() else {self?.status.stringValue=L10n.text("所选文件夹不是原压缩包目录，未执行保存。");return}
             let scope=ArchiveQuickLookResourceAccess(url:directory)

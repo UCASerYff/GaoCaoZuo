@@ -1,0 +1,86 @@
+不同的触发	Different trigger
+不确定	Uncertain
+前置条件未命中或先前步骤已阻断。	A condition did not match or an earlier step was blocked.
+压缩有忽略规则时不能移除原件。	Removing originals is blocked while archive exclusion patterns are active.
+另一条规则在该模拟触发中优先。	Another rule has priority for this simulated trigger.
+同一应用中的相同触发存在冲突。	Identical triggers conflict in the same application scope.
+同步规则仍需在本机复核。	This synced rule still needs review on this Mac.
+命中	Matched
+命中条件	Rule conditions
+在该模拟应用中选择了这条规则。	The simulated application selects this rule.
+安全输入、实际目标窗口、设备和系统授权需在运行时核验。	Secure input, the actual target window, devices, and permissions are checked at runtime.
+实验原始多点触控已关闭。	Experimental raw multitouch is disabled.
+已有任务正在运行。	Another task is already running.
+已跳过	Skipped
+已阻断	Blocked
+应用不在这条规则的范围内。	The application is outside this rule’s scope.
+应用专用规则优先于同触发的全局规则。	An application-specific rule takes priority over a global rule with the same trigger.
+应用范围匹配。	The application matches the rule’s scope.
+快捷指令是否存在、授权、输出及副作用需在运行时核验。	Shortcut availability, authorization, output, and side effects depend on the actual run.
+成功并校验后会请求将所列原件移到废纸篓。	After success and verification, the listed originals are scheduled to move to the Trash.
+手势轨迹、屏幕位置、压力或设备能力需在运行时核验。	Gesture paths, screen position, pressure, and device capabilities depend on the actual event.
+未命中	Did not match
+模拟应用	Simulated application
+模拟应用 Bundle ID	Simulated application bundle ID
+模拟文件列表超过大小限制。	The simulated file list exceeds the size limit.
+模拟文件绝对路径，每行一个（可选）	Simulated absolute file paths, one per line (optional)
+模拟源与目标相同。	The simulated source and destination are identical.
+模拟目标目录（可选）	Simulated destination folder (optional)
+模拟触发	Simulated trigger
+模拟输入与规则触发不同。	The simulated input differs from the configured trigger.
+模拟输入匹配配置的触发。	The simulated input matches the configured trigger.
+此动作需要模拟文件。正式执行仍须选择实际项目。	Provide simulated files for this action. The actual run requires selecting real items.
+步骤 %@ · %@	Step %@ · %@
+生成试跑计划	Generate preview
+目标是否存在、系统能否打开及后续结果需在运行时核验。	Target availability, opening, and subsequent effects depend on the actual run.
+系统条件	System conditions
+系统设置、设备能力及请求结果需在运行时核验。	System settings, device capabilities, and request results depend on the actual run.
+组合操作使用各步骤保存的参数；此处不会读取文件选择。	The workflow uses each step’s configured arguments. Preview does not read the file selection.
+组合操作由用户主动运行。	A workflow starts when you choose to run it.
+组合操作试跑	Workflow preview
+脚本的权限、输出和副作用无法预先确定。	The script’s permissions, output, and side effects cannot be predicted.
+菜单动作缺少身份校验证据，请重新选择菜单。	Select the menu item again to add its missing identity verification.
+菜单和应用身份需在运行时核验。	The menu and application identity are checked at runtime.
+菜单目标与模拟应用不一致。	The menu target and simulated application differ.
+规则已停用。	The rule is disabled.
+规则已启用。	The rule is enabled.
+规则状态	Rule status
+规则试跑	Rule preview
+规则配置	Rule configuration
+触发优先级	Trigger priority
+计划在所列目录生成带运行时间的压缩包；文件名需在运行时核验。	A timestamped archive is planned for each listed folder. The exact filename depends on the actual run.
+设备动作和系统授权需在运行时核验。	Input effects and system permissions depend on the actual run.
+试跑…	Preview…
+试跑只生成计划，不访问输入路径、不执行动作，也不保存规则。	Preview generates a plan without accessing input paths, running actions, or saving rules.
+该应用已被排除。	This application is excluded.
+请填写模拟目标目录。正式执行仍须选择目录。	Enter a simulated destination folder. The actual run requires choosing a folder.
+请输入有效的模拟绝对路径，每行一个，最多 1000 项。	Enter valid simulated absolute paths, one per line, up to 1,000 items.
+请输入模拟应用的 Bundle ID。	Enter a simulated application bundle ID.
+资料保护模式下不能启动。	Data protection mode blocks execution.
+资料状态	Data status
+距上次触发的时间未核验，实际运行可能因节流跳过。	The minimum interval between triggers may suppress this action at runtime.
+输入监听已暂停。	Input monitoring is paused.
+边缘滚动优先级和节流依赖实际事件。	Screen-edge scrolling priority and throttling depend on the actual event.
+运行方式	Run mode
+需要在正式操作窗口选择参数或明确确认。	The actual operation requires choosing parameters or confirming in its own window.
+需要完整的 HTTP 或 HTTPS 网址。	Enter a complete HTTP or HTTPS address.
+需要有效的绝对路径。	Enter a valid absolute path.
+预计	Planned
+预计写入剪贴板。	Writes to the clipboard when run.
+预计写入这些目标路径。文件类型、重名和权限需在运行时核验。	Writes to these destinations when run. File type, name conflicts, and permissions are checked at runtime.
+预计切换保持唤醒；当前状态未检查。	Toggles Keep Awake. The current state was not checked.
+预计创建项目。文件类型、重名和权限需在运行时核验。	Creates an item when run. File type, name conflicts, and permissions are checked at runtime.
+预计创建项目；未指定模拟目标目录，实际位置需在运行时核验。	Creates an item when run. Without a simulated folder, the actual location depends on the run.
+预计动作与文件	Planned actions and files
+预计动作已列出；可用性、权限和实际结果需在运行时核验。	Availability, permissions, and the actual outcome are checked when this action runs.
+预计向目标发送中键按下、拖动和松开，系统授权需在运行时核验。	Plans to send a middle-button press, drag, and release. System authorization is checked at runtime.
+预计生成压缩包。文件类型、重名和权限需在运行时核验。	Creates an archive when run. File type, name conflicts, and permissions are checked at runtime.
+预计生成转换后的图片。文件类型、重名和权限需在运行时核验。	Creates converted images when run. File type, name conflicts, and permissions are checked at runtime.
+预计等待 %@ 秒。	Waits %@ seconds when run.
+预计解压到所列目录。归档内容、密码、分卷、重名和权限需在运行时核验。	Extracts into the listed folders when run. Archive contents, passwords, volumes, name conflicts, and permissions are checked at runtime.
+预计请求关闭目标窗口，目标和可能的保存提示需在运行时核验。	Requests that the target window close. The target and any save prompt depend on the actual run.
+预计调整目标窗口；实际窗口、显示器与辅助功能授权需在运行时核验。	Adjusts the target window when run. The actual window, display, and Accessibility authorization are checked at runtime.
+高级输入已关闭。	Advanced input is disabled.
+高级输入已启用。	Advanced input is enabled.
+Fn 依赖系统修饰键事件，实际触发需在运行时核验。	The actual Fn trigger depends on system modifier-key events.
+模拟拖动距离 %@ 点	Simulated drag distance: %@ points

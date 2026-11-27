@@ -28,6 +28,24 @@ import Darwin
             return
         }
         setbuf(stdout,nil)
+        if CommandLine.arguments.contains("--build18-targeted") {
+            let arguments = CommandLine.arguments
+            guard let dataIndex = arguments.firstIndex(of: "--data-dir"), dataIndex + 1 < arguments.count,
+                  let engineIndex = arguments.firstIndex(of: "--engine"), engineIndex + 1 < arguments.count else {
+                throw DataFailure.message("Build 18 tests require the isolated test data directory and archive engine.")
+            }
+            let data = URL(fileURLWithPath: arguments[dataIndex + 1], isDirectory: true)
+            try FileManager.default.createDirectory(at: data, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            GaoLocale.shared.setLanguage(.zhHans)
+            try runAutomationPreviewTests()
+            try ScreenshotOCRReturnTests.run(in: data)
+            try await runScreenshotLongCaptureBatchTests()
+            try await runGaoActionTests()
+            try runScreenshotHostStoreTests()
+            try runInputLifecycleTests()
+            try await runArchiveOriginalCommitTests(engine: URL(fileURLWithPath: arguments[engineIndex + 1]))
+            return
+        }
         if CommandLine.arguments.contains("--desktop-lock-integration-only") {
             GaoLocale.shared.setLanguage(.zhHans)
             try await runGaoActionTests()

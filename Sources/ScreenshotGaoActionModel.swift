@@ -126,15 +126,17 @@ enum ScreenshotGaoActionContract {
         ("com.academic-achievement.manager", ["research.importDocuments"])
     ].flatMap { owner, actions in actions.map { ($0, owner) } })
     static let knownActions = Set(owners.keys)
-    static func timestamp(_ date: Date) -> String {
+    static func timestamp(_ date: Date, fractional: Bool = false) -> String {
         let formatter = ISO8601DateFormatter(); formatter.timeZone = TimeZone(secondsFromGMT:0)
+        if fractional { formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds] }
         return formatter.string(from:date)
     }
     static func date(_ string: String) -> Date? {
         guard string.hasSuffix("Z") else { return nil }
         let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from:string) { return date }
         formatter.formatOptions = [.withInternetDateTime,.withFractionalSeconds]
+        if let date = formatter.date(from:string) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from:string)
     }
     static func reject(_ code: String, _ message: String) -> ScreenshotGaoActionIssue { .rejected(code,message) }

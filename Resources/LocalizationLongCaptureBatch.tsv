@@ -1,0 +1,12 @@
+连续滚动捕获	Capture with continuous scrolling
+停止连续捕获	Stop continuous capture
+连续捕获需要 macOS 26 和辅助功能权限。停止或遇到边界后可保留已核验分段并手动续拍；低置信度接缝需要复核。	Continuous capture requires macOS 26 and Accessibility permission. You can keep the verified segments and continue manually after stopping or reaching the end. Review seams with low confidence.
+正在核验当前画面，准备连续滚动…	Checking the current frame before scrolling…
+请将鼠标移回原选区，最多等待2秒；不会自动移动鼠标。	Move the pointer back into the selected area within two seconds. The pointer stays under your control.
+已捕获 %d 帧，仍在核验所选区域。	Captured %d frames. Still verifying the selected area.
+画面没有移动。已核验分段可手动续拍或完成。	The frame did not move. You can continue manually or finish with the verified segments.
+已达本轮连续捕获上限。已核验分段可手动续拍或完成。	Continuous capture reached its limit. You can continue manually or finish with the verified segments.
+已停止连续捕获。已核验分段可手动续拍或完成。	Continuous capture stopped. You can continue manually or finish with the verified segments.
+已核验分段可手动续拍或完成。	You can continue manually or finish with the verified segments.
+连续捕获需要至少 24 × 96 像素、且不超过 800 万像素的选区。可手动续拍。	Continuous capture requires an area of at least 24 × 96 pixels and at most eight million pixels. You can continue manually.
+当前画面与上次捕获不同，请先手动添加当前画面。	The current frame differs from the last capture. Add the current frame manually first.

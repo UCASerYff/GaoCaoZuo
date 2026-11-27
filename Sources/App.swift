@@ -51,6 +51,8 @@ final class OperationPanel: NSPanel {
     private var gaoActionClient: GaoActionClient!
     private var earlyURLs: [URL] = []
     private var pendingInitialPresentation = false
+    private var pendingMainReopen = false
+    private var hostConfigured = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args=CommandLine.arguments
         let directory: URL
@@ -140,7 +142,8 @@ final class OperationPanel: NSPanel {
         }
         pendingInitialPresentation = !args.contains("--background-action") && earlyURLs.isEmpty
         // Finder's sandbox may discard launch arguments; inactive URL launches must stay quiet.
-        if pendingInitialPresentation,NSApp.isActive {pendingInitialPresentation=false;showMain()}
+        hostConfigured = true
+        if pendingMainReopen || (pendingInitialPresentation && NSApp.isActive) { showMain() }
         if let i=args.firstIndex(of:"--open"),args.count>i+1 {store.selection=[URL(fileURLWithPath:args[i+1])]}
         if !earlyURLs.isEmpty {let urls=earlyURLs;earlyURLs=[];application(NSApp,open:urls)}
     }
@@ -168,7 +171,19 @@ final class OperationPanel: NSPanel {
         if let lang=GaoLanguage(rawValue:store.settings.language) {GaoLocale.shared.setLanguage(lang)}
         if mainWindow != nil { installMenu(); settingsWindow?.title=L10n.text("搞操作设置"); clipboardPanel?.title=L10n.text("剪贴板") }
     }
-    func showMain(){store.windows.captureTarget();store.captureSelectionForActions();mainWindow.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+    func showMain() {
+        guard hostConfigured, let store, let mainWindow else {
+            pendingMainReopen = true
+            return
+        }
+        pendingMainReopen = false
+        pendingInitialPresentation = false
+        store.windows.captureTarget()
+        store.captureSelectionForActions()
+        if mainWindow.isMiniaturized { mainWindow.deminiaturize(nil) }
+        mainWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps:true)
+    }
     func showPanel(){
         pendingInitialPresentation=false
         store.windows.captureTarget()
@@ -380,15 +395,19 @@ final class OperationPanel: NSPanel {
         }
     }
     func applicationDidBecomeActive(_ notification:Notification){
-        if pendingInitialPresentation,mainWindow != nil {pendingInitialPresentation=false;showMain()}
+        if pendingInitialPresentation { showMain() }
     }
     func applicationWillTerminate(_ notification: Notification) {
         store?.screenshots.cleanupAfterApprovedTermination();GaoActionClient.localRequestReceiver=nil;ScreenshotExchangeController.localResultReceiver=nil
         store?.localLock.stop(); store?.desktopOverview.endSession(); store?.desktopStatusStrip.stop()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
-    func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{showMain();return true}
+    func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool {
+        showMain()
+        return false // This delegate has handled the reopen itself.
+    }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply{
+        guard let store else { return .terminateNow }
         if store.screenshots.captureInputExclusive,store.screenshots.model.selection.isSelecting {
             cancelScreenshotCaptureWork();store.notify("已取消截图选择；其他工作仍保留，请确认后再次退出。",failed:false);return .terminateCancel
         }

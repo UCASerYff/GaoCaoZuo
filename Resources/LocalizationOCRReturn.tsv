@@ -1,0 +1,10 @@
+识别完成后会回传给 %@ 待审核。回传失败时可手工导出。	When recognition finishes, the result will return to %@ for review. You can export it if delivery fails.
+自动回传暂不可用。识别后可手工导出，或在有效期内重试回传。	Automatic return is currently unavailable. After recognition, export manually or retry before expiry.
+已回传给 %@，待发起应用审核。	Returned to %@ for review.
+回传期限已过。已保存识别结果，可手工导出。	The return window has expired. The saved OCR result can still be exported.
+自动回传未完成。已保存识别结果，可手工导出。	Automatic return could not finish. The saved OCR result can be exported.
+导出交接结果	Export Exchange Result
+导出交接结果…	Export Exchange Result…
+选择导出目录	Choose Export Folder
+已导出交接结果。发起应用仍需核验与复核。	Result exported. The originating app still needs to validate and review it.
+重试回传	Retry Return

@@ -80,15 +80,46 @@ struct ScreenshotHistoryView: View {
                 }
                 IntegratedScreenshotActivityView(model: model)
                 ForEach(model.pendingResults) { result in
-                    HStack {
-                        Text("\(result.action) · \(result.status)")
-                        Spacer()
-                        Button("发送结果") { model.exchange.sendResult(result) }
-                        Button("显示包") { NSWorkspace.shared.activateFileViewerSelecting([result.packageURL]) }
-                    }
+                    exchangeResult(result)
                 }
                 Text("外部请求先核验并确认。已执行请求不会因重复包或重启自动重放。未完成请求需要重新复核。").font(.callout)
             }.padding(24)
         }
+    }
+
+    private func exchangeResult(_ result: ScreenshotPendingActionResult) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(result.action) · \(result.status)").font(.headline)
+            if let state = result.automaticReturn, let recipient = result.automaticReturnRecipient {
+                switch state {
+                case .published:
+                    Label(L10n.format("已回传给 %@，待发起应用审核。", recipient), systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                case .unavailable:
+                    Label(L10n.text("自动回传未完成。已保存识别结果，可手工导出。"), systemImage: "arrow.clockwise.circle")
+                        .foregroundStyle(.secondary)
+                case .expired:
+                    Label(L10n.text("回传期限已过。已保存识别结果，可手工导出。"), systemImage: "clock")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                if result.automaticReturn == .unavailable {
+                    Button(L10n.text("重试回传")) { model.exchange.retryAutomaticReturn(result) }
+                }
+                if result.action == "ocr.files", result.status != "pending" {
+                    Button(L10n.text("导出交接结果…")) { model.exchange.exportResult(result) }
+                    Menu(L10n.text("更多")) { exchangeFileActions(result) }
+                } else {
+                    exchangeFileActions(result)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func exchangeFileActions(_ result: ScreenshotPendingActionResult) -> some View {
+        Button("发送结果") { model.exchange.sendResult(result) }
+        Button("显示包") { NSWorkspace.shared.activateFileViewerSelecting([result.packageURL]) }
     }
 }

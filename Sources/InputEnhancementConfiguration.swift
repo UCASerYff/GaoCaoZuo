@@ -180,7 +180,7 @@ enum EnhancedInputValidation {
         guard Set(origin.requirements).isSubset(of:Set(origin.verifiedRequirements)) else {return L10n.text("输入迁移所需设备或权限行为尚未核验，此规则不能启动。")}
         return nil
     }
-    static func error(_ rule:EnhancedInputRule)->String? {
+    static func error(_ rule:EnhancedInputRule, inferDirectoryTypes:Bool = true)->String? {
         if rule.enabled,let reason=migrationBlockReason(rule) {return reason}
         guard !rule.name.isEmpty,rule.name.count<=200,rule.appBundleID.count<=256 else {return L10n.text("规则名称或应用范围无效")}
         guard rule.keyCode<=127,rule.effect.keyCode<=127,(0...31).contains(rule.button),rule.heldButtons.allSatisfy({(0...31).contains($0)}),Set(rule.heldButtons).count==rule.heldButtons.count else {return L10n.text("键码或按钮编号无效")}
@@ -206,7 +206,7 @@ enum EnhancedInputValidation {
             do {try evidence.validate(path:rule.effect.menuPath,bundleID:rule.effect.menuBundleID)} catch {return error.localizedDescription}
         }
         if rule.effect.kind == .action && rule.effect.actionID.isEmpty {return L10n.text("请选择动作")}
-        if rule.effect.kind == .openTargets {do {_=try InputOpenTargets.urls(rule.effect.openTargets)} catch {return error.localizedDescription}}
+        if rule.effect.kind == .openTargets {do {_=try InputOpenTargets.urls(rule.effect.openTargets,inferDirectoryType:inferDirectoryTypes)} catch {return error.localizedDescription}}
         return nil
     }
     static func signature(_ r:EnhancedInputRule)->String {

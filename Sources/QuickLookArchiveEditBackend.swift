@@ -1,7 +1,8 @@
 import Foundation
+import Darwin
 
 @MainActor enum QuickLookArchiveEditBackend {
-    static func validateOriginal(_ request:QuickLookArchiveEditRequest)throws {
+    nonisolated static func validateOriginal(_ request:QuickLookArchiveEditRequest)throws {
         guard request.schema==1,request.archive.isFileURL,["zip","7z"].contains(request.archive.pathExtension.lowercased()),
               request.sha256.count==64,request.sha256.allSatisfy(\.isHexDigit),request.adding.count<=64,request.removing.count<=10_000,
               try QuickLookArchiveIdentity(url:request.archive)==request.identity,
@@ -11,6 +12,18 @@ import Foundation
     static func perform(_ request:QuickLookArchiveEditRequest,service:ArchiveService,backupDirectory:URL,checkCancellation:@escaping ()throws->Void={}) async throws -> QuickLookArchiveEditResponse {
         guard let scope=service.executionScope else {throw ArchiveError.invalid(L10n.text("压缩编辑组件缺少受保护工作区，未启动引擎。"))}
         try checkCancellation();try validateOriginal(request)
+        var copyTarget: (url: URL, directory: Int32)?
+        if request.kind == .saveCopy {
+            guard let destination=request.copyDestination,destination.isFileURL,
+                  destination.pathExtension.lowercased()==request.archive.pathExtension.lowercased(),
+                  !destination.lastPathComponent.contains("/"),destination.lastPathComponent.utf8.count<=255 else {
+                throw ArchiveError.invalid(L10n.text("编辑副本的扩展名须与原压缩包一致。"))
+            }
+            try ArchiveService.validateArchivePath(destination.lastPathComponent)
+            let directory = try GaoActionFiles.openPath(destination.deletingLastPathComponent(),directory:true,owned:false)
+            copyTarget=(destination,directory)
+        } else if request.copyDestination != nil {throw CocoaError(.fileReadCorruptFile)}
+        defer {if let copyTarget {close(copyTarget.directory)}}
         let root=scope.workspaceURL,staged=root.appendingPathComponent("source."+request.archive.pathExtension.lowercased())
         try await ArchiveFileIO.perform {try ArchiveOriginalCommit.copyRegular(request.archive,to:staged,expected:request.identity,sha256:request.sha256)}
         var extraction=ArchiveExtractionOptions.strict;extraction.maximumExpandedGiB=1;extraction.maximumEntries=10_000;extraction.maximumMinutes=1
@@ -43,6 +56,15 @@ import Foundation
         try validateManifest(verified)
         guard !encrypted || verified.filter({!$0.isDirectory}).allSatisfy(\.isEncrypted) else {throw ArchiveError.invalid(L10n.text("编辑结果未保留加密；原压缩包未修改。"))}
         try checkCancellation();try validateOriginal(request)
+        if let copyTarget {
+            let savedHash = try await ArchiveFileIO.perform {
+                try ArchiveOriginalCommit.publishCopy(result, to: copyTarget.url, directory: copyTarget.directory) {
+                    try validateOriginal(request)
+                    try checkCancellation()
+                }
+            }
+            return QuickLookArchiveEditResponse(requestID:request.requestID,status:"completed",members:members(verified),resultSHA256:savedHash)
+        }
         let committed=try await ArchiveFileIO.perform {
             try ArchiveOriginalCommit.commit(original:request.archive,expected:request.identity,sha256:request.sha256,candidate:result,backupDirectory:backupDirectory,requestID:request.requestID,checkCancellation:checkCancellation)
         }

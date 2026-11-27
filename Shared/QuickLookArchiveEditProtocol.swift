@@ -11,12 +11,13 @@ struct QuickLookArchiveIdentity:Codable,Equatable {
     }
 }
 struct QuickLookArchiveEditRequest:Codable {
-    enum Kind:String,Codable {case inspect,saveOriginal}
+    enum Kind:String,Codable {case inspect,saveOriginal,saveCopy}
     var schema=1;var requestID=UUID();var kind:Kind
     var archive:URL;var identity:QuickLookArchiveIdentity;var sha256:String
     /// Transferred only in the authenticated private XPC message, never argv/files.
     var password:String?
     var adding:[URL]=[];var removing:[String]=[];var removeHidden=false
+    var copyDestination:URL? = nil
 }
 struct QuickLookArchiveMember:Codable {
     var path:String;var size:UInt64;var directory:Bool;var encrypted:Bool;var permissions:UInt16?

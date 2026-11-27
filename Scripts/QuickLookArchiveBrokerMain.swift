@@ -33,10 +33,23 @@ private final class BrokerStop:@unchecked Sendable {
                 return url
             }
             _=try resolve(envelope.archiveBookmark,expected:request.archive)
-            if request.kind == .saveOriginal {
+            let outputDirectory:URL?
+            switch request.kind {
+            case .inspect:
+                guard envelope.directoryBookmark == nil,request.copyDestination == nil,request.adding.isEmpty,
+                      request.removing.isEmpty,!request.removeHidden else {throw CocoaError(.fileReadCorruptFile)}
+                outputDirectory=nil
+            case .saveOriginal:
+                guard request.copyDestination == nil else {throw CocoaError(.fileReadCorruptFile)}
+                outputDirectory=request.archive.deletingLastPathComponent()
+            case .saveCopy:
+                guard let destination=request.copyDestination,destination.isFileURL else {throw CocoaError(.fileWriteNoPermission)}
+                outputDirectory=destination.deletingLastPathComponent()
+            }
+            if let outputDirectory {
                 guard let data=envelope.directoryBookmark else {throw CocoaError(.fileWriteNoPermission)}
-                _=try resolve(data,expected:request.archive.deletingLastPathComponent())
-            } else {guard request.adding.isEmpty,request.removing.isEmpty,!request.removeHidden else {throw CocoaError(.fileReadCorruptFile)}}
+                _=try resolve(data,expected:outputDirectory)
+            }
             for (bookmark,url) in zip(envelope.addingBookmarks,request.adding) {_=try resolve(bookmark,expected:url)}
             func allowed(_ operation:String,_ url:URL)->Bool {
                 operation.withCString{op in url.resolvingSymlinksInPath().path.withCString{callerAccess(callerPID,op,$0) != 0}}
@@ -45,12 +58,10 @@ private final class BrokerStop:@unchecked Sendable {
             // the sandboxed caller's actual selected-file/parent scope too;
             // an unprivileged path-only bookmark cannot confer broker authority.
             guard allowed("file-read-data",request.archive),request.adding.allSatisfy({allowed("file-read-data",$0)}) else {throw CocoaError(.fileReadNoPermission)}
-            if request.kind == .saveOriginal {
-                // sandbox_check canonicalizes an existing object; a future
-                // filename reports denied even for an unrestricted process.
-                let parent=request.archive.deletingLastPathComponent()
-                guard allowed("file-write-data",request.archive),allowed("file-write-create",parent) else {throw CocoaError(.fileWriteNoPermission)}
-            }
+            // sandbox_check needs an existing path. Check the explicitly selected
+            // output directory and require source write access only for replacement.
+            if let outputDirectory, !allowed("file-write-create",outputDirectory) {throw CocoaError(.fileWriteNoPermission)}
+            if request.kind == .saveOriginal, !allowed("file-write-data",request.archive) {throw CocoaError(.fileWriteNoPermission)}
             let fm=FileManager.default,job=fm.temporaryDirectory.appendingPathComponent("GaoQuickLook-"+UUID().uuidString+".noindex",isDirectory:true)
             try fm.createDirectory(at:job,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700]);defer {try? fm.removeItem(at:job)}
             let runtime=host.appendingPathComponent("Contents/Resources/Tools",isDirectory:true)
@@ -58,7 +69,7 @@ private final class BrokerStop:@unchecked Sendable {
             service.executionScope=try ArchiveExecutionScope(workspace:job,runtime:runtime)
             let support=fm.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
             let backups=support.appendingPathComponent("GaoSeries/GaoCaoZuo/QuickLookArchiveBackups",isDirectory:true)
-            backup=backups.appendingPathComponent(requestID.uuidString+"."+request.archive.pathExtension)
+            if request.kind == .saveOriginal {backup=backups.appendingPathComponent(requestID.uuidString+"."+request.archive.pathExtension)}
             active=(owner,requestID,service,stop);defer {active=nil}
             let result=try await QuickLookArchiveEditBackend.perform(request,service:service,backupDirectory:backups,checkCancellation:{try stop.check()})
             respond(result,reply:reply)

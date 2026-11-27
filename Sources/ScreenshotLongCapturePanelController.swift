@@ -13,6 +13,7 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
     private var completion: ((CGImage) -> Void)?
     private var captureTask: Task<Void, Never>?
     private var busy = false
+    private var automaticRunning = false
     private let status = NSTextField(wrappingLabelWithString: "")
     private let seamLabel = NSTextField(labelWithString: "")
     private let seamSlider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
@@ -20,6 +21,7 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
     private let currentPreview = NSImageView()
     private let nextButton = NSButton(title: "下一帧（手动滚动后）", target: nil, action: nil)
     private let scrollButton = NSButton(title: "向下滚动并捕获", target: nil, action: nil)
+    private let automaticButton = NSButton(title: "", target: nil, action: nil)
     private let finishButton = NSButton(title: "完成并标注", target: nil, action: nil)
     private let acceptButton = NSButton(title: "确认此接缝", target: nil, action: nil)
     private let rejectButton = NSButton(title: "拒绝并重试", target: nil, action: nil)
@@ -82,12 +84,14 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
         seamArea.isHidden = true; previewStack = seamArea
         nextButton.target = self; nextButton.action = #selector(nextFrame)
         scrollButton.target = self; scrollButton.action = #selector(scrollFrame)
+        automaticButton.target = self; automaticButton.action = #selector(toggleAutomaticCapture)
         finishButton.target = self; finishButton.action = #selector(finishCapture)
         cancelButton.target = self; cancelButton.action = #selector(cancelCapture)
-        let buttons = NSStackView(views: [nextButton, scrollButton, finishButton, cancelButton]); buttons.orientation = .horizontal; buttons.spacing = 8
-        let note = NSTextField(wrappingLabelWithString: "辅助功能未授权时仅手动滚动。目标焦点/窗口改变即暂停；重复画面视为边界。动画、视频、无限滚动与复杂固定区域请逐条核对。像素/高度/内存达预算会保留已捕获分段并停止追加。")
+        let singleFrameButtons = NSStackView(views: [nextButton, scrollButton]); singleFrameButtons.orientation = .horizontal; singleFrameButtons.spacing = 8
+        let sessionButtons = NSStackView(views: [automaticButton, finishButton, cancelButton]); sessionButtons.orientation = .horizontal; sessionButtons.spacing = 8
+        let note = NSTextField(wrappingLabelWithString: L10n.text("连续捕获需要 macOS 26 和辅助功能权限。停止或遇到边界后可保留已核验分段并手动续拍；低置信度接缝需要复核。"))
         note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [status, seamArea, buttons, note]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
+        let stack = NSStackView(views: [status, seamArea, singleFrameButtons, sessionButtons, note]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         guard let content = panel.contentView else { return }; content.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16), status.widthAnchor.constraint(equalTo: stack.widthAnchor), note.widthAnchor.constraint(equalTo: stack.widthAnchor), seamSlider.widthAnchor.constraint(equalTo: stack.widthAnchor)])
@@ -130,6 +134,10 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
         nextButton.isEnabled = !busy && !pending; scrollButton.isEnabled = !busy && !pending && AXIsProcessTrusted()
         finishButton.isEnabled = !busy && !pending && (session?.capturedFrameCount ?? 0) > 0
         acceptButton.isEnabled = !busy && pending; rejectButton.isEnabled = !busy && pending
+        automaticButton.title = L10n.text(automaticRunning ? "停止连续捕获" : "连续滚动捕获")
+        if #available(macOS 26.0, *) {
+            automaticButton.isEnabled = automaticRunning || (finishButton.isEnabled && AXIsProcessTrusted())
+        } else { automaticButton.isEnabled = false }
     }
 
     @objc private func seamChanged() {
@@ -143,6 +151,49 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
     }
     @objc private func nextFrame() { captureNext(scroll: false) }
     @objc private func scrollFrame() { captureNext(scroll: true) }
+    @objc private func toggleAutomaticCapture() {
+        if automaticRunning { captureTask?.cancel(); return }
+        guard #available(macOS 26.0, *), AXIsProcessTrusted(), !busy, let service, let source, let session,
+              session.pendingSeam == nil, session.capturedFrameCount > 0, let operation, operation.isActive else { return }
+        busy = true; automaticRunning = true; updateButtons()
+        status.stringValue = L10n.text("正在核验当前画面，准备连续滚动…")
+        captureTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.operation === operation {
+                    self.busy = false; self.automaticRunning = false; self.captureTask = nil; self.updateButtons()
+                }
+            }
+            do {
+                let stop = try await ScreenshotLongCaptureBatch.run(operation: operation, verifyStart: { check in
+                    try await session.verifyAutomaticStart(using: service, source: source, options: self.options, checking: check)
+                }, next: { check in
+                    let seam = try await session.scrollAndCapture(using: service, source: source, options: self.options,
+                        waitingForPointer: { self.status.stringValue = L10n.text("请将鼠标移回原选区，最多等待2秒；不会自动移动鼠标。") }, checking: check)
+                    if session.pendingSeam != nil { return .review }
+                    if seam?.duplicate == true { return .duplicate }
+                    self.status.stringValue = L10n.format("已捕获 %d 帧，仍在核验所选区域。", session.capturedFrameCount)
+                    return .appended
+                })
+                guard self.operation === operation else { return }
+                switch stop {
+                case .review:
+                    if let pending = session.pendingSeam { self.showSeam(pending) }
+                case .duplicate:
+                    self.status.stringValue = L10n.text("画面没有移动。已核验分段可手动续拍或完成。")
+                case .limit:
+                    self.status.stringValue = L10n.text("已达本轮连续捕获上限。已核验分段可手动续拍或完成。")
+                }
+            } catch {
+                guard operation.isActive, self.operation === operation else { return }
+                if let pending = session.pendingSeam { self.showSeam(pending) }
+                else if Task.isCancelled { self.status.stringValue = L10n.text("已停止连续捕获。已核验分段可手动续拍或完成。") }
+                else {
+                    self.status.stringValue = L10n.text(error.localizedDescription) + "\n" + L10n.text("已核验分段可手动续拍或完成。")
+                }
+            }
+        }
+    }
     @objc private func acceptSeam() {
         do { try session?.acceptPending(overlapPixels: Int(seamSlider.doubleValue.rounded())); previewStack?.isHidden = true; status.stringValue = "已按用户确认追加此帧。可继续滚动。"; updateButtons() }
         catch { status.stringValue = error.localizedDescription }
@@ -164,7 +215,7 @@ final class ScreenshotLongCapturePanelController: NSObject, NSWindowDelegate {
     private func cancelSession(notify: Bool) {
         operation = nil
         selection?.cancel(); selection = nil
-        captureTask?.cancel(); captureTask = nil; session?.cancel(); session = nil; service = nil; source = nil; completion = nil; busy = false
+        captureTask?.cancel(); captureTask = nil; session?.cancel(); session = nil; service = nil; source = nil; completion = nil; busy = false; automaticRunning = false
         closePanel(); clearPreviews(); if notify { onCancel?() }
     }
 }

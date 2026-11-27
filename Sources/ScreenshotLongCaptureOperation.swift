@@ -30,6 +30,46 @@ final class ScreenshotLongCaptureOperation {
     }
 }
 
+/// Runs only after the dedicated control is clicked. The same batch check is
+/// called by the native scroll transaction immediately before posting input.
+@MainActor enum ScreenshotLongCaptureBatch {
+    enum Step { case appended, duplicate, review }
+    enum Stop: Equatable { case duplicate, review, limit }
+    private struct DeadlineReached: Error {}
+
+    static func run(operation: ScreenshotLongCaptureOperation,
+                    uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                    verifyStart: (_ check: () throws -> Void) async throws -> Void,
+                    next: (_ check: () throws -> Void) async throws -> Step) async throws -> Stop {
+        let deadline = uptime() + 8
+        func check() throws {
+            try operation.checkActive()
+            guard uptime() < deadline else { throw DeadlineReached() }
+        }
+        do {
+            try check()
+            try await verifyStart(check)
+            for _ in 0..<12 {
+                try check()
+                let step = try await next(check)
+                try operation.checkActive()
+                switch step {
+                case .appended: continue
+                case .duplicate: return .duplicate
+                case .review: return .review
+                }
+            }
+            return .limit
+        } catch {
+            try operation.checkActive()
+            // The native scroll guard may wrap the deadline error in its own
+            // safely-stopped result, so recheck the same monotonic clock here.
+            if error is DeadlineReached || uptime() >= deadline { return .limit }
+            throw error
+        }
+    }
+}
+
 struct ScreenshotLongCapturePreparedSource {
     let window: ScreenshotCaptureWindow
     let display: ScreenshotCaptureDisplay

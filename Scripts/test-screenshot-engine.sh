@@ -26,6 +26,7 @@ for file in "${SOURCE_FILES[@]}"; do
   cp "$file" "$STAGING/Sources/"
 done
 cp "$PROJECT_DIR/Sources/HostedInputGeneration.swift" "$STAGING/Sources/"
+cp "$PROJECT_DIR/Shared/GaoLocalization.swift" "$STAGING/Sources/"
 cp "$PROJECT_DIR"/Tests/ScreenshotEngine/*.swift "$STAGING/Tests/"
 # Freeze the exact source set; compiling types does not instantiate an App or View.
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -target arm64-apple-macos14.0 \

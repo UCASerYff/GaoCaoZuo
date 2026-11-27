@@ -5,8 +5,11 @@ PROJECT_DIR=${0:A:h:h}
 APP_VERSION=$(tr -d '\n' < "$PROJECT_DIR/VERSION")
 BUILD_NUMBER=$(tr -d '\n' < "$PROJECT_DIR/BUILD")
 [[ "$APP_VERSION" =~ '^[0-9]+\.[0-9]{2}$' && "$BUILD_NUMBER" =~ '^[0-9]+$' ]] || { print -u2 '版本或构建号无效'; exit 1; }
-if [[ $# != 0 ]]; then
-  [[ $# == 2 && "$1" == '--app-only' && "$2" == /* && "$2" == *.app && ! -e "$2" ]] || { print -u2 '用法：build.sh [--app-only <不存在的绝对路径.app>]'; exit 1; }
+COMPILE_ONLY=false
+if [[ $# == 1 && "$1" == '--compile-only' ]]; then
+  COMPILE_ONLY=true
+elif [[ $# != 0 ]]; then
+  [[ $# == 2 && "$1" == '--app-only' && "$2" == /* && "$2" == *.app && ! -e "$2" ]] || { print -u2 '用法：build.sh [--compile-only | --app-only <不存在的绝对路径.app>]'; exit 1; }
 fi
 # Every output App, including a caller-specified copy, must already be inside
 # a noindex container before its first byte is generated.
@@ -49,7 +52,7 @@ ditto "$PROJECT_DIR/QuickLookExtension" "$STAGING/QuickLookExtension"
 cp "$PROJECT_DIR/Scripts/QuickLookArchiveBrokerMain.swift" "$STAGING/BrokerMain.swift"
 cp "$PROJECT_DIR/Scripts/QuickLookCallerAccess.c" "$STAGING/QuickLookCallerAccess.c"
 mkdir -p "$BROKER/Contents/MacOS"
-if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Assets/Lettering.png" -nt "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Scripts/ComposeIcon.swift" -nt "$PROJECT_DIR/Assets/AppIcon.png" ]]; then
+if [[ "$COMPILE_ONLY" == false && ( ! -f "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Assets/Lettering.png" -nt "$PROJECT_DIR/Assets/AppIcon.png" || "$PROJECT_DIR/Scripts/ComposeIcon.swift" -nt "$PROJECT_DIR/Assets/AppIcon.png" ) ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/ComposeIcon.swift" "$PROJECT_DIR/Assets/Lettering.png" "$PROJECT_DIR/Assets/AppIcon.png"
 fi
 swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos14.0 -sdk "$SDK" -module-cache-path "$STAGING/cache" \
@@ -70,7 +73,7 @@ swiftc -swift-version 5 -Xfrontend -disable-sandbox -O -target arm64-apple-macos
   -framework FinderSync -framework AppKit -framework SwiftUI -framework UniformTypeIdentifiers -framework CryptoKit \
   -framework ApplicationServices -framework Carbon -framework CoreImage -framework ServiceManagement \
   -framework IOKit -framework Security -framework ImageIO -framework Quartz -framework CoreWLAN -framework ScreenCaptureKit -framework AVFoundation -framework AVKit -framework Vision -framework PDFKit -framework Accelerate -o "$BROKER/Contents/MacOS/ArchiveBroker"
-if [[ ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ]]; then
+if [[ "$COMPILE_ONLY" == false && ( ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "$PROJECT_DIR/Assets/AppIcon.png" -nt "$PROJECT_DIR/Assets/AppIcon.icns" ) ]]; then
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
@@ -94,7 +97,28 @@ import plistlib,sys
 from pathlib import Path
 Path(sys.argv[1]).write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.gaoseries.GaoCaoZuo.QuickLook.ArchiveBroker','CFBundleExecutable':'ArchiveBroker','CFBundlePackageType':'XPC!','CFBundleShortVersionString':sys.argv[2],'CFBundleVersion':sys.argv[3],'XPCService':{'ServiceType':'Application','RunLoopType':'NSRunLoop'}}))
 PY
-plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist" "$QL_EXT/Contents/Info.plist"
+plutil -lint "$APP/Contents/Info.plist" "$EXT/Contents/Info.plist" "$QL_EXT/Contents/Info.plist" "$BROKER/Contents/Info.plist"
+if [[ "$COMPILE_ONLY" == true ]]; then
+  # Check the production link outputs and bundle metadata in the temporary stage.
+  # This mode discards the stage and has no installation or distribution output.
+  python3 - "$APP_VERSION" "$BUILD_NUMBER" "$APP" "$EXT" "$QL_EXT" "$BROKER" <<'PY'
+from pathlib import Path
+import plistlib
+import subprocess
+import sys
+
+version, build = sys.argv[1:3]
+for component in sys.argv[3:]:
+    contents = Path(component) / 'Contents'
+    info = plistlib.loads((contents / 'Info.plist').read_bytes())
+    binary = contents / 'MacOS' / info['CFBundleExecutable']
+    arches = subprocess.check_output(['xcrun', 'lipo', '-archs', str(binary)], text=True).split()
+    if info['CFBundleShortVersionString'] != version or info['CFBundleVersion'] != build or arches != ['arm64']:
+        raise SystemExit('Unexpected version, build or architecture: ' + info['CFBundleIdentifier'])
+    print(f"Verified {info['CFBundleIdentifier']} {version} ({build}) {arches[0]}")
+PY
+  exit 0
+fi
 # Stable project identity only. The signer preserves per-object entitlements and
 # policy flags, replaces old hash-bound requirements, then verifies every Mach-O.
 # A missing/unusable key or wrong Team is fatal; never fall back to ad-hoc.

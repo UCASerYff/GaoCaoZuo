@@ -10,6 +10,21 @@ import Darwin
     let original=root.appendingPathComponent("public-original.zip"),candidate=root.appendingPathComponent("candidate.zip"),backups=root.appendingPathComponent("backups",isDirectory:true)
     let old=Data("Public original content".utf8),new=Data("Public replacement content".utf8)
     try old.write(to:original);try new.write(to:candidate);try fm.setAttributes([.posixPermissions:0o640],ofItemAtPath:original.path)
+
+    let chosen=root.appendingPathComponent("chosen",isDirectory:true),moved=root.appendingPathComponent("moved",isDirectory:true)
+    try fm.createDirectory(at:chosen,withIntermediateDirectories:false)
+    let chosenFD=try GaoActionFiles.openPath(chosen,directory:true,owned:false)
+    defer{close(chosenFD)}
+    let unsafeCopy=chosen.appendingPathComponent("changed-parent.zip")
+    try await rejects {
+        _=try ArchiveOriginalCommit.publishCopy(candidate,to:unsafeCopy,directory:chosenFD) {
+            try fm.moveItem(at:chosen,to:moved)
+            try fm.createDirectory(at:chosen,withIntermediateDirectories:false)
+        }
+    }
+    try check(try fm.contentsOfDirectory(atPath:chosen.path).isEmpty && fm.contentsOfDirectory(atPath:moved.path).isEmpty,
+              "Copy accidentally committed to a changed path or left its temporary file")
+
     let tag=try PropertyListSerialization.data(fromPropertyList:["GaoPublicTest\n0"],format:.binary,options:0)
     try tag.withUnsafeBytes{guard setxattr(original.path,"com.apple.metadata:_kMDItemUserTags",$0.baseAddress,tag.count,0,0)==0 else {throw DataFailure.message("Cannot set public tag fixture")}}
     let requestID=UUID(),identity=try QuickLookArchiveIdentity(url:original),hash=try FileTools.sha256(original)
@@ -49,6 +64,29 @@ import Darwin
         let wrong=QuickLookArchiveEditRequest(kind:.saveOriginal,archive:archive,identity:archiveIdentity,sha256:archiveHash,password:"wrong-public-password",adding:[added])
         try await rejects {_=try await QuickLookArchiveEditBackend.perform(wrong,service:try service(),backupDirectory:backups)}
         try check(try FileTools.sha256(archive)==archiveHash,"Wrong password changed original")
+
+        let copyURL=root.appendingPathComponent("encrypted-copy."+format.rawValue)
+        let copy=QuickLookArchiveEditRequest(kind:.saveCopy,archive:archive,identity:archiveIdentity,sha256:archiveHash,
+            password:password,adding:[added],copyDestination:copyURL)
+        var wrongCopy=copy; wrongCopy.password="wrong-public-password"
+        try await rejects {_=try await QuickLookArchiveEditBackend.perform(wrongCopy,service:try service(),backupDirectory:backups)}
+        try check(!fm.fileExists(atPath:copyURL.path),"Wrong password produced an edited copy")
+        let toCopy=try await QuickLookArchiveEditBackend.perform(copy,service:try service(),backupDirectory:backups)
+        let copySHA=try FileTools.sha256(copyURL)
+        try check(toCopy.resultSHA256==copySHA && toCopy.backup==nil && toCopy.members.filter{!$0.directory}.allSatisfy(\.encrypted),"Encrypted edit copy lost encryption or hash binding")
+        let decodedCopy=root.appendingPathComponent("decoded-copy-"+format.rawValue)
+        _=try await creator.extract(archive:copyURL,to:decodedCopy,password:password,selected:nil)
+        try check(try Data(contentsOf:decodedCopy.appendingPathComponent(input.lastPathComponent))==Data(contentsOf:input) && Data(contentsOf:decodedCopy.appendingPathComponent(added.lastPathComponent))==Data(contentsOf:added),"Saved edited copy failed exact-byte verification")
+        try await rejects {_=try await QuickLookArchiveEditBackend.perform(copy,service:try service(),backupDirectory:backups)}
+        try check(try FileTools.sha256(archive)==archiveHash && FileTools.sha256(copyURL)==copySHA,"Copy conflict overwrote existing copy or original")
+
+        let linkedFolder=root.appendingPathComponent("linked-folder-"+format.rawValue,isDirectory:true)
+        try fm.createSymbolicLink(at:linkedFolder,withDestinationURL:root)
+        var linkedCopy=copy; linkedCopy.copyDestination=linkedFolder.appendingPathComponent("escaped."+format.rawValue)
+        try await rejects {_=try await QuickLookArchiveEditBackend.perform(linkedCopy,service:try service(),backupDirectory:backups)}
+        try check(!fm.fileExists(atPath:root.appendingPathComponent("escaped."+format.rawValue).path),"Edited copy followed a destination directory link")
+        try check(try !fm.contentsOfDirectory(atPath:root.path).contains{$0.hasPrefix(".gaocaozuo-archive-copy-")},"Copy left temporary output")
+
         let request=QuickLookArchiveEditRequest(kind:.saveOriginal,archive:archive,identity:archiveIdentity,sha256:archiveHash,password:password,adding:[added])
         let response=try await QuickLookArchiveEditBackend.perform(request,service:try service(),backupDirectory:backups)
         try check(response.status=="completed" && response.members.contains{$0.path==added.lastPathComponent} && response.members.filter{!$0.directory}.allSatisfy{$0.encrypted},"Scoped original save lost new member or encryption: "+response.members.map{"\($0.path) directory=\($0.directory) encrypted=\($0.encrypted)"}.joined(separator:"; "))
@@ -61,5 +99,5 @@ import Darwin
         let directEntries=try await creator.list(archive:archive,password:password)
         try check(directEntries.contains{$0.path==input.lastPathComponent} && !directEntries.contains{$0.path==added.lastPathComponent} && directEntries.filter{!$0.isDirectory}.allSatisfy(\.isEncrypted),"Direct original edit changed retained member or encryption")
     }
-    print("原位保存专项通过（\(checks)）：真实加密ZIP/7Z原位重建、解密精确字节、密码错误不改原包、原包权限/Finder标签、成功后无备份或临时旧原件残留、陈旧目标拒绝、失败恢复及外部改动保护；仅公开合成资料，无GUI。")
+    print("保存专项通过（\(checks)）：真实加密 ZIP/7Z 原位重建和另存副本、精确解密、冲突和链接拒绝、原包保护及失败恢复。使用合成资料，无 GUI。")
 }

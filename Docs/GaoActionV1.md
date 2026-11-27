@@ -4,7 +4,7 @@
 
 ## 动作归属和能力探测
 
-搞操作保留消费者与结果接收功能，V1.15起同时提供`windows.overview`、`desktop.openSettings`。这两动作固定无参数、无附件、无引用，只在本应用独立确认后打开实际界面；不会由外部请求截图、关闭或移动窗口，completed仅说明界面实际打开。其余请求不由本App冒充提供方。
+搞操作保留消费者与结果接收功能。V1.15 起提供 `windows.overview`、`desktop.openSettings` 及下表的截图工作台动作。两项桌面界面动作固定无参数、无附件、无引用，并经独立确认后打开界面。`completed` 只表示界面已打开。
 
 2026-11-02整合后的唯一归属：文件搜索/选择/定位/关联由`com.gaoseries.GaoWenJian`提供；`downloads.prepare`由`cn.mendao.launcher`提供；两项窗口界面动作由`com.gaoseries.GaoCaoZuo`提供。内部总览动作直接打开自身，不往已退休App发送。旧账本不重放，旧owner不作为新请求兼容兜底。
 
@@ -12,12 +12,12 @@
 
 | 本地ID | 固定动作 | 明确目标 |
 |---|---|---|
-| file.ishot | capture.region | com.gaoseries.GaoJieTu |
-| file.capture.window | capture.window | com.gaoseries.GaoJieTu |
-| file.capture.display | capture.display | com.gaoseries.GaoJieTu |
-| file.ishot.markup | images.annotate | com.gaoseries.GaoJieTu |
-| file.images.pin | images.pin | com.gaoseries.GaoJieTu |
-| file.ocr | ocr.files | com.gaoseries.GaoJieTu |
+| file.ishot | capture.region | com.gaoseries.GaoCaoZuo |
+| file.capture.window | capture.window | com.gaoseries.GaoCaoZuo |
+| file.capture.display | capture.display | com.gaoseries.GaoCaoZuo |
+| file.ishot.markup | images.annotate | com.gaoseries.GaoCaoZuo |
+| file.images.pin | images.pin | com.gaoseries.GaoCaoZuo |
+| file.ocr | ocr.files | com.gaoseries.GaoCaoZuo |
 | file.diskmap | storage.inspect（缺省metadata） | com.gaoseries.GaoJiLing |
 | file.storage.duplicates | storage.inspect（mode=duplicates） | com.gaoseries.GaoJiLing |
 | file.cleanup.review | cleanup.review | com.gaoseries.GaoJiLing |
@@ -53,7 +53,15 @@ references是待核实原件描述，不是访问授权、可信身份或删除�
 
 用户在“文件→跨应用任务…”可查看重启后任务、在Finder显示自己的包、继续核对已接收结果。接受前展示动作、来源声明、报告状态、附件名称和字节数，并说明来源与nonce不证明身份。用户点击接受后再次在后台用固定FD核验保留manifest与所有附件，再改变journal状态并显示副本；不自动执行附件，不覆盖已编辑原件。approved/executing中断后转interrupted，不能自动重放。显式重递交会提示旧任务可能仍在提供方执行，重新核验旧manifest/附件/原件引用，以新UUID和新TTL建立请求。
 
-提供方返回结果必须在自己的Exchange生成新result包，再由用户“发送结果”显式交给原App；不得把私密正文、原路径、密码或Cookie写进URL、公共剪贴板、argv或日志。本App不提供本地HTTP控制服务。
+提供方先在私有 Exchange 生成并留存结果。用户可选择“发送结果”交给原应用，或主动导出 OCR 结果。私密正文、原路径、密码和 Cookie 均留在各自授权范围内。
+
+## OCR 审核后自动回传
+
+从 V1.16 build 18 起，搞文件 `com.gaoseries.GaoWenJian` 和搞研究 `com.academic-achievement.manager` 可在各自持久化出站请求后发布 OCR 回传票据。macOS 当前用户根目录为 `~/Library/Application Support/GaoSeries/GaoAction/OcrReturns-v1/`，其下只访问该请求的小写规范 UUID 目录。发起方以 `0700` 建立私有目录，以 `0600` 原子写入 UTF-8 `request.json`。
+
+票据字段为 `schemaVersion=1`、`requestID`、`action="ocr.files"`、`sourceBundleID`、`targetBundleID="com.gaoseries.GaoCaoZuo"`、`requestManifestSHA256`、`expiresAt`。票据的 `requestID` 和 `expiresAt` 逐字匹配原请求。`requestManifestSHA256` 为原始 `manifest.json` 字节的 SHA-256 小写十六进制。仅目录槽位固定使用小写 UUID。
+
+用户在提供方确认并完成本机 OCR 后，提供方重新核验票据和私有原始结果，将完整的 `result.gaoaction` 原子提交到同一目录。结果保留原 `inReplyTo`、逐文件和页码关联，provenance 包含 `requestManifestSHA256`。已存在的目标保留，匹配的结果可以幂等核对。发起方独立验证并展示待复核结果。原请求逾期、票据失配或回传失败时，仍可从历史导出已生成的结果，手工重封使用传统 V1 时效。
 
 ## 结果语义与兼容核对
 

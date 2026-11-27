@@ -11,10 +11,10 @@ enum QuickLookEditEngine {
         func finish(_ value:Result<Data,Error>){lock.lock();defer{lock.unlock()};if result==nil{result=value}}
         func take()->Result<Data,Error>?{lock.lock();defer{lock.unlock()};return result}
     }
-    static func request(kind:QuickLookArchiveEditRequest.Kind,url:URL,password:String?,adding:[URL]=[],removing:[String]=[],removeHidden:Bool=false,cancellation:NativeArchive.Cancellation)throws->QuickLookArchiveEditRequest {
+    static func request(kind:QuickLookArchiveEditRequest.Kind,url:URL,password:String?,adding:[URL]=[],removing:[String]=[],removeHidden:Bool=false,copyDestination:URL?=nil,cancellation:NativeArchive.Cancellation)throws->QuickLookArchiveEditRequest {
         let identity=try QuickLookArchiveIdentity(url:url),digest=try NativeArchive.originalDigest(url,cancellation:cancellation)
         guard try QuickLookArchiveIdentity(url:url)==identity else {throw NativeArchive.Failure(message:L10n.text("压缩包在读取期间发生变化，请重新打开。"))}
-        return .init(kind:kind,archive:url,identity:identity,sha256:digest,password:password,adding:adding,removing:removing,removeHidden:removeHidden)
+        return .init(kind:kind,archive:url,identity:identity,sha256:digest,password:password,adding:adding,removing:removing,removeHidden:removeHidden,copyDestination:copyDestination)
     }
     static func run(_ request:QuickLookArchiveEditRequest,directory:URL?=nil,cancellation:NativeArchive.Cancellation)throws->QuickLookArchiveEditResponse {
         let bundle=Bundle(for:NativeArchiveBrowserController.self)

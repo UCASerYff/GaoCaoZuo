@@ -5,9 +5,11 @@ import Darwin
 
 /// Bound recursive JSON before Codable materializes arbitrary parameter/provenance trees.
 /// Duplicate keys are ambiguous across decoders and are never accepted in a handoff.
-private struct ScreenshotGaoJSONGuard {
-    let bytes:[UInt8];var offset=0
-    static func validate(_ data:Data) throws {var parser=Self(bytes:Array(data));try parser.value(depth:0);parser.space();guard parser.offset==parser.bytes.count else{throw ScreenshotGaoActionContract.reject("invalidManifest","交接清单 JSON 不完整。")}}
+struct ScreenshotGaoJSONGuard {
+    private let bytes:[UInt8]
+    private let integerOneKey:String?
+    private var offset=0
+    static func validate(_ data:Data, integerOneKey:String? = nil) throws {var parser=Self(bytes:Array(data),integerOneKey:integerOneKey);try parser.value(depth:0);parser.space();guard parser.offset==parser.bytes.count else{throw ScreenshotGaoActionContract.reject("invalidManifest","交接清单 JSON 不完整。")}}
     mutating func space(){while offset<bytes.count,[UInt8(9),10,13,32].contains(bytes[offset]){offset+=1}}
     mutating func string() throws -> String {
         space();guard offset<bytes.count,bytes[offset]==34 else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 对象键无效。")}
@@ -27,8 +29,14 @@ private struct ScreenshotGaoJSONGuard {
             if offset<bytes.count,bytes[offset]==end{offset+=1;return}
             var keys=Set<String>()
             while true {
-                if first==123{let key=try string();guard keys.insert(key).inserted else{throw ScreenshotGaoActionContract.reject("invalidManifest","交接清单含重复 JSON 键。")};space();guard offset<bytes.count,bytes[offset]==58 else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 对象无效。")};offset+=1}
-                try value(depth:depth+1);space();guard offset<bytes.count else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 容器未结束。")}
+                var key:String?
+                if first==123{let name=try string();key=name;guard keys.insert(name).inserted else{throw ScreenshotGaoActionContract.reject("invalidManifest","交接清单含重复 JSON 键。")};space();guard offset<bytes.count,bytes[offset]==58 else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 对象无效。")};offset+=1}
+                space();let start=offset
+                try value(depth:depth+1)
+                if depth == 0, let key, key == integerOneKey, !bytes[start..<offset].elementsEqual([UInt8(49)]) {
+                    throw ScreenshotGaoActionContract.reject("invalidManifest", "交接清单版本无效。")
+                }
+                space();guard offset<bytes.count else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 容器未结束。")}
                 if bytes[offset]==end{offset+=1;return};guard bytes[offset]==44 else{throw ScreenshotGaoActionContract.reject("invalidManifest","JSON 分隔无效。")};offset+=1
             }
         }
@@ -104,30 +112,41 @@ enum ScreenshotGaoPrivateIO {
         return bytes
     }
     @discardableResult static func copy(_ source: ScreenshotGaoFixedFD, to destination: ScreenshotGaoFixedFD, name: String, maximum: Int64, expectedSize: Int64? = nil, expectedSHA256: String? = nil, chunkObserver: (() throws -> Void)? = nil) throws -> (Int64,String) {
-        let before = try source.statValue(); try checkRegular(before)
-        guard before.st_size <= maximum, expectedSize == nil || before.st_size == expectedSize else { throw ScreenshotGaoActionContract.reject("sizeMismatch","交接附件大小与声明不一致或超过限制。") }
         let output = try ScreenshotGaoFixedFD(openat(destination.value,name,O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,mode_t(0o600)))
-        var hasher = SHA256(); var total: Int64 = 0; var buffer = [UInt8](repeating:0,count:65_536)
         do {
-            while true {
-                let count = Darwin.read(source.value,&buffer,buffer.count)
-                if count == 0 { break }
-                if count < 0 { if errno == EINTR { continue }; throw ScreenshotGaoActionContract.reject("unreadable","交接附件读取失败。") }
-                guard total + Int64(count) <= maximum else { throw ScreenshotGaoActionContract.reject("payloadLimit","交接文件超过允许大小。") }
-                let data = Data(buffer.prefix(count)); hasher.update(data:data)
-                try writeAll(data,to:output.value); total += Int64(count)
+            let snapshot = try checkContents(source, maximum: maximum, expectedSize: expectedSize, expectedSHA256: expectedSHA256) { data in
+                try writeAll(data,to:output.value)
                 try chunkObserver?()
             }
-            let after = try source.statValue()
-            guard unchanged(before,after), total == before.st_size else { throw ScreenshotGaoActionContract.reject("sourceChanged","交接附件在复制期间发生变化，请重新发送。") }
-            let digest = hasher.finalize().map { String(format:"%02x",$0) }.joined()
-            guard expectedSHA256 == nil || expectedSHA256 == digest else { throw ScreenshotGaoActionContract.reject("digestMismatch","交接附件摘要不符，未打开文档。") }
             guard fsync(output.value) == 0 else { throw ScreenshotGaoActionContract.reject("unwritable","交接副本无法完整写入。") }
-            return (total,digest)
+            return snapshot
         } catch {
             _ = unlinkat(destination.value,name,0)
             throw error
         }
+    }
+
+    static func verify(_ source: ScreenshotGaoFixedFD, item: ScreenshotGaoActionItem) throws {
+        _ = try checkContents(source, maximum:item.byteCount, expectedSize:item.byteCount, expectedSHA256:item.sha256) { _ in }
+    }
+
+    private static func checkContents(_ source: ScreenshotGaoFixedFD, maximum: Int64, expectedSize: Int64?, expectedSHA256: String?, chunk: (Data) throws -> Void) throws -> (Int64, String) {
+        let before = try source.statValue(); try checkRegular(before)
+        guard before.st_size <= maximum, expectedSize == nil || before.st_size == expectedSize else { throw ScreenshotGaoActionContract.reject("sizeMismatch","交接附件大小与声明不一致或超过限制。") }
+        var hasher = SHA256(); var total: Int64 = 0; var buffer = [UInt8](repeating:0,count:65_536)
+        while true {
+            let count = Darwin.read(source.value,&buffer,buffer.count)
+            if count == 0 { break }
+            if count < 0 { if errno == EINTR { continue }; throw ScreenshotGaoActionContract.reject("unreadable","交接附件读取失败。") }
+            guard total + Int64(count) <= maximum else { throw ScreenshotGaoActionContract.reject("payloadLimit","交接文件超过允许大小。") }
+            let data = Data(buffer.prefix(count)); hasher.update(data:data)
+            try chunk(data); total += Int64(count)
+        }
+        let after = try source.statValue()
+        guard unchanged(before,after), total == before.st_size else { throw ScreenshotGaoActionContract.reject("sourceChanged","交接附件在复制期间发生变化，请重新发送。") }
+        let digest = hasher.finalize().map { String(format:"%02x",$0) }.joined()
+        guard expectedSHA256 == nil || expectedSHA256 == digest else { throw ScreenshotGaoActionContract.reject("digestMismatch","交接附件摘要不符，未打开文档。") }
+        return (total,digest)
     }
     static func writeAll(_ data: Data, to fd: Int32) throws {
         try data.withUnsafeBytes { buffer in
@@ -150,6 +169,20 @@ enum ScreenshotGaoPrivateIO {
 }
 
 enum ScreenshotGaoActionTransport {
+    static func verifyStagedOCR(_ package: ScreenshotGaoValidatedPackage) throws {
+        let directory = try ScreenshotGaoPrivateIO.directory(package.stagingURL, requirePrivate: true)
+        let manifest = try ScreenshotGaoPrivateIO.read(ScreenshotGaoPrivateIO.regular(directory, components: ["manifest.json"]), maximum: Int64(ScreenshotGaoActionContract.maximumManifestBytes))
+        guard ScreenshotFileSafety.digest(manifest) == package.manifestSHA256, package.stagedItems.map(\.item) == package.manifest.items else {
+            throw ScreenshotGaoActionContract.reject("sourceChanged", "OCR 交接输入在确认前发生变化，请重新发送。")
+        }
+        for staged in package.stagedItems {
+            guard staged.url.deletingLastPathComponent().path == package.stagingURL.path else {
+                throw ScreenshotGaoActionContract.reject("invalidPath", "交接附件路径无效。")
+            }
+            try ScreenshotGaoPrivateIO.verify(ScreenshotGaoPrivateIO.regular(directory, components: [staged.url.lastPathComponent]), item: staged.item)
+        }
+    }
+
     static func receive(packageURL: URL, exchangeRoot: URL, expectedTargetBundleID: String = ScreenshotGaoActionContract.bundleID, now: Date = Date(), chunkObserver: (() throws -> Void)? = nil) throws -> ScreenshotGaoValidatedPackage {
         guard packageURL.pathExtension.lowercased() == "gaoaction" else { throw ScreenshotGaoActionContract.reject("invalidPackage","请选择 .gaoaction 交接包。") }
         let package = try ScreenshotGaoPrivateIO.directory(packageURL)
@@ -246,7 +279,9 @@ enum ScreenshotGaoActionWriter {
         return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now)
     }
     static func writeResult(inReplyTo request: ScreenshotGaoActionManifest, status: String, items: [ScreenshotGaoOutgoingFile] = [], references: [ScreenshotGaoActionReference] = [], errorCode: String? = nil, provenance: [String:ScreenshotGaoJSONValue] = [:], exchangeRoot: URL, now: Date = Date()) throws -> URL {
-        let manifest = ScreenshotGaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:ScreenshotGaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:ScreenshotGaoActionContract.timestamp(now),expiresAt:ScreenshotGaoActionContract.timestamp(now.addingTimeInterval(ScreenshotGaoActionContract.ttl)),nonce:try nonce(),items:[],references:references,parameters:[:],inReplyTo:request.requestID,status:status,errorCode:errorCode,provenance:provenance)
+        // Research requests have fractional timestamps. Truncating the response's second would make an immediate result precede its request.
+        let fractional = request.action == ScreenshotOCRReturnBinding.action
+        let manifest = ScreenshotGaoActionManifest(kind:"result",requestID:UUID().uuidString,sourceBundleID:ScreenshotGaoActionContract.bundleID,targetBundleID:request.sourceBundleID,action:request.action,createdAt:ScreenshotGaoActionContract.timestamp(now, fractional:fractional),expiresAt:ScreenshotGaoActionContract.timestamp(now.addingTimeInterval(ScreenshotGaoActionContract.ttl), fractional:fractional),nonce:try nonce(),items:[],references:references,parameters:[:],inReplyTo:request.requestID,status:status,errorCode:errorCode,provenance:provenance)
         return try write(manifest:manifest,files:items,exchangeRoot:exchangeRoot,now:now)
     }
     private static func nonce() throws -> String {

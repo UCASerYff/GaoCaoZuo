@@ -59,13 +59,13 @@ enum NativeArchive {
         let items: [Item]
         fileprivate let bound: BoundItem?
         var canEditCopy: Bool { ["zip", "7z"].contains(format) && !items.contains { $0.encrypted || $0.kind == .unsupported } }
+        var canEditEncryptedCopy: Bool {
+            ["zip", "7z"].contains(format) && items.contains(where: \.encrypted) && !items.contains { $0.kind == .unsupported }
+        }
         var editCopyUnavailableReason: String? {
-            guard !canEditCopy else { return nil }
-            if ["zip", "7z"].contains(format), items.contains(where: \.encrypted) {
-                return "加密 ZIP/7Z 可输入密码读取目录，再保存到原压缩包；编辑副本入口仅支持未加密包。"
-            }
+            guard !canEditCopy, !canEditEncryptedCopy else { return nil }
             if !["zip", "7z"].contains(format) { return "此格式可在主应用中提取后新建 ZIP/7Z；此预览不提供重新保存。" }
-            return "原生编辑副本仅支持未加密且不含链接的 ZIP/7Z；原压缩包保留。"
+            return "预览编辑超过保护预算，或包含不支持的链接；原压缩包保留。"
         }
     }
     struct VerifiedFile: Equatable { let size: Int64; let digest: String }

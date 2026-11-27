@@ -3,13 +3,15 @@ import AppKit
 enum InputOpenTargets {
     /// Validate the whole list before handing any target to Launch Services.
     /// This parses only stored selectors; it never reads file or document contents.
-    static func urls(_ values:[String])throws->[URL] {
+    static func urls(_ values:[String], inferDirectoryType:Bool = true)throws->[URL] {
         guard !values.isEmpty,values.count<=32 else {throw SystemControlError.message("打开目标必须为1–32个明确路径或网址。")}
         return try values.map {value in
             guard !value.isEmpty,value.utf8.count<=8192,!value.contains("\0"),!value.contains("\n"),!value.contains("\r") else {
                 throw SystemControlError.message("打开目标包含无效字符或超过预算。")
             }
-            if value.hasPrefix("/") {return URL(fileURLWithPath:value)}
+            if value.hasPrefix("/") {
+                return inferDirectoryType ? URL(fileURLWithPath:value) : URL(fileURLWithPath:value,isDirectory:value.hasSuffix("/"))
+            }
             guard let u=URL(string:value),let scheme=u.scheme?.lowercased(),["http","https","file"].contains(scheme),u.user==nil,u.password==nil else {
                 throw SystemControlError.message("只支持明确文件路径和HTTP(S)网址；未知协议未执行。")
             }

@@ -17,6 +17,9 @@ struct ScreenshotGaoProcessedRequest: Codable, Equatable, Identifiable {
     var phase: ScreenshotGaoRequestPhase
     var resultPackageName: String?
     var errorCode: String?
+    var ocrReturnBinding: ScreenshotOCRReturnBinding? = nil
+    var resultManifestSHA256: String? = nil
+    var automaticReturn: ScreenshotOCRReturnStatus? = nil
     var id: String { requestID }
 }
 
@@ -48,6 +51,7 @@ final class ScreenshotGaoProcessedRequestStore {
             for record in envelope.records {
                 guard UUID(uuidString:record.requestID) != nil, ScreenshotGaoActionContract.validSHA(record.manifestSHA256), ScreenshotGaoActionContract.knownActions.contains(record.action), ScreenshotGaoActionContract.validBundleID(record.sourceBundleID), ["request","result"].contains(record.kind), ScreenshotGaoActionContract.date(record.receivedAt) != nil, ScreenshotGaoActionContract.date(record.updatedAt) != nil, indexed[UUID(uuidString:record.requestID)!.uuidString] == nil else { throw ScreenshotGaoActionContract.reject("recordCorrupt","交接历史损坏，已停止接收，未覆盖旧记录。") }
                 if let package = record.resultPackageName { guard Self.safeResultName(package) else { throw ScreenshotGaoActionContract.reject("recordCorrupt","交接结果记录损坏，未覆盖旧记录。") } }
+                guard Self.isValidOCRRecord(record) else { throw ScreenshotGaoActionContract.reject("recordCorrupt","OCR 回传记录损坏，未覆盖旧记录。") }
                 indexed[UUID(uuidString:record.requestID)!.uuidString] = record
             }
             records = indexed; persistedDigest = ScreenshotFileSafety.digest(bytes)
@@ -69,12 +73,12 @@ final class ScreenshotGaoProcessedRequestStore {
             return .duplicate(existing)
         }
         guard records.count < 100_000 else { throw ScreenshotGaoActionContract.reject("recordLimit","交接历史已达上限，请保留记录后处理。") }
-        let record = ScreenshotGaoProcessedRequest(requestID:canonicalID,manifestSHA256:package.manifestSHA256,action:m.action,sourceBundleID:m.sourceBundleID,kind:m.kind,receivedAt:ScreenshotGaoActionContract.timestamp(now),updatedAt:ScreenshotGaoActionContract.timestamp(now),phase:.received)
+        let record = ScreenshotGaoProcessedRequest(requestID:m.requestID,manifestSHA256:package.manifestSHA256,action:m.action,sourceBundleID:m.sourceBundleID,kind:m.kind,receivedAt:ScreenshotGaoActionContract.timestamp(now),updatedAt:ScreenshotGaoActionContract.timestamp(now),phase:.received,ocrReturnBinding:ScreenshotOCRReturnBinding(package))
         var next = records; next[canonicalID] = record
         try persist(next); records = next
         return .new(record)
     }
-    @discardableResult func transition(requestID: String, to phase: ScreenshotGaoRequestPhase, resultPackageName: String? = nil, errorCode: String? = nil, now: Date = Date()) throws -> ScreenshotGaoProcessedRequest {
+    @discardableResult func transition(requestID: String, to phase: ScreenshotGaoRequestPhase, resultPackageName: String? = nil, errorCode: String? = nil, now: Date = Date(), resultManifestSHA256: String? = nil) throws -> ScreenshotGaoProcessedRequest {
         lock.lock(); defer { lock.unlock() }
         let canonicalID = UUID(uuidString:requestID)?.uuidString ?? requestID
         guard var record = records[canonicalID] else { throw ScreenshotGaoActionContract.reject("unknownRequest","交接请求不存在，未执行动作。") }
@@ -90,9 +94,36 @@ final class ScreenshotGaoProcessedRequestStore {
         guard allowed, resultPackageName == nil || Self.safeResultName(resultPackageName!), errorCode == nil || errorCode!.utf8.count <= 256 else { throw ScreenshotGaoActionContract.reject("invalidTransition","交接状态转换无效，未重复执行。") }
         record.phase = phase; record.updatedAt = ScreenshotGaoActionContract.timestamp(now)
         record.resultPackageName = resultPackageName ?? record.resultPackageName; record.errorCode = errorCode
+        record.resultManifestSHA256 = resultManifestSHA256
+        guard Self.isValidOCRRecord(record) else { throw ScreenshotGaoActionContract.reject("invalidTransition","OCR 回传状态转换无效。") }
         var next = records; next[canonicalID] = record
         try persist(next); records = next
         return record
+    }
+    func recordAutomaticOCRReturn(requestID: String, packageName: String, digest: String, status: ScreenshotOCRReturnStatus) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard let identifier = UUID(uuidString: requestID)?.uuidString, var record = records[identifier],
+              record.requestID == requestID, record.phase == .completed, record.ocrReturnBinding != nil,
+              record.resultPackageName == packageName, record.resultManifestSHA256 == digest else {
+            throw ScreenshotGaoActionContract.reject("resultChanged", "已保存交接结果与历史记录不一致。")
+        }
+        if record.automaticReturn == .published || record.automaticReturn == status { return }
+        record.automaticReturn = status
+        var next = records; next[identifier] = record
+        try persist(next); records = next
+    }
+
+    private static func isValidOCRRecord(_ record: ScreenshotGaoProcessedRequest) -> Bool {
+        if let binding = record.ocrReturnBinding {
+            guard binding.isValid, binding.requestID == record.requestID, binding.requestManifestSHA256 == record.manifestSHA256,
+                  binding.sourceBundleID == record.sourceBundleID, record.action == ScreenshotOCRReturnBinding.action,
+                  record.kind == "request" else { return false }
+        }
+        if let digest = record.resultManifestSHA256 {
+            guard ScreenshotGaoActionContract.validSHA(digest), record.phase == .completed,
+                  record.resultPackageName != nil, record.ocrReturnBinding != nil else { return false }
+        }
+        return record.automaticReturn == nil || record.resultManifestSHA256 != nil
     }
     private func persist(_ indexed: [String:ScreenshotGaoProcessedRequest]) throws {
         let currentFD = openat(directory.value,"ProcessedRequests.json",O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
