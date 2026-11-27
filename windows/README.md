@@ -1,6 +1,6 @@
 # 搞操作 1.16 Windows x64
 
-运行 `GaoCaoZuo-Windows-1.16-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.16+3`。安装范围是当前 Windows 用户。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。设置里的通知区域图标开关控制关闭窗口后是否继续后台运行，从图标菜单可再次打开或退出。
+运行 `GaoCaoZuo-Windows-1.16-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.16+4`。安装范围是当前 Windows 用户。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。设置里的通知区域图标开关控制关闭窗口后是否继续后台运行，从图标菜单可再次打开或退出。
 
 Windows 资料沿用 `%APPDATA%\GaoSeries\GaoCaoZuo`，安装与卸载均保留这个目录。隔离运行可用 `GaoCaoZuo.exe --data-dir "D:\GaoTest"`。旧设置的未知字段继续保留。损坏、版本过新或已有别的资料却缺失主设置的目录会提示并停止写入。剪贴板历史默认关闭，关闭时不读取已有历史。用户明确保存的压缩包密码依压缩包指纹存入 Windows 凭据管理器。
 
@@ -24,6 +24,8 @@ Windows 资料沿用 `%APPDATA%\GaoSeries\GaoCaoZuo`，安装与卸载均保留�
 ## `ocr.files` 交接
 
 在「截图与录制 → 历史与交接」选择 GaoAction V1 `.gaoaction` 请求目录，或把该目录通过资源管理器右键、`--gaoaction` 传入工作台。能力声明可用 `GaoCaoZuo-cli.exe --capabilities` 查询。审核页显示来源、识别参数和文件数。明确批准后才调用 WinRT 本机 OCR。请求和结果都使用 `.gaoaction` 目录扩展名，清单中的 `kind` 区分请求和结果。结果保留请求 ID、nonce、附件标识和源 SHA-256。单份 OCR 可校正文字，导出 TXT、Markdown、JSON 和带可搜索文字层的 PDF。识别语言取决于 Windows 已安装的 OCR 语言包。
+
+`1.16+4` 修复了 Windows 下部分未改动文件被 OCR 交接误判为读取期间变化的问题。读取期间持有只共享读取的文件句柄，并重新核对路径身份与附件摘要。
 
 ## 长截图、语言包与档案编辑
 

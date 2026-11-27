@@ -1,4 +1,4 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+3", [switch]$LocalizationOnly)
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.16+4", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
@@ -172,7 +172,11 @@ try {
             references=@(); parameters=@{languages=@($languages.languages[0]); outputs=@('text','searchablePDF')}
             items=@(@{id='test-image';relativePath='fixture.png';uti='public.png';byteCount=(Get-Item -LiteralPath $png).Length;sha256=$sha})
         } | ConvertTo-Json -Depth 8
-        [IO.File]::WriteAllText((Join-Path $package 'manifest.json'), $manifest)
+        $manifestPath = Join-Path $package 'manifest.json'
+        [IO.File]::WriteAllText($manifestPath, $manifest)
+        $older = $now.AddDays(-2)
+        [IO.File]::SetCreationTimeUtc($manifestPath, $older)
+        [IO.File]::SetCreationTimeUtc($png, $older)
         $review = (Post 'api/ocr-provider/review' @{path=$package}).result
         if ($review.status -ne 'pending' -or $review.requestID -ne $requestID) { throw 'Installed OCR review did not retain request ID.' }
         $approved = (Post 'api/ocr-provider/approve' @{requestID=$requestID;confirm=$true}).result

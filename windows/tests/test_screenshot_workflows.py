@@ -7,6 +7,7 @@ import queue
 import random
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -188,18 +189,132 @@ def test_ocr_provider_rejects_unsafe_windows_attachment_paths(tmp_path, relative
     assert provider.jobs() == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows file timestamps")
+def test_ocr_provider_accepts_stable_files_with_distinct_windows_timestamps(tmp_path):
+    import ctypes as c
+    import msvcrt
+    from ctypes import wintypes as w
+
+    from gaocaozuo.native_win import kernel
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    binary = b"unchanged attachment"
+    source, manifest = _request(tmp_path, now, binary)
+    set_time = kernel("SetFileTime", w.BOOL, w.HANDLE, c.POINTER(w.FILETIME), c.POINTER(w.FILETIME), c.POINTER(w.FILETIME))
+    creation_ticks = 133_485_408_001_234_567  # 2024-01-01 in 100 ns FILETIME ticks.
+    birth = w.FILETIME(creation_ticks & 0xFFFFFFFF, creation_ticks >> 32)
+    for path in (source / "manifest.json", source / "payload" / "a.png"):
+        with path.open("r+b") as stream:
+            assert set_time(msvcrt.get_osfhandle(stream.fileno()), c.byref(birth), c.byref(birth), None)
+
+    provider = OcrProvider(tmp_path / "isolated", clock=lambda: now)
+    review = provider.receive(source)
+    assert review["requestID"] == manifest["requestID"]
+    assert review["status"] == "pending"
+    assert provider.receive(source) == review
+    assert provider.jobs() == [review]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Win32 file sharing")
+def test_ocr_provider_pins_windows_path_during_attachment_read(tmp_path, monkeypatch):
+    from gaocaozuo import ocr_provider
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    data = b"original attachment"
+    source, _ = _request(tmp_path, now, data)
+    attachment = source.resolve() / "payload" / "a.png"
+    replacement = tmp_path / "different-file.png"
+    replacement.write_bytes(data)
+    open_windows_file = ocr_provider._open_windows_file
+    checked = False
+
+    @contextmanager
+    def verify_sharing(path):
+        nonlocal checked
+        with open_windows_file(path) as stream:
+            if path == attachment and not checked:
+                with pytest.raises(PermissionError):
+                    replacement.replace(attachment)
+                with pytest.raises(PermissionError):
+                    attachment.write_bytes(b"modified attachment")
+                checked = True
+            yield stream
+
+    monkeypatch.setattr(ocr_provider, "_open_windows_file", verify_sharing)
+    provider = OcrProvider(tmp_path / "isolated", clock=lambda: now)
+    assert provider.receive(source)["status"] == "pending"
+    assert checked and replacement.read_bytes() == data and attachment.read_bytes() == data
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Win32 file identity")
+def test_ocr_provider_path_recheck_distinguishes_identical_windows_files(tmp_path):
+    from gaocaozuo import ocr_provider
+
+    path, replacement = tmp_path / "same-name.bin", tmp_path / "replacement.bin"
+    data = b"same attachment bytes"
+    path.write_bytes(data)
+    replacement.write_bytes(data)
+    with ocr_provider._open_windows_file(path) as stream:
+        before = ocr_provider._windows_file_snapshot(stream, path)
+    replacement.replace(path)
+    with ocr_provider._open_windows_file(path) as stream:
+        after = ocr_provider._windows_file_snapshot(stream, path)
+    assert before[1] != after[1]
+    assert path.read_bytes() == data
+    # Isolate the actual native identity from other metadata a replacement may update.
+    expected = (after[0], before[1], *after[2:])
+    with pytest.raises(AppError) as error:
+        ocr_provider._check_current_path(path, expected)
+    assert error.value.code == "changed"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Win32 link-count validation")
+def test_ocr_provider_rejects_hard_linked_windows_attachment(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    source, _ = _request(tmp_path, now, b"original attachment")
+    os.link(source / "payload" / "a.png", tmp_path / "alias.png")
+    provider = OcrProvider(tmp_path / "isolated", clock=lambda: now)
+    with pytest.raises(AppError) as error:
+        provider.receive(source)
+    assert error.value.code == "unsafe"
+    assert provider.jobs() == []
+
+
+def _rewrite_preserving_size_and_mtime(path, content):
+    before = path.stat()
+    assert len(content) == before.st_size
+    path.write_bytes(content)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_ocr_provider_rejects_changed_source_digest_before_staging(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    source, _ = _request(tmp_path, now, b"original attachment")
+    _rewrite_preserving_size_and_mtime(source / "payload" / "a.png", b"modified attachment")
+    provider = OcrProvider(tmp_path / "isolated", clock=lambda: now)
+    with pytest.raises(AppError) as error:
+        provider.receive(source)
+    assert error.value.code == "changed"
+    assert provider.jobs() == []
+
+
 def test_ocr_provider_rechecks_staged_input_before_approval(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     path, manifest = _request(tmp_path, now, b"staged attachment")
     directory = tmp_path / "isolated"
-    provider = OcrProvider(directory, clock=lambda: now)
+
+    def start_ocr():
+        pytest.fail("OCR must not consume a staged attachment that changed after review")
+
+    provider = OcrProvider(directory, clock=lambda: now, session_factory=start_ocr)
     review = provider.receive(path)
     staged = directory / "OcrProvider" / manifest["requestID"] / "input-1.bin"
-    staged.write_bytes(b"altered contents!")
+    _rewrite_preserving_size_and_mtime(staged, b"altered contents!")
     with pytest.raises(AppError) as error:
         provider.approve(review["requestID"], True)
     assert error.value.code == "changed"
-    assert provider.jobs()[0]["status"] == "pending"
+    assert provider.jobs() == [review]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows.Media.Ocr")
@@ -218,6 +333,7 @@ def test_windows_native_ocr_pdf_and_gaoaction_handoff(tmp_path):
     ImageDraw.Draw(image).text((60, 80), "12345 67890", fill="black", font=ImageFont.truetype("arial.ttf", 80))
     png, pdf = tmp_path / "fixture.png", tmp_path / "fixture.pdf"
     image.save(png)
+    Image.init()  # The PDF writer uses the JPEG encoder, even when this test runs alone.
     image.save(pdf)
     document = session.ocr(True, paths=[png, pdf], languages=languages[:1])
     assert document["status"] == "completed"

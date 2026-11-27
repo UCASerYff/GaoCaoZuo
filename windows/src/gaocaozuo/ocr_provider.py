@@ -6,7 +6,6 @@ import base64
 import binascii
 import hashlib
 import json
-import ntpath
 import os
 import re
 import secrets
@@ -22,6 +21,9 @@ from gaocaozuo.errors import AppError
 from gaocaozuo.ocr import ENGINE, FORMATS, MAX_PAGES, OcrSession, validate_languages
 from gaocaozuo.screenshot import MAX_INPUT_BYTES, write_new
 from gaocaozuo.version import BUNDLE_ID, MARKETING_VERSION
+
+if os.name == "nt":
+    from gaocaozuo.ocr_provider_win import _open_windows_file, _windows_file_snapshot
 
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_PAYLOAD_BYTES = 2_147_483_648
@@ -97,40 +99,48 @@ def _regular(path: Path, *, directory=False):
     return info
 
 
-def _same_handle(source, path: Path, info) -> None:
-    stat_now = os.fstat(source.fileno())
-    if not stat.S_ISREG(stat_now.st_mode) or stat_now.st_nlink != 1 or (stat_now.st_dev, stat_now.st_ino, stat_now.st_size) != (info.st_dev, info.st_ino, info.st_size):
+def _stat_snapshot(info):
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise AppError("交接文件在校验时发生变化。", "changed")
+    return info.st_size, (info.st_dev, info.st_ino), info.st_mtime_ns, info.st_ctime_ns
+
+
+def _file_snapshot(source, path):
     if os.name == "nt":
-        import ctypes as c
-        import ctypes.wintypes as w
-        import msvcrt
+        return _windows_file_snapshot(source, path)
+    return _stat_snapshot(os.fstat(source.fileno()))
 
-        from gaocaozuo.native_win import kernel
 
-        buffer = c.create_unicode_buffer(32768)
-        needed = kernel("GetFinalPathNameByHandleW", w.DWORD, w.HANDLE, w.LPWSTR, w.DWORD, w.DWORD)(
-            msvcrt.get_osfhandle(source.fileno()), buffer, len(buffer), 0
-        )
-        expected = str(path.absolute())
-        canonical = buffer.value
-        if canonical.startswith("\\\\?\\UNC\\"):
-            canonical = "\\\\" + canonical[8:]
-        elif canonical.startswith("\\\\?\\"):
-            canonical = canonical[4:]
-        if needed == 0 or needed >= len(buffer) or ntpath.normcase(expected) != ntpath.normcase(canonical):
-            raise AppError("交接文件位置在校验时发生变化。", "changed")
+def _check_current_path(path, expected):
+    try:
+        if os.name == "nt":
+            with _open_windows_file(path) as source:
+                current = _windows_file_snapshot(source, path)
+        else:
+            current = _stat_snapshot(_regular(path))
+    except OSError as exc:
+        raise AppError("交接文件位置在校验时发生变化。", "changed") from exc
+    if current != expected:
+        raise AppError("交接文件位置在校验时发生变化。", "changed")
 
 
 def _read(path: Path, maximum: int, destination: Path | None = None, *, collect=True) -> tuple[bytes | None, int, str]:
-    first = _regular(path)
-    if first.st_size > maximum:
-        raise AppError("交接文件超过处理限制。", "invalid")
-    data = bytearray() if collect and destination is None else None
-    digest = hashlib.sha256()
-    count = 0
-    with path.open("rb") as input_stream:
-        _same_handle(input_stream, path, first)
+    if os.name == "nt":
+        path_snapshot = None
+        source = _open_windows_file(path)
+    else:
+        path_snapshot = _stat_snapshot(_regular(path))
+        source = path.open("rb")
+    with source as input_stream:
+        first = _file_snapshot(input_stream, path)
+        if path_snapshot is not None and first != path_snapshot:
+            raise AppError("交接文件在校验时发生变化。", "changed")
+        size = first[0]
+        if size > maximum:
+            raise AppError("交接文件超过处理限制。", "invalid")
+        data = bytearray() if collect and destination is None else None
+        digest = hashlib.sha256()
+        count = 0
         output_stream = destination.open("xb") if destination else None
         try:
             while chunk := input_stream.read(1024 * 1024):
@@ -145,9 +155,9 @@ def _read(path: Path, maximum: int, destination: Path | None = None, *, collect=
         finally:
             if output_stream:
                 output_stream.close()
-        last = os.fstat(input_stream.fileno())
-        if first.st_size != count or first.st_size != last.st_size or first.st_mtime_ns != last.st_mtime_ns or first.st_ctime_ns != last.st_ctime_ns:
+        if size != count or first != _file_snapshot(input_stream, path):
             raise AppError("交接文件在读取时发生变化。", "changed")
+        _check_current_path(path, first)
     return bytes(data) if data is not None else None, count, digest.hexdigest()
 
 
