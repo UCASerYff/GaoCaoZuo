@@ -161,7 +161,7 @@ func runScreenshotImportedOCRRestoreTests() async throws {
         try check(try Data(contentsOf: futureURL) == bytes, "future recovery JSON changed after rejection")
     }
 
-    // Exercise the actual migration -> read-only activity -> host loader path,
+    // Exercise archived recovery -> read-only activity -> host loader,
     // independently of the controller-only recovery fixtures above.
     func migratedRecovery(emptyOriginalDescriptor: Bool) async throws {
         let fixture = root.appendingPathComponent(emptyOriginalDescriptor ? "FailedSourceDescriptor.noindex" : "CompletedSource.noindex", isDirectory: true)
@@ -227,7 +227,8 @@ func runScreenshotImportedOCRRestoreTests() async throws {
         let migration = ScreenshotMigration(configuration: .init(sourceRoot: sourceRoot, targetRoot: targetRoot, archiveRoot: archiveRoot, auxiliaries: []))
         let plan = try migration.preview()
         try check(plan.conflicts.isEmpty, "isolated OCR migration unexpectedly conflicts")
-        let migrationResult = try migration.apply(plan, approvedDigest: plan.approvalDigest)
+        try seedArchivedScreenshotMigrationFixture(plan)
+        let migrationResult = try migration.recover(migrationID: plan.migrationID)
         let index = try ScreenshotMigrationActivity.validate(root: targetRoot)
         try check(index.blockers.isEmpty, "complete historical OCR closure was classified as unresolved")
         guard let entry = index.entries.first(where: { $0.kind == "ocr-recovery" }) else { throw Failure(message: "migration did not publish an OCR recovery entry") }
@@ -277,5 +278,5 @@ func runScreenshotImportedOCRRestoreTests() async throws {
     }
     try await migratedRecovery(emptyOriginalDescriptor: false)
     try await migratedRecovery(emptyOriginalDescriptor: true)
-    print("Imported OCR restore PASS: \(checks) checks; direct and real migration/activity/loader recovery retain current input and corrected drafts, empty failed descriptors completed only in new work, explicit draft save, invalid inputs preserve current work and original bytes. No recognition, replay, media devices or GUI.")
+    print("Imported OCR restore PASS: \(checks) checks; direct and archived migration/activity/loader recovery retain current input and corrected drafts, empty failed descriptors completed only in new work, explicit draft save, invalid inputs preserve current work and original bytes. No recognition, replay, media devices or GUI.")
 }

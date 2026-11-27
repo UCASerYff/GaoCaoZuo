@@ -41,7 +41,9 @@ import Darwin
             try ScreenshotOCRReturnTests.run(in: data)
             try await runScreenshotLongCaptureBatchTests()
             try await runGaoActionTests()
+            try runScreenshotBackupRemovalTests()
             try runScreenshotHostStoreTests()
+            try await runScreenshotImportedOCRRestoreTests()
             try runInputLifecycleTests()
             try await runArchiveOriginalCommitTests(engine: URL(fileURLWithPath: arguments[engineIndex + 1]))
             return

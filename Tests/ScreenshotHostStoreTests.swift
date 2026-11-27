@@ -2,6 +2,23 @@ import AppKit
 import Carbon
 import Foundation
 
+// Seed the on-disk shape left by the former migration workflow using synthetic test data.
+// Production can recover this archived transaction without starting a new migration.
+func seedArchivedScreenshotMigrationFixture(_ plan: ScreenshotMigrationPlan) throws {
+    struct ArchivedJournal: Encodable {
+        let schemaVersion = 1
+        let phase = "archived"
+        let plan: ScreenshotMigrationPlan
+        let createdAt = "2026-11-02T00:00:00Z"
+    }
+    let archive = plan.configuration.archiveRoot.appendingPathComponent(plan.migrationID + ".noindex", isDirectory: true)
+    for snapshot in plan.snapshots where snapshot.existed {
+        try ScreenshotMigrationIO.copy(snapshot, to: archive.appendingPathComponent(snapshot.id))
+    }
+    try ScreenshotMigrationIO.writeNew(ScreenshotMigrationIO.encoder.encode(ArchivedJournal(plan: plan)),
+                                      to: archive.appendingPathComponent("Journal.json"))
+}
+
 @MainActor func runScreenshotHostStoreTests() throws {
     var checks=0
     func check(_ condition:Bool,_ message:String) throws {
@@ -39,7 +56,9 @@ import Foundation
     try rejected("source cannot become fresh") {try receiving.initializeFresh()}
     try check(!fm.fileExists(atPath:legacy.targetRoot.path),"source evidence never creates blank target")
     let plan=try receiving.migrationPreview()
-    _ = try receiving.applyMigration(plan,approvedDigest:plan.approvalDigest)
+    try seedArchivedScreenshotMigrationFixture(plan)
+    let recovered=try receiving.recoverMigration(migrationID:plan.migrationID)
+    try check(!recovered.alreadyApplied,"archived fixture commits through host recovery")
     try check(receiving.writable && receiving.settings.historyDays==45,"committed source settings load through actual host store")
     try check(receiving.settings.saveDirectory==nil && receiving.settings.editorPath==nil && receiving.settings.captureStrategy=="标注","old directory rights and save mode do not silently transfer")
     try check(try Data(contentsOf:legacy.sourceRoot.appendingPathComponent("Settings.json"))==original,"source bytes preserved")
