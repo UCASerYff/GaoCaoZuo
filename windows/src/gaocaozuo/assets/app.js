@@ -77,6 +77,7 @@ let lastOutputs = [];
 let banner = { text: "", error: false };
 let footer;
 let pending = 0;
+let actionRequests = 0;
 let dialog = null;
 let clipboardPoll = 0;
 let selectionRevision = null;
@@ -141,19 +142,25 @@ async function loadInterfaceLanguage() {
 }
 
 async function api(path, body) {
-  const response = await fetch(path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: { "X-Gao-Token": token, "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok || data.ok === false) {
-    const error = new Error(data.error || "操作没有完成。");
-    error.code = data.code;
-    throw error;
+  const tracksWork = body !== undefined && path !== "/api/shutdown" && !path.startsWith("/api/lifecycle");
+  if (tracksWork) actionRequests += 1;
+  try {
+    const response = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "X-Gao-Token": token, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) {
+      const error = new Error(data.error || "操作没有完成。");
+      error.code = data.code;
+      throw error;
+    }
+    if (data.state) state = data.state;
+    return data.result === undefined ? data : data.result;
+  } finally {
+    if (tracksWork) actionRequests -= 1;
   }
-  if (data.state) state = data.state;
-  return data.result === undefined ? data : data.result;
 }
 const perform = (id, payload = {}) => api("/api/action", { id, payload });
 
@@ -360,7 +367,9 @@ function render() {
   const title = el("h1", sections[section][0]);
   title.tabIndex = -1;
   header.append(title);
-  if (section !== "home") header.append(searchLauncher(false));
+  const headerActions = box("row workbench-header-actions", section !== "home" && searchLauncher(false),
+    box("row workbench-desktop-actions"));
+  header.append(headerActions);
   const page = box("page" + (section === "home" ? " home" : ""));
   if (state.status !== "ready") {
     const warning = box("warning workspace-warning", icon("warning"), el("div", state.notice || "尚未创建本机设置。", "fill"));
@@ -386,21 +395,23 @@ function render() {
   footer = el("footer", "", "footer");
   main.append(header, body, footer);
   app.replaceChildren(box("shell", side, main));
+  renderDesktopActions();
   if (refocusTitle) title.focus({preventScroll: true});
   drawFooter();
 }
 let dialogSequence = 0;
 function showModal(title, contents, options = {}) {
-  if (dialog?.open) dialog.close();
+  if (!options.overlay && dialog?.open) dialog.close();
   const current = el("dialog", "", "workflow-dialog");
   if (options.size) current.dataset.size = options.size;
+  if (options.protectExit) current.dataset.protectExit = "true";
   const heading = el("h2", title);
   heading.id = "modal-heading-" + ++dialogSequence;
   current.setAttribute("aria-labelledby", heading.id);
   const error = el("p", "", "error modal-error");
   error.setAttribute("role", "alert");
   error.hidden = true;
-  const close = button("", () => current.close(), {glyph: "close", cls: "plain", label: "关闭"});
+  const close = button("", () => options.dismiss ? options.dismiss() : current.close(), {glyph: "close", cls: "plain", label: "关闭"});
   const titleRow = el("header", "", "dialog-title");
   titleRow.append(...[options.danger && icon("warning"), heading, close].filter(Boolean));
   if (options.danger) titleRow.classList.add("danger-title");
@@ -411,8 +422,15 @@ function showModal(title, contents, options = {}) {
     current.remove();
     options.closed?.();
   });
-  app.append(current);
-  dialog = current;
+  if (options.overlay) document.body.append(current);
+  else {
+    app.append(current);
+    dialog = current;
+  }
+  if (options.dismiss) current.addEventListener("cancel", event => {
+    event.preventDefault();
+    close.click();
+  });
   current.showModal();
   return current;
 }
@@ -427,7 +445,7 @@ function formDialog(title, fields, submit, submitTitle = "确定", options = {})
   const focus = [...form.querySelectorAll("input:not([type=hidden]), select, textarea")]
     .find(control => !control.disabled && !control.closest("[hidden]"));
   (focus || cancel).autofocus = true;
-  const current = showModal(title, form, {...options, actions: box("row", cancel, confirm)});
+  const current = showModal(title, form, {...options, protectExit: true, actions: box("row", cancel, confirm)});
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (confirm.disabled) return;
@@ -978,7 +996,7 @@ function editArchive(path, password, preview, removals) {
       }, "保存"));
   }, {cls: "primary"});
   showModal("编辑压缩包", box("stack", archiveIdentity(path), preview.encrypted && note("保存后仍需密码才能打开成员。"), edits),
-    {size: "wide", actions: box("row", saveOriginal, saveCopy)});
+    {size: "wide", protectExit: true, actions: box("row", saveOriginal, saveCopy)});
 }
 function convertDialog(selected) {
   const options = [["png", "PNG"], ["bmp", "BMP"]];
@@ -1206,7 +1224,7 @@ function clipboardPage() {
 }
 let clipboardRevision = "";
 async function refreshClipboard(force = false) {
-  if (pending || dialog?.open || statePollInFlight) return;
+  if (pending || dialog?.open || lifecycle.dialog?.open || statePollInFlight) return;
   statePollInFlight = true;
   try {
     const result = await api("/api/state");
@@ -1229,7 +1247,8 @@ async function refreshClipboard(force = false) {
     }
     if (section !== "clipboard" && !force) return;
     const key = JSON.stringify([result.clipboard?.map(item => [item.id, item.pinned, item.group]), result.paste, result.clipboardEnabled]);
-    if (force || key !== clipboardRevision && (clipboardRevision || JSON.stringify(result.clipboard) !== JSON.stringify(state.clipboard))) {
+    if (force || key !== clipboardRevision && (clipboardRevision || JSON.stringify(result.clipboard) !== JSON.stringify(state.clipboard) ||
+        JSON.stringify(result.paste) !== JSON.stringify(state.paste) || result.clipboardEnabled !== state.clipboardEnabled)) {
       const focused = document.activeElement;
       const isEditing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
       if (force || !isEditing) {
@@ -1399,7 +1418,7 @@ function inputPage() {
     const approval = rule.needsReview && button("在本机复核…", () => showModal("在本机复核规则", box("stack",
       el("strong", rule.name || name, "wrap-text", Boolean(rule.name)),
       el("code", [rule.actionID, rule.shortcut, application].filter(Boolean).join(" · "), "wrap-text", true)),
-    {actions: box("row", button("保持停用", () => cloudAction("approve", {id: rule.id, accept: false, confirm: true})),
+    {protectExit: true, actions: box("row", button("保持停用", () => cloudAction("approve", {id: rule.id, accept: false, confirm: true})),
       rule.cloudWantsEnabled && button("启用", () => cloudAction("approve", {id: rule.id, accept: true, confirm: true}), {cls: "primary"}))}));
     const active = !rule.needsReview && toggle("启用", rule.enabled,
       value => saveRules(rules.map(item => item.id === rule.id ? {...item, enabled: value} : item)));
@@ -1583,6 +1602,153 @@ function workflowDialog(original = {}) {
 async function refreshCatalog() {
   catalog = (await api("/api/search?q=")).actions || [];
 }
+const lifecycle = {
+  clientID: crypto.randomUUID(), desktop: null, timer: null, polling: false, deciding: false, committed: false,
+  requestID: null, dialog: null, reviewKey: "", reviewed: false, pastePending: false, error: "",
+};
+
+function renderDesktopActions() {
+  const container = document.querySelector(".workbench-desktop-actions");
+  if (!container) return;
+  if (!lifecycle.desktop) {
+    container.replaceChildren();
+    return;
+  }
+  const hide = "收起到通知区域";
+  const quit = "退出搞操作";
+  container.replaceChildren(
+    button(hide, () => api("/api/lifecycle/hide", {}), {cls: "plain", glyph: "monitor", label: hide}),
+    button(quit, async () => {
+      await api("/api/shutdown", {});
+      await pollLifecycle();
+    }, {cls: "plain", glyph: "external", label: quit}));
+}
+
+function workbenchExitStatus() {
+  const status = captureExitStatus();
+  return {...status, working: Boolean(status.working || pending || actionRequests),
+    pendingDialog: Boolean(dialog?.open && dialog.dataset.protectExit)};
+}
+
+async function decideWorkbenchExit(decision, resume) {
+  if (!lifecycle.requestID || lifecycle.deciding) return;
+  const status = workbenchExitStatus();
+  if (decision === "confirm" && (status.working || status.recording)) {
+    showExitReview(status);
+    return;
+  }
+  lifecycle.deciding = true;
+  try {
+    const result = await api("/api/lifecycle/exit", {clientID: lifecycle.clientID, requestID: lifecycle.requestID, decision});
+    if (!result.accepted) return;
+    lifecycle.committed = decision === "confirm";
+    lifecycle.requestID = null;
+    lifecycle.dialog?.close();
+    if (lifecycle.committed) {
+      app.inert = true;
+      say("正在退出搞操作…");
+    }
+    if (resume) resume();
+  } catch (failure) {
+    lifecycle.error = failure.message;
+    showExitReview(workbenchExitStatus());
+  } finally {
+    lifecycle.deciding = false;
+  }
+}
+
+function showExitReview(status) {
+  const key = JSON.stringify([lifecycle.requestID, status, lifecycle.pastePending, lifecycle.error]);
+  if (lifecycle.dialog?.open && lifecycle.reviewKey === key) return;
+  lifecycle.reviewed = true;
+  lifecycle.reviewKey = key;
+  lifecycle.dialog?.close();
+  const cancel = () => decideWorkbenchExit("cancel");
+  const cancelButton = button("取消退出", cancel);
+  cancelButton.autofocus = true;
+  const actions = [cancelButton];
+  const details = [
+    status.working && note("操作仍在进行，请先完成或取消任务。"),
+    status.recording && note("正在录制。请停止录制并保存，或取消退出。"),
+    status.unsavedMedia && note("有未保存的录制或导出。"),
+    status.unsavedImage && note("有未保存的截图或标注。"),
+    status.pendingDialog && note("有待确认的操作。退出将关闭此对话框。"),
+    lifecycle.pastePending && note("粘贴正在等待核对。退出会取消本次粘贴并尝试恢复剪贴板。"),
+  ];
+  if (lifecycle.error) {
+    const message = el("p", trError(lifecycle.error), "error", true);
+    message.setAttribute("role", "alert");
+    details.push(message);
+  }
+  if (!status.working && !status.pendingDialog) {
+    if (status.recording) actions.push(button("停止录制并转到保存", () => decideWorkbenchExit("cancel", () => {
+      stopRecording(false);
+      changeShotTab("record");
+    }), {cls: "primary"}));
+    else if (status.unsavedMedia) actions.push(button("返回保存", () => decideWorkbenchExit("cancel", () => changeShotTab("record")), {cls: "primary"}));
+    else if (status.unsavedImage) actions.push(button("返回截图", () => decideWorkbenchExit("cancel", () => changeShotTab(shotLong?.active ? "capture" : "annotation")), {cls: "primary"}));
+    else if (lifecycle.pastePending) actions.push(button("返回粘贴核对", () => decideWorkbenchExit("cancel", () => {
+      go("clipboard");
+      void refreshClipboard(true);
+    }), {cls: "primary"}));
+  }
+  if (!status.working && !status.recording) {
+    const unsaved = status.unsavedMedia || status.unsavedImage;
+    const confirm = unsaved ? "放弃未保存内容并退出" : status.pendingDialog ? "放弃本次操作并退出" :
+      lifecycle.pastePending ? "取消粘贴并退出" : "退出搞操作";
+    actions.push(button(confirm, () => decideWorkbenchExit("confirm"), {
+      cls: unsaved || status.pendingDialog || lifecycle.pastePending ? "primary danger" : "primary",
+    }));
+  }
+  lifecycle.dialog = showModal("退出搞操作？", box("stack", ...details),
+    {overlay: true, size: "compact", dismiss: cancel, actions: box("row", ...actions)});
+}
+
+async function pollLifecycle() {
+  if (lifecycle.polling || lifecycle.deciding) return;
+  lifecycle.polling = true;
+  try {
+    const updated = await api("/api/lifecycle", {clientID: lifecycle.clientID, busy: Object.values(workbenchExitStatus()).some(Boolean)});
+    if (lifecycle.desktop !== updated.desktop) {
+      lifecycle.desktop = updated.desktop;
+      renderDesktopActions();
+    }
+    if (updated.desktop && lifecycle.timer === null) lifecycle.timer = setInterval(pollLifecycle, 750);
+    if (lifecycle.committed && !updated.exitError) return;
+    if (lifecycle.committed) app.inert = false;
+    lifecycle.committed = false;
+    if (lifecycle.requestID !== updated.exitRequest) {
+      lifecycle.requestID = updated.exitRequest;
+      lifecycle.reviewed = false;
+      lifecycle.error = "";
+    }
+    if (!lifecycle.requestID) {
+      lifecycle.dialog?.close();
+      if (updated.exitError && updated.exitError !== lifecycle.error) {
+        lifecycle.error = updated.exitError;
+        say(updated.exitError, true);
+      }
+      return;
+    }
+    lifecycle.pastePending = updated.pastePending;
+    lifecycle.error = updated.exitError || lifecycle.error;
+    const status = workbenchExitStatus();
+    if (lifecycle.reviewed || lifecycle.pastePending || lifecycle.error || Object.values(status).some(Boolean)) showExitReview(status);
+    else await decideWorkbenchExit("confirm");
+  } catch {
+    // A disconnected or closing workbench has no lifecycle updates to present.
+  } finally {
+    lifecycle.polling = false;
+  }
+}
+
+window.addEventListener("focus", () => { if (lifecycle.desktop) void pollLifecycle(); });
+window.addEventListener("beforeunload", event => {
+  if (lifecycle.committed || !Object.values(workbenchExitStatus()).some(Boolean)) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
 async function initialize() {
   [state] = await Promise.all([api("/api/state"), refreshCatalog()]);
   await loadInterfaceLanguage();
@@ -1596,6 +1762,7 @@ async function initialize() {
   if (!clipboardPoll) clipboardPoll = setInterval(() => refreshClipboard(), 3000);
 }
 document.addEventListener("keydown", event => {
+  if (lifecycle.committed) return;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") {
     event.preventDefault();
     settingsDialog();
@@ -1638,6 +1805,7 @@ app.addEventListener("drop", event => {
   else render();
 });
 async function startWorkbench() {
+  void pollLifecycle();
   const loading = box("startup-state", el("i", "", "status-working"), el("p", "正在加载工作台…"));
   loading.setAttribute("role", "status");
   app.replaceChildren(loading);

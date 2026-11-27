@@ -6,6 +6,7 @@ import json
 import mimetypes
 import secrets
 import threading
+import uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -23,19 +24,120 @@ class OperationServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
 
-    def __init__(self, app: App, host: str = "127.0.0.1", port: int = 0):
+    def __init__(self, app: App, host: str = "127.0.0.1", port: int = 0, *, desktop: bool = False):
         if host not in {"127.0.0.1", "localhost"}:
             raise AppError("页面只监听本机回环地址。", "invalid")
         self.app = app
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.Lock()
+        self.desktop = desktop
+        self.tray_available = lambda: False
+        self.hide_requested = threading.Event()
+        self.exit_accepted = threading.Event()
         self.shutdown_requested = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._exit_request = None
+        self._exit_client = None
+        self._exit_error = None
         super().__init__((host, port), Handler)
 
     @property
     def url(self) -> str:
         host, port = self.server_address[:2]
         return f"http://{host}:{port}/"
+
+    @property
+    def exit_request(self):
+        with self._lifecycle_lock:
+            return self._exit_request
+
+    def request_exit(self) -> None:
+        with self._lifecycle_lock:
+            if self._exit_request is None:
+                self._exit_request = secrets.token_urlsafe(18)
+                self._exit_error = None
+            if not self.desktop:
+                self.exit_accepted.set()
+
+    def _paste_pending(self) -> bool:
+        return self.app.clipboard.transaction is not None
+
+    def lifecycle(self, payload: dict) -> dict:
+        client = _lifecycle_client(payload)
+        if type(payload.get("busy")) is not bool:
+            raise AppError("工作台会话状态无效。", "invalid")
+        with self._lifecycle_lock:
+            if self.desktop and not self.exit_accepted.is_set():
+                self._exit_client = client
+            return {"desktop": self.desktop, "exitRequest": self._exit_request if self.desktop else None,
+                    "pastePending": self._paste_pending(), "exitError": self._exit_error}
+
+    def decide_exit(self, payload: dict) -> None:
+        client = _lifecycle_client(payload)
+        decision = payload.get("decision")
+        with self._lifecycle_lock:
+            if (not self.desktop or self.exit_accepted.is_set() or self._exit_request is None or
+                    payload.get("requestID") != self._exit_request or client != self._exit_client or
+                    decision not in ("confirm", "cancel")):
+                raise AppError("退出请求已失效，请重新选择退出。", "changed")
+            if decision == "cancel":
+                self._exit_request = None
+            else:
+                self.exit_accepted.set()
+
+    def window_closed(self) -> None:
+        with self._lifecycle_lock:
+            self._exit_client = None
+
+    def try_accept_background_exit(self) -> bool:
+        """Return whether the workbench must reopen to resolve a pending paste."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            with self._lifecycle_lock:
+                if self._exit_request is not None and not self.exit_accepted.is_set():
+                    if self._paste_pending():
+                        return True
+                    self.exit_accepted.set()
+        finally:
+            self.lock.release()
+        return False
+
+    def cancel_exit(self, detail: str) -> None:
+        with self._lifecycle_lock:
+            self._exit_request = None
+            self._exit_error = detail
+            self.exit_accepted.clear()
+
+    def finish_exit(self) -> bool:
+        # Already submitted writes, OCR and native file dialogs use this lock.
+        with self.lock:
+            if self.shutdown_requested.is_set():
+                return True
+            if not self.exit_accepted.is_set():
+                return False
+            try:
+                if self._paste_pending():
+                    self.app.clipboard.cancel()
+            except (AppError, OSError) as exc:
+                self.cancel_exit(exc.message if isinstance(exc, AppError) else "未能恢复剪贴板，搞操作仍在运行。")
+                return False
+            self.shutdown_requested.set()
+        return True
+
+    def stop_headless(self) -> None:
+        if self.finish_exit():
+            self.shutdown()
+
+
+def _lifecycle_client(payload: dict) -> str:
+    raw = payload.get("clientID")
+    try:
+        if not isinstance(raw, str) or len(raw) != 36:
+            raise ValueError
+        return uuid.UUID(raw).hex
+    except ValueError as exc:
+        raise AppError("工作台会话状态无效。", "invalid") from exc
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -112,18 +214,33 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not self._authorized():
             return
-        if parsed.path == "/api/shutdown":
-            self._json({"ok": True})
-            self.server.shutdown_requested.set()
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-            return
         try:
             payload = self._body()
         except AppError as exc:
             self._json({"ok": False, "error": exc.message, "code": exc.code}, 400)
             return
         try:
+            if parsed.path == "/api/shutdown":
+                self.server.request_exit()
+                self._json({"ok": True})
+                if not self.server.desktop:
+                    threading.Thread(target=self.server.stop_headless, daemon=True).start()
+                return
+            if parsed.path == "/api/lifecycle":
+                self._json({"ok": True, "result": self.server.lifecycle(payload)})
+                return
+            if parsed.path in {"/api/lifecycle/exit", "/api/lifecycle/hide"}:
+                if parsed.path.endswith("/exit"):
+                    self.server.decide_exit(payload)
+                elif self.server.desktop and self.server.tray_available() and self.server.exit_request is None:
+                    self.server.hide_requested.set()
+                else:
+                    raise AppError("当前会话没有可收起的工作台。", "unavailable")
+                self._json({"ok": True, "result": {"accepted": True}})
+                return
             with self.server.lock:
+                if self.server.exit_accepted.is_set():
+                    raise AppError("搞操作正在退出，请稍后重新打开。", "busy")
                 app = self.server.app
                 settings = app.store.settings or {}
                 with native_locale(settings.get("language", "system")), native_surface(settings.get("appearance", "system")):
@@ -360,8 +477,8 @@ def dispatch(app: App, path: str, payload: dict):
     raise AppError("没有这个操作。", "invalid")
 
 
-def serve(app: App, port: int = 0, open_browser: bool = True) -> OperationServer:
-    server = OperationServer(app, port=port)
+def serve(app: App, port: int = 0, open_browser: bool = True, *, desktop: bool = False) -> OperationServer:
+    server = OperationServer(app, port=port, desktop=desktop)
     thread = threading.Thread(target=server.serve_forever, name="gaocaozuo-http", daemon=True)
     thread.start()
     if open_browser:

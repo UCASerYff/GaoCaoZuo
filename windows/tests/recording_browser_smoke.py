@@ -351,6 +351,78 @@ def check_virtual_microphone(client):
     client.evaluate("mediaTools.prepared = null; recording.result = null")
 
 
+def check_exit_lifecycle(client, server, evidence):
+    def screenshot(name):
+        if evidence:
+            png = client.call("Page.captureScreenshot", format="png")["data"]
+            (evidence / name).write_bytes(base64.b64decode(png))
+
+    def review():
+        server.request_exit()
+        client.wait("exit review dialog", "lifecycle.dialog?.open && lifecycle.dialog.querySelector('h2').textContent === '退出搞操作？'")
+        assert client.evaluate("lifecycle.dialog.scrollWidth === lifecycle.dialog.clientWidth")
+
+    client.call("Emulation.setDeviceMetricsOverride", width=428, height=570, deviceScaleFactor=1.5, mobile=False)
+    client.wait("desktop lifecycle controls", "document.querySelector('.workbench-desktop-actions')?.children.length === 2")
+    client.click("收起到通知区域")
+    assert server.hide_requested.wait(3) and not server.exit_accepted.is_set()
+    server.hide_requested.clear()
+
+    client.evaluate("formDialog('待确认测试', [field('名称', input('保留的测试草稿'))], () => {})")
+    assert client.evaluate("!window.dispatchEvent(new Event('beforeunload', {cancelable:true}))")
+    review()
+    assert client.evaluate("dialog.open && dialog.querySelector('input').value === '保留的测试草稿'")
+    screenshot("pending-operation-exit.png")
+    client.click("取消退出")
+    client.wait("draft survives canceled exit", "!lifecycle.dialog?.open && dialog?.open && dialog.querySelector('input').value === '保留的测试草稿'")
+    assert not server.exit_accepted.is_set() and server.exit_request is None
+    client.evaluate("dialog.close()")
+
+    with server.lock:
+        server.app.clipboard.begin_paste("仅用于隔离测试", False, True)
+    review()
+    client.click("返回粘贴核对")
+    client.wait("pending paste remains for review", "!lifecycle.dialog?.open && document.querySelector('.workflow-callout')?.innerText.includes('粘贴等待核对')")
+    assert not server.exit_accepted.is_set() and server.app.clipboard.transaction is not None
+    client.click("取消并恢复")
+    client.wait("pending paste canceled normally", "!state.paste")
+
+    client.evaluate(SETUP)
+    client.click("开始录制")
+    client.wait("synthetic recording starts", "recording.status === 'recording'")
+    review()
+    assert client.evaluate("!lifecycle.dialog.querySelector('.danger')")
+    screenshot("active-recording-exit.png")
+    client.click("取消退出")
+    client.wait("recording remains active", "!lifecycle.dialog?.open && recording.status === 'recording'")
+    assert not server.exit_accepted.is_set()
+    time.sleep(1.1)
+    review()
+    client.click("停止录制并转到保存")
+    client.wait("recording remains available to save", "recording.status === 'ready' && !lifecycle.dialog?.open")
+    assert not server.exit_accepted.is_set() and server.exit_request is None
+    review()
+    client.click("返回保存")
+    client.wait("recording remains available after returning to save", "recording.status === 'ready' && !lifecycle.dialog?.open")
+    client.click("生成 MOV")
+    client.wait("recording encoded through the normal path", "mediaTools.prepared?.format === 'mov'")
+    client.evaluate("window.acceptTestSave = window.showSaveFilePicker; window.showSaveFilePicker = async () => { throw new DOMException('', 'AbortError'); }")
+    client.click("选择位置保存…")
+    client.wait("canceled picker preserves export", "!mediaTools.writing && mediaTools.prepared?.format === 'mov' && !recording.saved")
+    client.evaluate("window.showSaveFilePicker = window.acceptTestSave")
+    client.click("选择位置保存…")
+    client.wait("normal recording save completes", "recording.status === 'saved' && testRecording.calls.saved[0]?.blob.size > 0")
+    assert client.evaluate("window.dispatchEvent(new Event('beforeunload', {cancelable:true}))")
+    client.evaluate("testRecording.stop()")
+    client.click("退出搞操作")
+    assert server.exit_accepted.wait(5)
+    server.cancel_exit("模拟剪贴板恢复失败。")
+    client.wait("failed native drain restores the existing workbench", "!lifecycle.committed && document.querySelector('footer .error')?.textContent === '模拟剪贴板恢复失败。'")
+    assert client.evaluate("recording.status === 'saved'")
+    client.click("退出搞操作")
+    assert server.exit_accepted.wait(5) and not client.external, client.external
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", type=Path, default=browser_path())
@@ -358,9 +430,13 @@ def main():
     sources.add_argument("--native-tab", action="store_true", help="Exercise Chromium tab capture using only a uniquely titled synthetic tab")
     sources.add_argument("--native-tab-audio", action="store_true", help="Capture only the synthetic tab's test tone with speaker playback suppressed")
     sources.add_argument("--virtual-microphone", action="store_true", help="Exercise Chromium microphone recording using a generated audio file")
+    sources.add_argument("--lifecycle", action="store_true", help="Exercise safe desktop exit with a synthetic recording and workbench form")
+    parser.add_argument("--evidence-dir", type=Path, help="Write lifecycle review screenshots here")
     options = parser.parse_args()
     if not options.browser or not options.browser.is_file():
         parser.error("Specify an installed Chromium executable with --browser.")
+    if options.evidence_dir:
+        options.evidence_dir.mkdir(parents=True, exist_ok=True)
     stash = WINDOWS / "build"
     stash.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="recording-qa-", dir=stash) as temporary:
@@ -368,7 +444,9 @@ def main():
         app = App(root / "data")
         app.create_settings()
         app.update_settings({"language": "zh-Hans"})
-        server = serve(app, open_browser=False)
+        server = serve(app, open_browser=False, desktop=options.lifecycle)
+        if options.lifecycle:
+            server.tray_available = lambda: True
         profile = root / "profile"
         flags = ["--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
                  "--remote-debugging-port=0", "--enable-logging=stderr", f"--user-data-dir={profile}"]
@@ -403,6 +481,8 @@ def main():
                     check_browser_tab_capture(client, title, port, share_audio=options.native_tab_audio)
                 elif options.virtual_microphone:
                     check_virtual_microphone(client)
+                elif options.lifecycle:
+                    check_exit_lifecycle(client, server, options.evidence_dir)
                 else:
                     check_recording(client)
             finally:
@@ -425,6 +505,8 @@ def main():
         print("Chromium getDisplayMedia captured only a synthetic tab and delivered its expected pixels in the exported MOV.")
     elif options.virtual_microphone:
         print("Chromium getUserMedia recorded a virtual microphone with generated audio and the M4A decoded to a verified non-silent signal.")
+    elif options.lifecycle:
+        print("Desktop lifecycle passed: hide, preserve pending confirmation, cancel exit while recording, stop and save, cancel save, recover from failed exit drain, and request clean exit again.")
     else:
         print("Synthetic capture, pause/resume, QuickTime H.264/AAC MOV, WebM-to-M4A transcode, mixed audio-only MOV, playback, cropped GIF, and no external requests passed.")
 

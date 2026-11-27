@@ -392,14 +392,14 @@ class LocalTranslation:
                 job.status = "cancelling"
             return job.public()
 
-    def close(self):
+    def close(self, *, wait=False):
         with self.lock:
             for job in self.jobs.values():
                 if job.status in {"running", "cancelling"}:
                     job.stop.set()
             worker = self.worker
         if worker:
-            worker.join(timeout=1.0)
+            worker.join(timeout=None if wait else 1.0)
 
     def dispatch(self, endpoint, payload):
         text, source, target = (payload.get(key, default) for key, default in (("text", ""), ("source", "auto"), ("target", "en")))

@@ -52,30 +52,97 @@ def browser_path() -> Path | None:
     return None
 
 
+class _BrowserProcess:
+    """Own the workbench's Chromium process and descendants via one Windows job."""
+
+    def __init__(self, arguments):
+        import _winapi
+        import ctypes as c
+        from ctypes import wintypes as w
+        from gaocaozuo.native_win import kernel
+
+        class BasicLimits(c.Structure):
+            _fields_ = [("per_process_time", c.c_int64), ("per_job_time", c.c_int64), ("flags", w.DWORD),
+                        ("minimum_working_set", c.c_size_t), ("maximum_working_set", c.c_size_t),
+                        ("process_limit", w.DWORD), ("affinity", c.c_size_t), ("priority", w.DWORD), ("scheduling", w.DWORD)]
+
+        class ExtendedLimits(c.Structure):
+            _fields_ = [("basic", BasicLimits), ("io_counters", c.c_uint64 * 6), ("process_memory", c.c_size_t),
+                        ("job_memory", c.c_size_t), ("peak_process_memory", c.c_size_t), ("peak_job_memory", c.c_size_t)]
+
+        job = kernel("CreateJobObjectW", w.HANDLE, w.LPVOID, w.LPCWSTR)(None, None)
+        if not job:
+            raise c.WinError(c.get_last_error())
+        process = thread = None
+        try:
+            limits = ExtendedLimits()
+            limits.basic.flags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            set_limits = kernel("SetInformationJobObject", w.BOOL, w.HANDLE, c.c_int, w.LPVOID, w.DWORD)
+            if not set_limits(job, 9, c.byref(limits), c.sizeof(limits)):
+                raise c.WinError(c.get_last_error())
+            # Start suspended so Chromium cannot spawn untracked descendants.
+            process, thread, self.pid, _ = _winapi.CreateProcess(
+                arguments[0], subprocess.list2cmdline(arguments), None, None, False, 0x4, None, None, subprocess.STARTUPINFO(),
+            )
+            assign = kernel("AssignProcessToJobObject", w.BOOL, w.HANDLE, w.HANDLE)
+            resume = kernel("ResumeThread", w.DWORD, w.HANDLE)
+            if not assign(job, process) or resume(thread) == 0xFFFFFFFF:
+                raise c.WinError(c.get_last_error())
+        except BaseException:
+            if process is not None:
+                try:
+                    _winapi.TerminateProcess(process, 1)
+                except OSError:
+                    pass
+                _winapi.CloseHandle(process)
+            _winapi.CloseHandle(job)
+            raise
+        finally:
+            if thread is not None:
+                _winapi.CloseHandle(thread)
+        self._api, self._job, self._process = _winapi, job, process
+
+    def poll(self):
+        if self._api.WaitForSingleObject(self._process, 0) == self._api.WAIT_TIMEOUT:
+            return None
+        return self._api.GetExitCodeProcess(self._process)
+
+    def wait(self, seconds):
+        self._api.WaitForSingleObject(self._process, int(seconds * 1000))
+
+    def close(self):
+        self._api.CloseHandle(self._job)
+        try:
+            self.wait(5)
+        finally:
+            self._api.CloseHandle(self._process)
+
+
 class WorkbenchWindow:
     def __init__(self, url: str):
         binary = browser_path()
         if not binary:
             raise AppError("需安装 Microsoft Edge 或 Google Chrome 才能打开工作台。", "unavailable")
         self.profile = tempfile.TemporaryDirectory(prefix="GaoCaoZuo-window-")
+        self._hwnd = None
         try:
-            self.process = subprocess.Popen([
+            self.process = _BrowserProcess([
                 str(binary), f"--app={url}", f"--user-data-dir={self.profile.name}",
                 "--no-first-run", "--no-default-browser-check", "--disable-background-mode",
-                "--disable-extensions", "--window-size=1160,790", "--disable-sync",
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                "--disable-extensions", "--window-size=1160,790", "--disable-sync", "--disable-breakpad",
+            ])
         except OSError as exc:
             self.profile.cleanup()
             raise AppError("Windows 无法打开搞操作工作台。", "unavailable") from exc
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+        from ctypes import wintypes as w
+        from gaocaozuo.native_win import user
+
+        if self.process.poll() is None and (hwnd := self._handle()):
+            user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+            self.process.wait(2)
+        self.process.close()
         try:
             self.profile.cleanup()
         except OSError:
@@ -90,18 +157,35 @@ class WorkbenchWindow:
         callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
         pid_for = user("GetWindowThreadProcessId", w.DWORD, w.HWND, c.POINTER(w.DWORD))
         visible = user("IsWindowVisible", w.BOOL, w.HWND)
+        name = user("GetClassNameW", c.c_int, w.HWND, w.LPWSTR, c.c_int)
+        owner = user("GetWindow", w.HWND, w.HWND, w.UINT)
+
+        def belongs(hwnd):
+            pid, kind = w.DWORD(), c.create_unicode_buffer(64)
+            return bool(pid_for(hwnd, c.byref(pid)) and pid.value == self.process.pid and
+                        not owner(hwnd, 4) and name(hwnd, kind, len(kind)) and kind.value == "Chrome_WidgetWin_1")
+
+        if self._hwnd and belongs(self._hwnd):
+            return self._hwnd
 
         @callback_type
         def search(hwnd, _arg):
-            pid = w.DWORD()
-            pid_for(hwnd, c.byref(pid))
-            if pid.value == self.process.pid and visible(hwnd):
+            if visible(hwnd) and belongs(hwnd):
                 match.append(hwnd)
                 return False
             return True
 
         user("EnumWindows", w.BOOL, callback_type, w.LPARAM)(search, 0)
-        return match[0] if match else None
+        self._hwnd = match[0] if match else None
+        return self._hwnd
+
+    def hide(self) -> bool:
+        import ctypes as c
+        from ctypes import wintypes as w
+        from gaocaozuo.native_win import user
+
+        hwnd = self._handle()
+        return bool(hwnd and user("ShowWindowAsync", w.BOOL, w.HWND, c.c_int)(hwnd, 0))
 
     @contextmanager
     def hidden_for_capture(self):
@@ -110,11 +194,11 @@ class WorkbenchWindow:
         from gaocaozuo.native_win import user
 
         hwnd = self._handle()
-        if not hwnd or user("IsIconic", w.BOOL, w.HWND)(hwnd):
+        visible = user("IsWindowVisible", w.BOOL, w.HWND)
+        if not hwnd or not visible(hwnd) or user("IsIconic", w.BOOL, w.HWND)(hwnd):
             yield
             return
         show = user("ShowWindowAsync", w.BOOL, w.HWND, c.c_int)
-        visible = user("IsWindowVisible", w.BOOL, w.HWND)
         show(hwnd, 0)
         deadline = time.monotonic() + 0.5
         try:
@@ -135,9 +219,10 @@ class WorkbenchWindow:
         hwnd = self._handle()
         if hwnd is None:
             return False
-        if user("IsIconic", w.BOOL, w.HWND)(hwnd):
+        if not user("IsWindowVisible", w.BOOL, w.HWND)(hwnd) or user("IsIconic", w.BOOL, w.HWND)(hwnd):
             user("ShowWindowAsync", w.BOOL, w.HWND, c.c_int)(hwnd, 9)
-        return bool(user("SetForegroundWindow", w.BOOL, w.HWND)(hwnd))
+        user("SetForegroundWindow", w.BOOL, w.HWND)(hwnd)
+        return True
 
 
 class WorkbenchInstance:

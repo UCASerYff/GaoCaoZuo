@@ -114,6 +114,8 @@ svg { width: 18px; height: 18px; flex: none; vertical-align: middle; }
 .workspace-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 14px; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--divider); min-height: 64px; }
 .workspace-header h1 { overflow-wrap: anywhere; }
 .workspace-header h1:focus { outline: none; }
+.workbench-header-actions { justify-content: flex-end; }
+.workbench-desktop-actions:empty { display: none; }
 .body { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
 .page { max-width: 1328px; margin-inline: auto; padding: 20px 24px 26px; display: grid; gap: 16px; align-content: start; }
 .page > * { min-width: 0; }
@@ -256,6 +258,8 @@ dialog::backdrop { background: #0005; }
   .side-foot small { display: none; }
   .workspace-header { padding: 8px 12px; min-height: 51px; }
   .workspace-header h1 { font-size: 21px; }
+  .workbench-desktop-actions button { min-width: 34px; padding-inline: 7px; }
+  .workbench-desktop-actions button span { display: none; }
   .page { padding: 14px 12px 20px; }
   .footer { padding-inline: 12px; }
   .columns { grid-template-columns: minmax(0,1fr); }

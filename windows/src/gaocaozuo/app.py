@@ -66,7 +66,6 @@ class App:
         self.desktop = None
         self.native_clipboard = None
         self.runtime = None
-        self.tray = None
         self.clipboard_notice = ""
         if interactive and os.name == "nt":
             from gaocaozuo.clipboard_win import WindowsClipboard
@@ -168,8 +167,6 @@ class App:
         self.clipboard = self._open_clipboard()
         if self.runtime:
             self.configure_runtime()
-        if self.tray:
-            self.tray.configure(created.get("showMenuBarIcon", True))
         return created
 
     def update_settings(self, changes: dict) -> dict:
@@ -195,8 +192,6 @@ class App:
             self.clipboard_notice = ""
         if self.runtime and {"inputPaused", "windowSnapEnabled", "windowDragEnabled", "windowsAutomationEnabled"} & changes.keys():
             self.configure_runtime()
-        if self.tray and "showMenuBarIcon" in changes:
-            self.tray.configure(updated["showMenuBarIcon"])
         return updated
 
     def search(self, query: str) -> list[dict]:

@@ -54,7 +54,7 @@ $common = @('--noconfirm', '--clean', '--onefile', '--paths', 'src', '--distpath
             '--add-data', "$assetDir;gaocaozuo_assets", '--add-data', "$ocrHelper;gaocaozuo_assets",
             '--add-data', "$iconPng;gaocaozuo_assets", '--add-data', "$localization;gaocaozuo_assets", '--collect-all', 'pillow_heif',
             '--collect-binaries', 'ctranslate2', '--collect-data', 'py3langid', '--icon', $icon, '--version-file', $versionFile)
-& $Python -m PyInstaller @common --name GaoCaoZuo-cli --console --workpath build/cli --specpath build/cli launch.py
+& $Python -m PyInstaller @common --name GaoCaoZuo-cli --console --workpath build/cli --specpath build/cli launch_cli.py
 Assert-LastExit "PyInstaller CLI"
 & $Python -m PyInstaller @common --name GaoCaoZuo --windowed --workpath build/gui --specpath build/gui launch.py
 Assert-LastExit "PyInstaller window"

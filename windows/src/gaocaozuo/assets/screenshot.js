@@ -6,6 +6,8 @@ const shotTabs = [
 ];
 let shotTab = "capture";
 let shotImage = null;
+let shotImageSaved = true;
+let savedAnnotationCommands = [];
 let shotDocument = null;
 let shotLong = null;
 let shotLongOverlap = "";
@@ -97,8 +99,10 @@ async function screenshotWork(message, handler) {
     if (section === "screenshots" && !dialog?.open) render();
   }
 }
-function setImage(image) {
+function setImage(image, saved = false) {
   shotImage = image;
+  shotImageSaved = saved;
+  savedAnnotationCommands = [];
   annot.commands = [];
   annot.redo = [];
   annot.rendered = null;
@@ -176,7 +180,7 @@ async function chooseImage() {
   if (!path) return;
   return screenshotWork("正在打开图像…", async () => {
     const result = await screenshotRequest("open", {path});
-    setImage(result);
+    setImage(result, true);
     say("已打开 " + basename(path));
   });
 }
@@ -433,6 +437,8 @@ async function annotationResult() {
   return annot.rendered;
 }
 function saveImageDialog(result, editable) {
+  const currentImage = shotImage;
+  const commands = annot.commands.slice();
   const directory = directoryField("输出目录");
   const name = input("", {placeholder: editable ? "文件名" : "留空使用默认名称"});
   name.required = editable;
@@ -443,6 +449,10 @@ function saveImageDialog(result, editable) {
     const filename = base ? (base.toLowerCase().endsWith("." + extension) ? base : base + "." + extension) :
       format.value === "png" ? undefined : "截图-" + result.id.slice(0, 8) + "." + extension;
     const saved = await screenshotRequest("save", {id: result.id, directory: directory.control.value.trim(), filename});
+    if (shotImage === currentImage) {
+      shotImageSaved = true;
+      savedAnnotationCommands = commands;
+    }
     rememberOutputs(saved);
     say("已保存 " + basename(saved.path));
   }, "保存");
@@ -544,7 +554,7 @@ function correctOCR(result) {
   };
   redraw();
   showModal("校正识别文字", box("stack", note("逐行点击“应用”后，导出将使用校正后的文字。"), content),
-    {closed: () => {
+    {protectExit: true, closed: () => {
       if (section === "screenshots" && shotTab === "ocr" && !dialog?.open) render();
     }});
 }
@@ -665,7 +675,7 @@ async function prepareTranslation() {
       box("row", button("取消", () => dialog.close()), button("确认下载并翻译", () => {
         dialog.close();
         return runLocalTranslation(operation, request, packs);
-      }, {cls:"primary"}))), {closed: repaintTranslation});
+      }, {cls:"primary"}))), {protectExit: true, closed: repaintTranslation});
   } catch (error) {
     if (!operation.cancelled) localTranslation.error = error.message;
   } finally {
@@ -757,7 +767,7 @@ function screenshotHistoryPage() {
   const pins = shotHistory?.pins || [];
   const open = (name, pin) => screenshotWork("正在读取图像…", async () => {
     const image = await screenshotRequest("history/open", {name, pin});
-    setImage(image);
+    setImage(image, true);
     say("已打开 " + basename(name));
   });
   const historyToggle = toggle("保存截图历史", shotHistory?.enabled, async enabled => {
@@ -1231,8 +1241,14 @@ function mediaToolsPanel(disabled) {
     }), {disabled: disabled || !mediaTools.source})), options);
 }
 
-window.addEventListener("beforeunload", event => {
-  if (!recording.recorder && (!recording.result || recording.saved) && !recording.exportTask && !mediaTools.prepared) return;
-  event.preventDefault();
-  event.returnValue = "";
-});
+function captureExitStatus() {
+  return {
+    working: Boolean(shotBusy || localTranslation.active || recording.exportTask || mediaTools.writing ||
+      ["starting", "stopping"].includes(recording.status)),
+    recording: Boolean(recording.recorder),
+    unsavedMedia: Boolean((recording.result && !recording.saved) || mediaTools.prepared),
+    unsavedImage: Boolean(shotLong?.active || (shotImage && (!shotImageSaved ||
+      annot.commands.length !== savedAnnotationCommands.length ||
+      annot.commands.some((command, index) => command !== savedAnnotationCommands[index])))),
+  };
+}

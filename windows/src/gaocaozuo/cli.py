@@ -17,7 +17,7 @@ from gaocaozuo.version import VERSION_LABEL
 from gaocaozuo.web import serve
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, console: bool = False) -> int:
     parser = argparse.ArgumentParser(prog="GaoCaoZuo", description="搞操作 Windows 版")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--capabilities", action="store_true")
@@ -37,7 +37,8 @@ def main(argv: list[str] | None = None) -> int:
         _write(json.dumps(capabilities(), ensure_ascii=True))
         return 0
     directory = (args.data_dir or default_data_dir()).resolve()
-    interactive = not args.no_browser and os.name == "nt"
+    headless = args.no_browser or args.serve or console
+    interactive = not headless and os.name == "nt"
     instance = server = window = app = tray = cloud_worker = None
     paths = [str(Path(p).absolute()) for p in (args.paths or [])]
     package = args.gaoaction
@@ -49,9 +50,10 @@ def main(argv: list[str] | None = None) -> int:
 
             instance = WorkbenchInstance(directory)
             if not instance.primary:
-                if not interactive or not instance.handoff(paths, package):
-                    raise AppError("此资料目录已有一个搞操作会话。", "busy")
-                return 0
+                can_forward = interactive or bool(paths or package)
+                if can_forward and instance.handoff(paths, package):
+                    return 0
+                raise AppError("此资料目录已有一个搞操作会话。", "busy")
         app = App(directory, interactive=interactive)
         app.activate({"paths": paths})
         if package:
@@ -61,9 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not interactive:
                     raise
                 app.last_message = exc.message
-        server = serve(app, port=args.port, open_browser=not args.no_browser and not interactive)
-        if instance is not None:
-            instance.publish(server)
+        server = serve(app, port=args.port, open_browser=not headless and not interactive, desktop=interactive)
         if interactive:
             from gaocaozuo.runtime_win import WindowsRuntime
             from gaocaozuo.localization import native_locale
@@ -81,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not server.lock.acquire(blocking=False):
                     raise AppError("另一个搞操作任务正在运行。", "busy")
                 try:
+                    if server.exit_accepted.is_set():
+                        raise AppError("搞操作正在退出，请稍后重新打开。", "busy")
                     with native_locale(read_language()), native_surface(read_appearance()):
                         result = app.perform(action_id, payload)
                     if result.get("show") and app.activation:
@@ -91,11 +93,13 @@ def main(argv: list[str] | None = None) -> int:
             def on_tick():
                 if server.lock.acquire(blocking=False):
                     try:
-                        app.clipboard.observe()
+                        if not server.exit_accepted.is_set():
+                            app.clipboard.observe()
                     finally:
                         server.lock.release()
 
-            app.runtime = WindowsRuntime(app.desktop, app.system, app.idle, invoke, busy=server.lock.locked,
+            app.runtime = WindowsRuntime(app.desktop, app.system, app.idle, invoke,
+                                         busy=lambda: server.lock.locked() or server.exit_accepted.is_set(),
                                          on_tick=on_tick, read_language=read_language, read_appearance=read_appearance)
             try:
                 app.configure_runtime()
@@ -107,38 +111,67 @@ def main(argv: list[str] | None = None) -> int:
                 while not server.shutdown_requested.wait(15):
                     if server.lock.acquire(blocking=False):
                         try:
-                            app.rule_cloud.poll()
+                            if not server.exit_accepted.is_set():
+                                app.rule_cloud.poll()
                         finally:
                             server.lock.release()
 
             cloud_worker = Thread(target=synchronize_rules, name="gaocaozuo-cloud-rules", daemon=True)
             cloud_worker.start()
             show_requested = Event()
-            tray = WindowsTray(show_requested.set, server.shutdown_requested.set)
-            app.tray = tray
-            tray.configure((app.store.settings or {}).get("showMenuBarIcon", True))
-            tray.start()
-            window = WorkbenchWindow(server.url)
+            tray = WindowsTray(show_requested.set, server.request_exit)
+            tray.configure(True)
+            server.tray_available = lambda: tray.registered
             app.activation = show_requested.set
             app.capture_context = lambda: window.hidden_for_capture() if window else nullcontext()
+            window = WorkbenchWindow(server.url)
             app.desktop.set_ui_pid(window.process.pid)
+            tray.start()
+            shown_exit = None
+        if instance is not None:
+            instance.publish(server)
         _write(server.url)
-        while not server.shutdown_requested.wait(0.25):
+        while not server.shutdown_requested.wait(0.15):
             if not interactive:
                 continue
+            if server.exit_accepted.is_set() and server.finish_exit():
+                break
             if window is not None and window.process.poll() is not None:
                 window.close()
                 window = None
+                server.window_closed()
                 app.desktop.set_ui_pid(None)
-            if show_requested.is_set():
+            exit_request = server.exit_request
+            if exit_request is not None:
+                if window is None:
+                    if server.try_accept_background_exit():
+                        show_requested.set()
+                    if server.exit_accepted.is_set():
+                        continue
+                elif exit_request != shown_exit:
+                    show_requested.set()
+                    shown_exit = exit_request
+            if server.hide_requested.is_set():
+                server.hide_requested.clear()
+                if window is not None and exit_request is None and tray.registered:
+                    window.hide()
+            if show_requested.is_set() and not server.lock.locked():
                 show_requested.clear()
                 if window is None:
-                    window = WorkbenchWindow(server.url)
-                    app.desktop.set_ui_pid(window.process.pid)
-                else:
-                    window.activate()
-            if window is None and not tray.registered:
-                break
+                    try:
+                        window = WorkbenchWindow(server.url)
+                        app.desktop.set_ui_pid(window.process.pid)
+                    except AppError as exc:
+                        if exit_request is not None:
+                            server.cancel_exit(exc.message)
+                        from gaocaozuo.localization import native_text
+                        from gaocaozuo.shell_win import show_error
+
+                        with native_locale(read_language()):
+                            show_error(native_text(exc.message))
+                elif not window.activate():
+                    # The Chromium HWND can disappear before its process exits after a window close.
+                    show_requested.set()
     except KeyboardInterrupt:
         pass
     except (AppError, OSError) as exc:
@@ -157,12 +190,12 @@ def main(argv: list[str] | None = None) -> int:
             server.shutdown_requested.set()
         if cloud_worker is not None:
             cloud_worker.join(1)
-        if app is not None:
-            app.translation.close()
-        if tray is not None:
-            tray.close()
         if app is not None and app.runtime is not None:
             app.runtime.close()
+        elif app is not None:
+            app.system.close()
+        if app is not None:
+            app.translation.close(wait=server is not None and server.exit_accepted.is_set())
         if app is not None and app.native_clipboard is not None and app.clipboard.transaction:
             try:
                 app.clipboard.cancel()
@@ -170,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         if window is not None:
             window.close()
+        if tray is not None:
+            tray.close()
         if server is not None:
             server.shutdown()
             server.server_close()
