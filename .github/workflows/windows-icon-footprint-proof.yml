@@ -1,0 +1,75 @@
+name: Windows icon footprint and isolated upgrade verification
+on:
+  push:
+    branches: ['codex/win-icon-footprint-proof-c6b2bda']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-x64
+          path: candidate
+          run-id: 46125642354
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-Icon
+          path: candidate
+          run-id: 46125642354
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-x64
+          path: previous
+          run-id: 46113375429
+          github-token: ${{ github.token }}
+      - name: Verify all SHA-256 files and install, upgrade, and uninstall in isolation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Confirm-Checksum([string]$Path) {
+              $file = Get-Item -LiteralPath $Path
+              $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $stamp = (Get-Content -LiteralPath "$($file.FullName).sha256" -Raw).Trim()
+              if ($stamp -cne "$actual  $($file.Name)") { throw 'SHA-256 differs.' }
+              Write-Host "$($file.Name) SHA-256 $actual, $($file.Length) bytes"
+              return $file.FullName
+          }
+          $candidate = Confirm-Checksum 'candidate/GaoCaoZuo-Windows-1.18-build4-x64-Setup.exe'
+          $previous = Confirm-Checksum 'previous/GaoCaoZuo-Windows-1.18-build3-x64-Setup.exe'
+          $icon = Confirm-Checksum 'candidate/GaoCaoZuo-Windows-1.18-build4.ico'
+          & windows/smoke.ps1 -Installer $candidate -PreviousInstaller $previous -ExpectedVersion 1.18+4
+      - name: Compare Windows Shell and LoadImage pixels for the installer and installed executable icons
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check Pillow==12.2.0 pyinstaller==6.16.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $app = Join-Path $env:RUNNER_TEMP 'isolated-icon-footprint'
+          $setup = (Resolve-Path -LiteralPath 'candidate/GaoCaoZuo-Windows-1.18-build4-x64-Setup.exe').Path
+          $ico = (Resolve-Path -LiteralPath 'candidate/GaoCaoZuo-Windows-1.18-build4.ico').Path
+          $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $app + '"'
+          $run = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw 'Isolated icon inspection installation failed.' }
+          try {
+              python -B .github/verification/icon_footprint_proof.py $ico $setup "$app/GaoCaoZuo.exe" "$app/GaoCaoZuo-cli.exe"
+              if ($LASTEXITCODE -ne 0) { throw 'Windows icon comparison failed.' }
+          } finally {
+              $uninstall = Get-ChildItem -LiteralPath $app -Filter 'unins*.exe' -File | Select-Object -First 1
+              if ($uninstall) {
+                  $removed = Start-Process -FilePath $uninstall.FullName -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -WindowStyle Hidden -Wait -PassThru
+                  if ($removed.ExitCode -ne 0) { throw 'Icon inspection uninstall failed.' }
+              }
+          }
