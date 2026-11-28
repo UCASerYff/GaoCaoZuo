@@ -131,8 +131,15 @@ import Darwin
     let richTicket = reopenedStack.peek()!
     let richItems = try reopenedStack.pasteboardItems(for: richTicket)
     try check(richItems[0].data(forType: .rtf) == Data("{\\rtf1\\ansi rich}".utf8), "raw RTF stack bytes survive restart")
-    let countBeforeMerge = reopenedStack.entries.count
-    try check(reopenedStack.mergeAll().isEmpty && reopenedStack.entries.count == countBeforeMerge, "rich merge refuses data loss without clipboard mutation")
+    let entriesBeforeMerge = reopenedStack.entries
+    try rejects({ _ = try reopenedStack.mergedText() }, "the text-only path does not discard rich data")
+    let preparedMerge = try reopenedStack.preparedMerge()
+    let mergedString = "rich\n第一项\n原空白 "
+    try check(preparedMerge.string(forType: .string) == mergedString && reopenedStack.entries == entriesBeforeMerge,
+              "preparing rich merge retains order, whitespace and the queue")
+    guard let mergedRTF = preparedMerge.data(forType: .rtf) else { throw DataFailure.message("Selection/snippet: rich merge did not preserve RTF") }
+    let decodedMerge = try NSAttributedString(data: mergedRTF, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+    try check(decodedMerge.string == mergedString, "merged RTF preserves the original text without publishing to any pasteboard")
     try reopenedStack.clearDurably()
     try reopenedStack.pushContent(text: nil, fileReferences: [blobURL.path])
     try FileManager.default.removeItem(at: blobURL)
