@@ -77,6 +77,12 @@ struct ShortcutAliasBatch {
         var schema = 1
         var receipts: [String: Receipt] = [:]
         var pending: [String: ShortcutAliasStamp] = [:]
+        var restoring: Set<String>?
+
+        mutating func clearPending(for key: String) {
+            pending.removeValue(forKey: key)
+            restoring?.remove(key)
+        }
     }
 
     private struct CurrentAlias {
@@ -106,18 +112,30 @@ struct ShortcutAliasBatch {
     }
 
     func previews(for urls: [URL]) throws -> [ShortcutAliasPreview] {
-        let saved = try journal()
-        return try urls.map { supplied in
+        var saved = try journal()
+        var recovered = false
+        let previews = try urls.map { supplied -> ShortcutAliasPreview in
             let url = URL(fileURLWithPath: supplied.standardizedFileURL.path)
             let current = try inspect(url)
-            let receipt = saved.receipts[url.path]
+            let key = url.path
+            if let pending = saved.pending[key], pending.icon != nil, current.stamp.icon == nil,
+               saved.restoring?.contains(key) == true, saved.receipts[key]?.applied == pending,
+               pending.isSameAlias(as: current.stamp) {
+                // Finder already restored this exact alias. Commit the bookkeeping only.
+                saved.clearPending(for: key)
+                saved.receipts.removeValue(forKey: key)
+                recovered = true
+            }
+            let receipt = saved.receipts[key]
             let state: ShortcutAliasPreview.State
-            if let pending = saved.pending[url.path], pending != current.stamp { state = .interrupted }
+            if let pending = saved.pending[key], pending != current.stamp { state = .interrupted }
             else if let receipt { state = receipt.applied == current.stamp ? .managed : .changed }
             else { state = current.customIcon == nil ? .available : .custom }
             return ShortcutAliasPreview(url: url, currentImage: current.customIcon ?? NSWorkspace.shared.icon(forFile: url.path),
                 stamp: current.stamp, state: state, appliedName: state == .managed ? receipt?.name : nil)
         }
+        if recovered { try data.save(saved, name: Self.recordFile) }
+        return previews
     }
 
     func createAlias(for application: URL) throws -> URL {
@@ -222,6 +240,8 @@ struct ShortcutAliasBatch {
         }
 
         journal.pending[key] = before.stamp
+        if image == nil { journal.restoring = (journal.restoring ?? []).union([key]) }
+        else { journal.restoring?.remove(key) }
         try data.save(journal, name: Self.recordFile)
         guard try inspect(url).stamp == before.stamp else { throw FileToolsError.changed(url) }
         let didSet = NSWorkspace.shared.setIcon(image, forFile: key, options: [])
@@ -229,13 +249,13 @@ struct ShortcutAliasBatch {
         guard before.stamp.isSameAlias(as: after.stamp) else { throw FileToolsError.changed(url) }
         guard didSet, (after.customIcon != nil) == (image != nil) else {
             if before.stamp == after.stamp {
-                journal.pending.removeValue(forKey: key)
+                journal.clearPending(for: key)
                 try data.save(journal, name: Self.recordFile)
             }
             throw FileToolsError.invalid("系统未能核对替身的图标修改。")
         }
         var completed = journal
-        completed.pending.removeValue(forKey: key)
+        completed.clearPending(for: key)
         completed.receipts[key] = image == nil ? nil : Receipt(applied: after.stamp, name: name)
         do {
             try data.save(completed, name: Self.recordFile)

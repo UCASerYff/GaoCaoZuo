@@ -83,6 +83,47 @@ import Foundation
     try require(refused.completed == 0 && unchanged == before.stamp, "unmanaged custom icon was replaced")
     try require(try Data(contentsOf: untouched) == original, "alias actions changed the application target")
 
+    struct ReceiptFixture: Codable {
+        let applied: ShortcutAliasStamp
+        let name: String
+    }
+    struct JournalFixture: Codable {
+        var schema = 1
+        let receipts: [String: ReceiptFixture]
+        let pending: [String: ShortcutAliasStamp]
+        let restoring: Set<String>?
+    }
+    let recoveryDirectory = root.appendingPathComponent("recovery-profile", isDirectory: true)
+    let recoveryData = LocalData(directory: recoveryDirectory)
+    let recoveryService = ShortcutAliasIcons(data: recoveryData)
+    let recoveryAliases = ["finished-restore", "unknown-operation", "outside-change"].map { root.appendingPathComponent($0) }
+    for item in recoveryAliases { try URL.writeBookmarkData(bookmark, to: item) }
+    let defaults = try recoveryService.previews(for: recoveryAliases)
+    try require(try recoveryService.change(defaults, to: red, name: "Recovery fixture").completed == defaults.count, "recovery fixtures could not be applied")
+    let managedFixtures = try recoveryService.previews(for: recoveryAliases)
+    let pendingFixtures = Dictionary(uniqueKeysWithValues: managedFixtures.map { ($0.id, $0.stamp) })
+    let receipts = pendingFixtures.mapValues { ReceiptFixture(applied: $0, name: "Recovery fixture") }
+    let restoring = Set([managedFixtures[0].id, managedFixtures[2].id])
+    let journalFile = "shortcut-alias-icons.json"
+    try recoveryData.save(JournalFixture(receipts: receipts, pending: pendingFixtures, restoring: restoring), name: journalFile)
+    try require(NSWorkspace.shared.setIcon(nil, forFile: recoveryAliases[0].path), "could not emulate a completed restore before the receipt write")
+    try require(NSWorkspace.shared.setIcon(nil, forFile: recoveryAliases[1].path), "could not emulate an unknown operation's final state")
+    try require(NSWorkspace.shared.setIcon(blue, forFile: recoveryAliases[2].path), "could not emulate an outside edit during pending restore")
+    let afterRestart = ShortcutAliasIcons(data: LocalData(directory: recoveryDirectory, createIfMissing: false))
+    let reopened = try afterRestart.previews(for: recoveryAliases)
+    try require(reopened[0].state == .available && reopened[0].stamp == defaults[0].stamp, "completed restore was not reconciled on restart")
+    try require(reopened[1].state == .interrupted && reopened[1].stamp == defaults[1].stamp, "unknown pending operation was unguarded")
+    try require(reopened[2].state == .interrupted && reopened[2].stamp.icon != managedFixtures[2].stamp.icon && reopened[2].stamp.icon != nil,
+        "a foreign icon during pending restore was unguarded or changed")
+    let reopenedData = LocalData(directory: recoveryDirectory, createIfMissing: false)
+    guard let reconciled = try reopenedData.load(journalFile, as: JournalFixture.self) else {
+        throw DataFailure.message("Shortcut aliases: missing recovery journal")
+    }
+    try require(reconciled.receipts[reopened[0].id] == nil && reconciled.pending[reopened[0].id] == nil &&
+        reconciled.restoring?.contains(reopened[0].id) == false && reconciled.pending.count == 2,
+        "only the confirmed restore intent should be cleared durably")
+    try require(try afterRestart.change([reopened[0]], to: red, name: "Reused icon").completed == 1, "recovered alias could not be reused")
+
     try require(ShortcutMascot.allCases.count == 8, "eight shared roles were not registered")
     for role in ShortcutMascot.allCases {
         guard let image = role.imageURL else { throw DataFailure.message("Missing role resource \(role.rawValue)") }
@@ -91,5 +132,5 @@ import Foundation
     for (name, role) in [("Codex", ShortcutMascot.chatgpt), ("Antigravity", .gemini), ("ZCode", .glm), ("智谱", .glm), ("通义千问", .qwen)] {
         try require(ShortcutMascot.suggestion(for: name) == role, "name matching failed for \(name)")
     }
-    print("Shortcut alias icons passed: staged assets, creation conflict, apply and restore, target identity, external edits, symlink and custom-icon protection.")
+    print("Shortcut alias icons passed: staged assets, creation conflict, apply and restore, interrupted restoration recovery, target identity, external edits, symlink and custom-icon protection.")
 }
