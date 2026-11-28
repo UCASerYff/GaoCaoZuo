@@ -1,0 +1,55 @@
+name: macOS synthetic PDF geometry diagnostic
+on:
+  push:
+    branches: ['codex/macos-ocr-pdf-diagnose-20261128-c3ee1ff8']
+permissions:
+  contents: read
+jobs:
+  geometry:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Report geometry using only synthetic OCR fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          project=$(pwd -P)
+          /usr/bin/python3 -B "$project/Scripts/setup-workspace-leases.py"
+          lease="$(dirname -- "$project")/合并迁移-2026-11-02/build_lease.py"
+          export GAO_BUILD_LEASE_OWNER="macos-pdf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$"
+          receipt=$(/usr/bin/python3 -B "$lease" acquire --owner "$GAO_BUILD_LEASE_OWNER" --purpose 'Diagnose synthetic searchable PDF geometry')
+          GAO_BUILD_LEASE_TOKEN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$receipt")
+          export GAO_BUILD_LEASE_TOKEN
+          trap '/usr/bin/python3 -B "$lease" release >/dev/null' EXIT
+          python3 -B - <<'PY'
+          from pathlib import Path
+          source = Path('Sources/ScreenshotOCRExporter.swift')
+          text = source.read_text(encoding='utf-8')
+          line = next(line for line in text.splitlines() if '文本层选取位置不一致' in line)
+          evidence = r'''                    if page.selection(for: line.pageBoundingBox.insetBy(dx: -1, dy: -1))?.string?.localizedCaseInsensitiveContains(token) != true {
+                                  let matches = pdf.findString(token, withOptions: [.caseInsensitive]).filter { $0.pages.contains(page) }
+                                  let isPDF = document.sources.first { $0.id == sourceID }?.isPDF
+                                  let rawMedia = page.pageRef?.getBoxRect(.mediaBox)
+                                  let rawCrop = page.pageRef?.getBoxRect(.cropBox)
+                                  print("GAO_PDF_EVIDENCE page=\(index + 1) sourceIsPDF=\(String(describing: isPDF)) tokenLength=\(token.count) rotation=\(expected.2) media=\(expected.0) crop=\(expected.1) rawMedia=\(String(describing: rawMedia)) rawCrop=\(String(describing: rawCrop))")
+                                  print("GAO_PDF_EVIDENCE expectedBox=\(line.pageBoundingBox) expectedQuadrilateral=\(line.pageQuadrilateral) pageCharacters=\(page.numberOfCharacters) tokenMatches=\(matches.map { $0.bounds(for: page) })")
+                                  let probeFont = CTFontCreateWithName("Helvetica" as CFString, 100, nil)
+                        let probeText = NSAttributedString(string: line.text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): probeFont])
+                        let probeLine = CTLineCreateWithAttributedString(probeText)
+                        print("GAO_PDF_EVIDENCE glyph=\(CTLineGetBoundsWithOptions(probeLine, [.useGlyphPathBounds])) typographic=\(CTLineGetBoundsWithOptions(probeLine, []))")
+                        let expansions: [CGFloat] = [1, 2, 4, 8, 16, 32]
+                        for expansion in expansions {
+                                      let selected = page.selection(for: line.pageBoundingBox.insetBy(dx: -expansion, dy: -expansion))
+                                      print("GAO_PDF_EVIDENCE expansion=\(expansion) size=\(selected?.string?.count ?? 0) includesToken=\(selected?.string?.localizedCaseInsensitiveContains(token) == true)")
+                                  }
+                              }
+          '''
+          source.write_text(text.replace(line + '\n', evidence + line + '\n', 1), encoding='utf-8')
+          PY
+          /bin/zsh Scripts/test-screenshot-engine.sh --run --synthetic-media
