@@ -1,0 +1,42 @@
+name: macOS searchable PDF verification
+on:
+  push:
+    branches: ['codex/macos-ocr-pdf-fix-20261128-29878361']
+permissions:
+  contents: read
+jobs:
+  suites:
+    name: Isolated ${{ matrix.suite }}
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [synthetic-media, production-compile]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Execute leased synthetic test entry
+        shell: bash
+        env:
+          GAO_SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          project=$(pwd -P)
+          /usr/bin/python3 -B "$project/Scripts/setup-workspace-leases.py"
+          lease="$(dirname -- "$project")/合并迁移-2026-11-02/build_lease.py"
+          export GAO_BUILD_LEASE_OWNER="macos-media-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$"
+          receipt=$(/usr/bin/python3 -B "$lease" acquire --owner "$GAO_BUILD_LEASE_OWNER" --purpose 'Run isolated media and named fixtures')
+          GAO_BUILD_LEASE_TOKEN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$receipt")
+          export GAO_BUILD_LEASE_TOKEN
+          trap '/usr/bin/python3 -B "$lease" release >/dev/null' EXIT
+          case "$GAO_SUITE" in
+            synthetic-media) /bin/zsh Scripts/test-screenshot-engine.sh --run --synthetic-media ;;
+            production-compile) /bin/zsh Scripts/build.sh --compile-only ;;
+            *) exit 2 ;;
+          esac
