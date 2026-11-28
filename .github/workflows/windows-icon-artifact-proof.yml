@@ -1,0 +1,108 @@
+name: Windows icon artifact and upgrade verification
+on:
+  push:
+    branches: ['codex/win-icons-artifact-proof-ec19dac']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-x64
+          path: candidate
+          run-id: 46113375429
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-x64
+          path: previous
+          run-id: 46110031819
+          github-token: ${{ github.token }}
+      - name: Verify both installer digests and run isolated upgrade
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Validate([string]$directory, [string]$build) {
+              $file = Get-Item -LiteralPath "$directory/GaoCaoZuo-Windows-1.18-build$build-x64-Setup.exe"
+              $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $stamp = (Get-Content -LiteralPath "$($file.FullName).sha256" -Raw).Trim()
+              if ($stamp -cne "$actual  $($file.Name)") { throw 'Installer SHA-256 differs.' }
+              Write-Host "Build $build SHA-256 $actual, $($file.Length) bytes"
+              return $file.FullName
+          }
+          $candidate = Validate candidate 3
+          $previous = Validate previous 2
+          & windows/smoke.ps1 -Installer $candidate -PreviousInstaller $previous -ExpectedVersion 1.18+3
+      - name: Inspect embedded icon groups without executing the binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path -LiteralPath 'candidate/GaoCaoZuo-Windows-1.18-build3-x64-Setup.exe').Path
+          $app = Join-Path $env:RUNNER_TEMP 'isolated-icon-resource-check'
+          $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $app + '"'
+          $run = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw 'Isolated icon inspection installation failed.' }
+          $env:GAO_SETUP_ICON_PE = $setup
+          $env:GAO_APP_ICON_PE = $app
+          @'
+          import ctypes as c
+          import ctypes.wintypes as w
+          import os
+          import struct
+          from pathlib import Path
+
+          def bind(name, result, *args):
+              fn = getattr(c.WinDLL("kernel32", use_last_error=True), name)
+              fn.restype, fn.argtypes = result, args
+              return fn
+
+          def groups(path):
+              load = bind("LoadLibraryExW", w.HMODULE, w.LPCWSTR, w.HANDLE, w.DWORD)
+              module = load(str(path), None, 0x22)
+              if not module:
+                  raise c.WinError(c.get_last_error())
+              result = {}
+              callback_type = c.WINFUNCTYPE(w.BOOL, w.HMODULE, c.c_void_p, c.c_void_p, w.LPARAM)
+              find = bind("FindResourceW", w.HANDLE, w.HMODULE, c.c_void_p, c.c_void_p)
+              length = bind("SizeofResource", w.DWORD, w.HMODULE, w.HANDLE)
+              read = bind("LoadResource", w.HANDLE, w.HMODULE, w.HANDLE)
+              lock = bind("LockResource", w.LPVOID, w.HANDLE)
+              enumerate_names = bind("EnumResourceNamesW", w.BOOL, w.HMODULE, c.c_void_p, callback_type, w.LPARAM)
+
+              @callback_type
+              def collect(handle, resource_type, identifier, _):
+                  entry = find(handle, identifier, resource_type)
+                  contents = c.string_at(lock(read(handle, entry)), length(handle, entry))
+                  count, = struct.unpack_from("<H", contents, 4)
+                  sizes = {struct.unpack_from("<BB", contents, 6 + 14 * index) for index in range(count)}
+                  result[identifier] = sorted((width or 256, height or 256) for width, height in sizes)
+                  return True
+
+              try:
+                  assert enumerate_names(module, 14, collect, 0), path
+                  return result
+              finally:
+                  bind("FreeLibrary", w.BOOL, w.HMODULE)(module)
+
+          expected = {(n, n) for n in (16, 20, 24, 25, 28, 30, 32, 35, 36, 40, 42, 48, 56, 60, 64, 96, 128, 256)}
+          root = Path(os.environ["GAO_APP_ICON_PE"])
+          for path in (Path(os.environ["GAO_SETUP_ICON_PE"]), root / "GaoCaoZuo.exe", root / "GaoCaoZuo-cli.exe"):
+              found = groups(path)
+              if path.parent == root:
+                  assert 1 in found and set(found[1]) == expected, (path, found)
+              else:
+                  assert any(set(group) == expected for group in found.values()), (path, found)
+              print(path.name, "embedded icon group", sorted(expected))
+          '@ | python -B -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
