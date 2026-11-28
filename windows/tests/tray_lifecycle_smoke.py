@@ -26,10 +26,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from gaocaozuo.native_win import kernel, user
+from gaocaozuo.version import APP_NAME, MARKETING_VERSION, VERSION_LABEL
 
 
 DESKTOP_PREFIX = "GaoLifecycleQA-"
-BROWSER_TITLE = "搞操作 V1.16"
+BROWSER_TITLE = f"{APP_NAME} V{MARKETING_VERSION}"
 TRAY_CAPTION = "搞操作 · 通知区域"
 NOTIFY_MESSAGE = 0x8001
 EXE = getattr(sys, "_base_executable", sys.executable)
@@ -386,7 +387,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
 
         until(lambda: events(4), "real Shell_NotifyIconW version registration")
         assert len(events(0)) == 1 and events(0)[0].icon_id == 1 and events(0)[0].icon, explorer.operations
-        assert http(port, token, "state")["version"].startswith("1.16+")
+        assert http(port, token, "state")["version"] == VERSION_LABEL
         http(port, token, "settings/create", {})
         before = (data_dir / "settings.json").read_bytes()
         assert json.loads(before)["showMenuBarIcon"] is False

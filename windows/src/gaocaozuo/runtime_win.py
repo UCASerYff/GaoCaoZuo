@@ -19,11 +19,16 @@ from gaocaozuo.surface_win import surface_colors, window_dpi
 
 
 _VK_MODIFIERS = {0x10: SHIFT, 0x11: CTRL, 0x12: ALT, 0x5B: WIN, 0x5C: WIN}
+_MODIFIER_EVENTS = {**_VK_MODIFIERS, 0xA0: SHIFT, 0xA1: SHIFT, 0xA2: CTRL, 0xA3: CTRL, 0xA4: ALT, 0xA5: ALT}
 _DRAG_UPDATE_INTERVAL = 0.025
 
 
 class _MouseEvent(c.Structure):
     _fields_ = [("point", w.POINT), ("data", w.DWORD), ("flags", w.DWORD), ("time", w.DWORD), ("extra", c.c_size_t)]
+
+
+class _KeyboardEvent(c.Structure):
+    _fields_ = [("key", w.DWORD), ("scan", w.DWORD), ("flags", w.DWORD), ("time", w.DWORD), ("extra", c.c_size_t)]
 
 
 class _WarningPaint(c.Structure):
@@ -189,6 +194,7 @@ class WindowsRuntime:
         self._snap = False
         self._drag = False
         self._generation = 0
+        self._input_epoch = 0
         self._running = False
         self._thread: Thread | None = None
         self._message_thread_id: int | None = None
@@ -264,9 +270,9 @@ class WindowsRuntime:
             self._worker.join(timeout=2)
         self.system.close()
 
-    def _enqueue(self, binding, hwnd, generation) -> None:
+    def _enqueue(self, binding, hwnd, generation, target) -> None:
         try:
-            self._commands.put_nowait((binding, hwnd, generation, time.monotonic()))
+            self._commands.put_nowait((binding, hwnd, generation, self._input_epoch, target, time.monotonic()))
         except queue.Full:
             return
 
@@ -277,18 +283,20 @@ class WindowsRuntime:
             command = self._commands.get()
             if command is None or self._stop.is_set():
                 return
-            binding, hwnd, generation, started = command
+            binding, hwnd, generation, epoch, target, started = command
             while time.monotonic() - started < 1 and any(key_state(vk) & 0x8000 for vk in _VK_MODIFIERS):
                 if self._stop.wait(0.025):
                     return
             with self._lock:
-                current = not self._paused and generation == self._generation
+                current = not self._paused and generation == self._generation and epoch == self._input_epoch
             if not current or self._stop.is_set() or time.monotonic() - started >= 1 or not is_input_desktop():
                 continue
             try:
                 if foreground() != hwnd:
                     raise AppError("触发后前台已变化，未执行动作。", "changed")
                 identity = self.desktop.observe_foreground()
+                if (identity is not None and identity.hwnd != hwnd) or (target is not None and identity != target):
+                    raise AppError("触发后前台已变化，未执行动作。", "changed")
                 if not binding.matches(identity.application if identity else ""):
                     raise AppError("前台应用与这条规则不匹配。", "changed")
                 if binding.action.startswith("window.") and identity is None:
@@ -296,6 +304,9 @@ class WindowsRuntime:
                 payload = {"inputRuleID": binding.identifier}
                 if identity:
                     payload["nativeTarget"] = identity
+                with self._lock:
+                    if self._stop.is_set() or generation != self._generation or epoch != self._input_epoch:
+                        continue
                 self.invoke(binding.action, payload)
                 row = self._row(binding.identifier, "submitted", "动作已运行。")
             except AppError as exc:
@@ -332,19 +343,32 @@ class WindowsRuntime:
         configuration = None
         right_down = None
         mouse_hook = None
+        keyboard_hook = None
         hwnd_active = 0
+        seen_foreground = 0
         next_tick = 0.0
         next_drag_tick = 0.0
-        generation = 0
+        generation = -1
+        next_hotkey_id = 0
         window_events = []
+        pending_buttons = []
+        mouse_keys = set()
+        gesture_masks = set()
+        watched_chords = set()
+        watched_keys = set()
+        watched_modifiers = 0
+        watched_down = set()
+        refresh_requested = True
         active_target = None
+        drag = False
+        snap = False
         drag_enabled = False
         dragging = None
         event_type = c.WINFUNCTYPE(None, w.HANDLE, w.DWORD, w.HWND, w.LONG, w.LONG, w.DWORD, w.DWORD)
         hook_type = c.WINFUNCTYPE(c.c_ssize_t, c.c_int, w.WPARAM, w.LPARAM)
-        use_mouse = user("SetWindowsHookExW", w.HANDLE, c.c_int, hook_type, w.HINSTANCE, w.DWORD)
-        stop_mouse = user("UnhookWindowsHookEx", w.BOOL, w.HANDLE)
-        next_mouse = user("CallNextHookEx", c.c_ssize_t, w.HANDLE, c.c_int, w.WPARAM, w.LPARAM)
+        use_hook = user("SetWindowsHookExW", w.HANDLE, c.c_int, hook_type, w.HINSTANCE, w.DWORD)
+        stop_hook = user("UnhookWindowsHookEx", w.BOOL, w.HANDLE)
+        next_hook = user("CallNextHookEx", c.c_ssize_t, w.HANDLE, c.c_int, w.WPARAM, w.LPARAM)
         hook_event = user("SetWinEventHook", w.HANDLE, w.DWORD, w.DWORD, w.HMODULE, event_type, w.DWORD, w.DWORD, w.DWORD)
         stop_event = user("UnhookWinEvent", w.BOOL, w.HANDLE)
 
@@ -355,54 +379,179 @@ class WindowsRuntime:
                     mask |= flag
             return mask
 
+        def cancel_context():
+            nonlocal right_down, dragging
+            right_down = dragging = None
+            pending_buttons.clear()
+            with self._lock:
+                self._input_epoch += 1
+
+        def see_foreground(hwnd):
+            nonlocal seen_foreground
+            if hwnd != seen_foreground:
+                seen_foreground = hwnd
+                cancel_context()
+
         @event_type
         def event(_handle, kind, hwnd, identifier, child, _thread, _timestamp):
-            if not identifier and not child and hwnd and len(window_events) < 48:
-                window_events.append((kind, int(hwnd)))
+            nonlocal refresh_requested
+            if not identifier and not child and hwnd:
+                if kind == 3:  # EVENT_SYSTEM_FOREGROUND
+                    see_foreground(int(hwnd))
+                    refresh_requested = True
+                elif len(window_events) < 48:
+                    window_events.append((kind, int(hwnd)))
+
+        @hook_type
+        def keyboard(code, message, param):
+            nonlocal refresh_requested
+            if code >= 0 and not self._stop.is_set():
+                datum = c.cast(param, c.POINTER(_KeyboardEvent)).contents
+                vk = datum.key
+                modifier = _MODIFIER_EVENTS.get(vk, 0) & watched_modifiers
+                if (modifier or vk in watched_keys) and not datum.flags & 0x12:  # Physical input only.
+                    if message in {0x0101, 0x0105}:  # Key up, including system keys.
+                        watched_down.discard(vk)
+                    elif message in {0x0100, 0x0104}:
+                        # The current down is not reflected yet. Use the previous
+                        # down state only to recover a release missed off-desktop.
+                        if vk in watched_down and key_state(vk) & 0x8000:
+                            return next_hook(None, code, message, param)
+                        watched_down.add(vk)
+                        if modifier or (modifiers(), vk) in watched_chords:
+                            # Reconcile in the pump; never intercept or replay this keystroke.
+                            refresh_requested = True
+            return next_hook(None, code, message, param)
 
         @hook_type
         def mouse(code, message, param):
-            nonlocal right_down, dragging
-            button_messages = {0x0204, 0x0205, 0x0207, 0x020B}
-            drag_messages = {0x0200, 0x0201, 0x0202}
-            if code < 0 or not ((mouse_actions and message in button_messages) or (drag_enabled and message in drag_messages)):
-                return next_mouse(None, code, message, param)
-            if message == 0x0200 and dragging is None:
-                return next_mouse(None, code, message, param)
+            nonlocal right_down, dragging, refresh_requested
+            if code < 0 or self._stop.is_set():
+                return next_hook(None, code, message, param)
+            if message in {0x0200, 0x0202}:  # Mouse move or left release.
+                if dragging is None:
+                    return next_hook(None, code, message, param)
+            elif not ((message in {0x0207, 0x020B} and mouse_keys) or
+                      (message in {0x0204, 0x0205} and gesture_masks) or (message == 0x0201 and drag)):
+                return next_hook(None, code, message, param)
             datum = c.cast(param, c.POINTER(_MouseEvent)).contents
             if datum.flags & 3:  # synthetic or lower-integrity input
-                return next_mouse(None, code, message, param)
+                return next_hook(None, code, message, param)
             point = datum.point.x, datum.point.y
             if dragging is not None and message in {0x0200, 0x0202}:
                 dragging.point = point
                 dragging.changed = True
                 if message == 0x0202:
                     dragging.final = True
+                    refresh_requested = True
                     return 1
-                return next_mouse(None, code, message, param)
-            hwnd = int(foreground() or 0)
+                return next_hook(None, code, message, param)
+
             mask = modifiers()
-            if message == 0x0201 and hwnd == hwnd_active and active_target and mask == ALT:
-                if self.desktop.pointer_is_over(hwnd, point):
+            key = None
+            if message in {0x0207, 0x020B}:
+                button = 2 if message == 0x0207 else {1: 3, 2: 4}.get(datum.data >> 16)
+                key = ("mouseButton", mask, button)
+                if key not in mouse_keys:
+                    return next_hook(None, code, message, param)
+            elif message == 0x0204 and mask not in gesture_masks:
+                return next_hook(None, code, message, param)
+            elif message == 0x0205 and right_down is None:
+                return next_hook(None, code, message, param)
+            elif message == 0x0201 and mask != ALT:
+                return next_hook(None, code, message, param)
+
+            hwnd = int(foreground() or 0)
+            see_foreground(hwnd)
+            refresh_requested = True
+            if message == 0x0201:
+                if (hwnd == hwnd_active and drag_enabled and generation == self._generation and
+                    is_input_desktop() and self.desktop.pointer_is_over(hwnd, point)):
                     dragging = _Drag(active_target, point, point)
                     return 1
-            if hwnd and hwnd == hwnd_active:
-                binding = None
-                if message in {0x0207, 0x020B}:
-                    button = 2 if message == 0x0207 else {1: 3, 2: 4}.get(datum.data >> 16)
-                    binding = mouse_actions.get(("mouseButton", mask, button))
-                elif message == 0x0204:
-                    if mask & ALT:
-                        right_down = (hwnd, mask, point)
-                elif message == 0x0205 and right_down:
-                    target, source_modifiers, start = right_down
-                    if hwnd == target and mask == source_modifiers:
-                        binding = mouse_actions.get(("gesture", mask, direction_between(start, point)))
-                if binding:
-                    self._enqueue(binding, hwnd, generation)
-            if message == 0x0205:
+            elif message == 0x0204:
+                right_down = (hwnd, mask, point) if hwnd else None
+            elif message == 0x0205 and right_down:
+                target, source_modifiers, start = right_down
                 right_down = None
-            return next_mouse(None, code, message, param)
+                if hwnd == target and mask == source_modifiers:
+                    key = ("gesture", mask, direction_between(start, point))
+            if hwnd and key and len(pending_buttons) < 32:
+                pending_buttons.append((hwnd, key))
+            return next_hook(None, code, message, param)
+
+        def register_hotkey(modifiers_and_repeat, vk):
+            nonlocal next_hotkey_id
+            # A stale WM_HOTKEY already in the queue must never resolve to a
+            # different foreground binding through a reused registration ID.
+            next_hotkey_id = next_hotkey_id % 0xBFFF + 1
+            return next_hotkey_id if register(None, next_hotkey_id, modifiers_and_repeat, vk) else 0
+
+        def refresh_context():
+            nonlocal active_target, configuration, drag, drag_enabled, generation, hwnd_active, keyboard_hook
+            nonlocal mouse_hook, mouse_keys, gesture_masks, refresh_requested, snap, watched_chords, watched_keys, watched_modifiers
+            refresh_requested = False
+            with self._lock:
+                updated, rules, paused, snap, drag = self._generation, self._rules, self._paused, self._snap, self._drag
+            if generation != updated:
+                if generation != -1:
+                    cancel_context()
+                generation = updated
+                enabled = () if paused else rules
+                mouse_keys = {binding.key for binding in enabled if binding.key[0] == "mouseButton"}
+                gesture_masks = {binding.key[1] for binding in enabled if binding.key[0] == "gesture"}
+                watched_chords = {binding.key[1:] for binding in enabled
+                                  if binding.key[0] == "hotkey" and (binding.include or binding.exclude)}
+                watched_keys = {vk for _, vk in watched_chords}
+                watched_modifiers = 0
+                for mask, _ in watched_chords:
+                    watched_modifiers |= mask
+                watched_down.clear()
+                if watched_chords and not keyboard_hook:
+                    module = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
+                    keyboard_hook = use_hook(13, keyboard, module, 0)  # WH_KEYBOARD_LL
+                elif not watched_chords and keyboard_hook:
+                    stop_hook(keyboard_hook)
+                    keyboard_hook = None
+
+            current = int(foreground() or 0) if (rules and not paused) or snap or drag else 0
+            interactive = bool(current and is_input_desktop())
+            see_foreground(current)
+            if not interactive and configuration and configuration[2]:
+                watched_down.clear()
+                cancel_context()
+            desired = generation, current, interactive, self._input_epoch
+            if configuration == desired:
+                return
+
+            for handle in installed:
+                unregister(None, handle)
+            installed.clear()
+            mouse_actions.clear()
+            hwnd_active = current
+            active_target = self.desktop.observe_foreground() if interactive else None
+            if active_target is not None and active_target.hwnd != current:
+                cancel_context()
+                active_target = None
+                interactive = False
+                desired = None  # Retry against a fresh foreground on the next real wake.
+            drag_enabled = bool(drag and active_target)
+            application = active_target.application if active_target else ""
+            self._register_bindings(rules, application, paused, interactive, generation, register_hotkey, installed, mouse_actions)
+            mouse_needed = bool(mouse_keys or gesture_masks or drag)
+            if mouse_needed and not mouse_hook:
+                module = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
+                mouse_hook = use_hook(14, mouse, module, 0)  # WH_MOUSE_LL
+            elif not mouse_needed and mouse_hook:
+                stop_hook(mouse_hook)
+                mouse_hook = None
+            if mouse_needed and not mouse_hook:
+                for binding in mouse_actions.values():
+                    self._note_rule(binding, "rejected", "Windows 拒绝注册鼠标事件监听。", generation)
+                if drag_enabled:
+                    with self._lock:
+                        self._last_action = self._row("window.drag", "rejected", "Windows 拒绝注册窗口拖动所需的鼠标事件。")
+            configuration = desired
 
         msg = w.MSG()
         peek(c.byref(msg), None, 0, 0, 0)  # initialize this thread's message queue
@@ -412,46 +561,33 @@ class WindowsRuntime:
                 self._message_thread_id = kernel("GetCurrentThreadId", w.DWORD)()
                 self._running = True
             while not self._stop.is_set():
-                while peek(c.byref(msg), None, 0, 0, 1):
+                pending_hotkeys = []
+                while not self._stop.is_set() and peek(c.byref(msg), None, 0, 0, 1):
                     if msg.message == 0x0312:  # WM_HOTKEY
-                        binding = installed.get(msg.wParam)
+                        native_id = msg.wParam
+                        binding = installed.get(native_id)
                         mask, vk = (msg.lParam & 0xFFFF), ((msg.lParam >> 16) & 0xFFFF)
-                        if binding and (mask, vk) == binding.key[1:] and foreground() == hwnd_active:
-                            self._enqueue(binding, hwnd_active, generation)
+                        if binding and (mask, vk) == binding.key[1:] and len(pending_hotkeys) < 32:
+                            pending_hotkeys.append((native_id, binding))
                     else:
                         translate(c.byref(msg))
                         dispatch(c.byref(msg))
 
                 moment = time.monotonic()
-                with self._lock:
-                    generation, rules, paused, snap, drag = self._generation, self._rules, self._paused, self._snap, self._drag
-                current = int(foreground() or 0) if (rules and not paused) or snap or drag else 0
-                interactive = bool(current and is_input_desktop())
-                desired = generation, current, interactive
-                if configuration != desired:
-                    for handle in installed:
-                        unregister(None, handle)
-                    installed.clear()
-                    mouse_actions.clear()
-                    right_down = None
-                    hwnd_active = current
-                    active_target = self.desktop.observe_foreground() if interactive else None
-                    drag_enabled = bool(drag and active_target)
-                    application = active_target.application if active_target else ""
-                    self._register_bindings(rules, application, paused, interactive, generation, register, installed, mouse_actions)
-                    if (mouse_actions or drag_enabled) and not mouse_hook:
-                        module = kernel("GetModuleHandleW", w.HMODULE, w.LPCWSTR)(None)
-                        mouse_hook = use_mouse(14, mouse, module, 0)  # WH_MOUSE_LL
-                        if not mouse_hook:
-                            for binding in mouse_actions.values():
-                                self._note_rule(binding, "rejected", "Windows 拒绝注册鼠标事件监听。", generation)
-                            if drag_enabled:
-                                with self._lock:
-                                    self._last_action = self._row("window.drag", "rejected", "Windows 拒绝注册窗口拖动所需的鼠标事件。")
-                    elif not mouse_actions and not drag_enabled and mouse_hook:
-                        stop_mouse(mouse_hook)
-                        mouse_hook = None
-                    configuration = desired
+                if self._stop.is_set():
+                    break
+                if pending_hotkeys or refresh_requested or generation != self._generation or moment >= next_tick:
+                    refresh_context()
+                for native_id, binding in pending_hotkeys:
+                    if installed.get(native_id) is binding:
+                        self._enqueue(binding, hwnd_active, generation, active_target)
+                if pending_buttons:
+                    pending = pending_buttons[:]
+                    pending_buttons.clear()
+                    for hwnd, key in pending:
+                        binding = mouse_actions.get(key)
+                        if hwnd == hwnd_active and binding:
+                            self._enqueue(binding, hwnd, generation, active_target)
 
                 if dragging is not None and (not drag_enabled or dragging.identity != active_target):
                     dragging = None
@@ -491,13 +627,17 @@ class WindowsRuntime:
                         pass
                 if self._stop.is_set():
                     break
+                if refresh_requested:
+                    continue
                 deadline = next_tick
                 if dragging is not None and dragging.changed:
                     deadline = min(deadline, next_drag_tick)
                 wait_for_messages(deadline - time.monotonic())
         finally:
             if mouse_hook:
-                stop_mouse(mouse_hook)
+                stop_hook(mouse_hook)
+            if keyboard_hook:
+                stop_hook(keyboard_hook)
             for hook in hooks:
                 if hook:
                     stop_event(hook)
@@ -517,17 +657,18 @@ class WindowsRuntime:
                 self._note_rule(binding, "outOfScope", "当前前台应用不在此规则范围内。", generation)
             else:
                 matched.setdefault(binding.key, []).append(binding)
-        for index, (key, candidates) in enumerate(matched.items(), 1):
+        for key, candidates in matched.items():
             if len(candidates) != 1:
                 for binding in candidates:
                     self._note_rule(binding, "conflict", "有多条有效规则使用同一触发方式。", generation)
                 continue
             binding = candidates[0]
             if key[0] == "hotkey":
-                if not register(None, index, key[1] | 0x4000, key[2]):
+                handle = register(key[1] | 0x4000, key[2])
+                if not handle:
                     self._note_rule(binding, "rejected", "Windows 或其他应用正在使用此快捷键。", generation)
                     continue
-                installed[index] = binding
+                installed[handle] = binding
             else:
                 mouse_actions[key] = binding
             self._note_rule(binding, "active", "已在当前会话注册。", generation)

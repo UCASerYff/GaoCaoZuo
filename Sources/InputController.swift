@@ -122,19 +122,32 @@ struct InputTapState {
     var portValid:Bool
     var sourceValid:Bool
     var enabled:Bool
+    var eventMask:CGEventMask = 0
 }
 enum InputTapLifecycle {
-    enum Decision {case stop,install,keep,rebuild}
+    enum Decision {case stop,install,keep,replaceMask,rebuild}
     static func shouldRecoverDisabledTap(triggerGeneration:UInt64,currentGeneration:UInt64,hasTap:Bool)->Bool {
         hasTap && triggerGeneration == currentGeneration
     }
     static func decision(running:Bool,paused:Bool,hasWork:Bool,authorization:InputListenerAuthorization,
-                         wantsActive:Bool,tap:InputTapState?)->Decision {
+                         wantsActive:Bool,tap:InputTapState?,eventMask:CGEventMask = 0)->Decision {
         guard running,!paused,hasWork,authorization.available else{return .stop}
         guard let tap else{return .install}
         guard tap.portValid,tap.sourceValid,tap.enabled,tap.authorization == authorization,
               tap.active == wantsActive else{return .rebuild}
-        return .keep
+        return tap.eventMask == eventMask ? .keep : .replaceMask
+    }
+}
+
+private struct InputForegroundIdentity: Equatable, Sendable {
+    let pid: pid_t
+    let launchDate: Date?
+    let bundleID: String?
+
+    init(_ app: NSRunningApplication) {
+        pid = app.processIdentifier
+        launchDate = app.launchDate
+        bundleID = app.bundleIdentifier
     }
 }
 
@@ -202,6 +215,8 @@ final class InputController: ObservableObject {
     private var basicEventMask: CGEventMask = 0
     private var enhancedEventMask: CGEventMask = 0
     private var tapGeneration:UInt64=0
+    private var basicInputGeneration:UInt64=0
+    private var foregroundIdentity:InputForegroundIdentity?
     private var timer: Timer?
     private var configurationError: String?
     private var windowInputError: String?
@@ -218,7 +233,9 @@ final class InputController: ObservableObject {
     private var autoInputEvents = false
     private var flyKeyEvents = false
     private var lifecycleObservers:[NSObjectProtocol]=[]
-    private var sleepingOrInactive=false
+    private var systemSleeping=false
+    private var sessionInactive=false
+    private var sleepingOrInactive:Bool { systemSleeping || sessionInactive }
     var onPauseChanged: ((Bool) -> Void)?
     var hostedInputIsExclusive:(()->Bool)? {didSet{enhanced.hostedInputIsExclusive=hostedInputIsExclusive}}
     var hostedCaptureBlockingReason:String? {enhanced.hostedCaptureBlockingReason}
@@ -230,6 +247,7 @@ final class InputController: ObservableObject {
         yieldedHostedInput=true
     }
     private let enhanced = EnhancedInputEngine()
+    private var configuredEnhancements: InputEnhancementConfiguration?
     private var enhancementError: String?
     private var tapModeError:String?
     @Published private(set) var enhancementStatus = "高级输入未启用"
@@ -237,17 +255,29 @@ final class InputController: ObservableObject {
 
     func configure(bindings: [InputBinding], excludedApps: [String] = [], windows: WindowManager? = nil,
                    windowDragEnabled: Bool = false, windowSnapEnabled: Bool = false, enhancements: InputEnhancementConfiguration = .init(), invocationHandler: ((String,InputWindowTargetMode)->Void)? = nil, handler: @escaping (String) -> Void) {
-        tearDownTap()
         let conflicting = InputRules.conflictingIDs(in: bindings)
         let invalid = bindings.filter { $0.enabled && InputRules.validationError($0) != nil }
-        self.bindings = bindings.filter { $0.enabled && InputRules.validationError($0) == nil }
-        self.handler = handler
-        enhancementError = nil
-        enhanced.configure(enhancements, excludedApps: Set(excludedApps), handler: handler) { [weak self] message in
-            self?.enhancementError = message; self?.updateCombinedError()
+        let validBindings = bindings.filter { $0.enabled && InputRules.validationError($0) == nil }
+        let exclusions = Set(excludedApps)
+        if configuredEnhancements != enhancements || self.excludedApps != exclusions {
+            tearDownTap()
+            configuredEnhancements = enhancements
+            enhancementError = nil
+            enhanced.configure(enhancements, excludedApps: exclusions, handler: handler) { [weak self] message in
+                self?.enhancementError = message; self?.updateCombinedError()
+            }
+        } else {
+            enhanced.handler = handler
+            if self.bindings != validBindings || self.windows !== windows ||
+                self.windowDragEnabled != windowDragEnabled || self.windowSnapEnabled != windowSnapEnabled {
+                cancelPendingBasicInput()
+            }
         }
+        self.bindings = validBindings
+        self.handler = handler
         enhanced.invocationHandler=invocationHandler
-        self.excludedApps = Set(excludedApps)
+        enhanced.pendingAuthorizationIsCurrent = { [weak self] in self?.pendingInputAuthorizationIsCurrent() == true }
+        self.excludedApps = exclusions
         self.windows = windows
         self.windowDragEnabled = windowDragEnabled
         self.windowSnapEnabled = windowSnapEnabled
@@ -273,6 +303,7 @@ final class InputController: ObservableObject {
         refreshPermission()
     }
     func refreshExtensionDemand() { refreshPermission() }
+    func refreshPermissionsOnPresentation() { refreshPermission() }
 
     func requestPermission() {
         _ = CGRequestListenEventAccess()
@@ -286,20 +317,38 @@ final class InputController: ObservableObject {
         desiredRunning = true
         if lifecycleObservers.isEmpty {
             let center=NSWorkspace.shared.notificationCenter
+            foregroundIdentity = NSWorkspace.shared.frontmostApplication.map(InputForegroundIdentity.init)
+            lifecycleObservers.append(center.addObserver(forName:NSWorkspace.didActivateApplicationNotification,object:nil,queue:.main) { [weak self] note in
+                guard let application = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                let identity = InputForegroundIdentity(application)
+                MainActor.assumeIsolated {
+                    self?.foregroundDidChange(to: identity)
+                }
+            })
             for name in [NSWorkspace.willSleepNotification,NSWorkspace.sessionDidResignActiveNotification] {
                 lifecycleObservers.append(center.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        self?.sleepingOrInactive = true
-                        self?.timer?.invalidate()
-                        self?.timer = nil
-                        self?.tearDownTap()
-                        FlyKeyController.shared.resetTapDetector()
+                        guard let self else { return }
+                        let wasSuspended = self.sleepingOrInactive
+                        if name == NSWorkspace.willSleepNotification { self.systemSleeping = true }
+                        else { self.sessionInactive = true }
+                        guard !wasSuspended else { return }
+                        self.timer?.invalidate()
+                        self.timer = nil
+                        self.tearDownTap()
                     }
                 })
             }
             for name in [NSWorkspace.didWakeNotification,NSWorkspace.sessionDidBecomeActiveNotification] {
                 lifecycleObservers.append(center.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
-                    MainActor.assumeIsolated {self?.sleepingOrInactive=false;self?.refreshPermission()}
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if name == NSWorkspace.didWakeNotification { self.systemSleeping = false }
+                        else { self.sessionInactive = false }
+                        guard !self.sleepingOrInactive else { return }
+                        self.foregroundIdentity = NSWorkspace.shared.frontmostApplication.map(InputForegroundIdentity.init)
+                        self.refreshPermission()
+                    }
                 })
             }
         }
@@ -309,9 +358,17 @@ final class InputController: ObservableObject {
     func stop() {
         desiredRunning = false
         for token in lifecycleObservers {NSWorkspace.shared.notificationCenter.removeObserver(token)}
-        lifecycleObservers=[];sleepingOrInactive=false
+        lifecycleObservers=[];systemSleeping=false;sessionInactive=false;foregroundIdentity=nil
         timer?.invalidate(); timer = nil
         tearDownTap()
+    }
+
+    private func foregroundDidChange(to identity: InputForegroundIdentity) {
+        guard foregroundIdentity != identity else { return }
+        foregroundIdentity = identity
+        cancelPendingBasicInput()
+        enhanced.cancelPendingForForegroundChange()
+        FlyKeyController.shared.cancelPendingTap()
     }
 
     private func refreshPermission() {
@@ -343,10 +400,10 @@ final class InputController: ObservableObject {
             let valid=CFMachPortIsValid(port)
             return InputTapState(authorization:installedAuthorization,active:installedActiveTap,portValid:valid,
                                  sourceValid:source.map{CFRunLoopSourceIsValid($0)} ?? false,
-                                 enabled:valid && CGEvent.tapIsEnabled(tap:port))
+                                 enabled:valid && CGEvent.tapIsEnabled(tap:port),eventMask:installedEventMask)
         }
         switch InputTapLifecycle.decision(running:running,paused:isPaused,hasWork:hasWork,
-                                          authorization:authorization,wantsActive:wantsActive,tap:state) {
+                                          authorization:authorization,wantsActive:wantsActive,tap:state,eventMask:mask) {
         case .stop:
             if tap != nil || cleaner.needsInputEvents { tearDownTap() }
             setError(desiredRunning && !isPaused && hasWork && !permissionGranted
@@ -356,8 +413,16 @@ final class InputController: ObservableObject {
         case .rebuild:
             tearDownTap();installTap(authorization:authorization, mask: mask)
         case .install:installTap(authorization:authorization, mask: mask)
-        case .keep:
-            if installedEventMask != mask { tearDownTap(); installTap(authorization:authorization, mask: mask) }
+        case .replaceMask:
+            if !installTap(authorization:authorization, mask:mask) {
+                // Keep the existing tap, but fail open if Cleaner cannot get its full input mask.
+                if cleaner.needsInputEvents {
+                    cleaner.inputChannelInvalidated()
+                    cleaner.inputSafety.bind(nil, active:false)
+                }
+                return
+            }
+        case .keep: break
         }
         if let tap,CFMachPortIsValid(tap),CGEvent.tapIsEnabled(tap:tap) {enhanced.startMonitoring()}
         publishEnhancementState()
@@ -370,9 +435,9 @@ final class InputController: ObservableObject {
         }
     }
 
-    private func installTap(authorization:InputListenerAuthorization, mask: CGEventMask) {
+    @discardableResult
+    private func installTap(authorization:InputListenerAuthorization, mask: CGEventMask) -> Bool {
         let active=(enhanced.needsActiveTap || CleanerController.shared.needsInputEvents) && authorization.accessibility
-        tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
@@ -388,7 +453,11 @@ final class InputController: ObservableObject {
                 guard !controller.isPaused else { return false }
                 let eventBit = InputTapEvents.bit(type)
                 if controller.autoInputEvents, eventBit & InputTapEvents.autoInput != 0 { InputSourceCoordinator.shared.handleInputActivity(type:type,event:event) }
-                if controller.flyKeyEvents, eventBit & InputTapEvents.flyKey != 0 { FlyKeyController.shared.handleInputEvent(type:type,event:event) }
+                if controller.flyKeyEvents, eventBit & InputTapEvents.flyKey != 0 {
+                    FlyKeyController.shared.handleInputEvent(type:type,event:event) { [weak controller] in
+                        controller?.pendingInputAuthorizationIsCurrent() == true
+                    }
+                }
                 let consumed = eventBit & controller.enhancedEventMask != 0 && controller.enhanced.receive(type:type,event:event)
                 if !consumed, eventBit & controller.basicEventMask != 0 { controller.receive(type:type,event:event) }
                 return consumed
@@ -399,35 +468,61 @@ final class InputController: ObservableObject {
                                              options: active ? .defaultTap : .listenOnly, eventsOfInterest: mask, callback: callback,
                                              userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             setError("系统未能启动输入监听。请检查输入监控权限及其他输入工具的兼容性。")
-            return
+            return false
         }
-        guard let createdSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0) else {
+        if tap != nil { CGEvent.tapEnable(tap: created, enable: false) }
+        guard CFMachPortIsValid(created),
+              let createdSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0),
+              CFRunLoopSourceIsValid(createdSource) else {
             CFMachPortInvalidate(created)
             setError("无法创建输入监听事件源。")
-            return
+            return false
         }
+        // Swap the sources on the main run loop after the replacement is ready.
+        if tap != nil && CleanerController.shared.needsInputEvents {
+            CleanerController.shared.inputChannelInvalidated()
+        }
+        removeInstalledTap()
         tap = created; source = createdSource
         CleanerController.shared.inputSafety.bind(created, active:active)
         installedAuthorization=authorization;installedActiveTap=active;installedEventMask=mask
+        tapModeError = enhanced.needsActiveTap && !authorization.accessibility ? "按键替换、吞掉原输入和滚轮修改需要辅助功能权限；仅保留监听动作。" : nil
         enhanced.scrollAcceptanceTapActive=active
         CFRunLoopAddSource(CFRunLoopGetMain(), createdSource, .commonModes)
         CGEvent.tapEnable(tap: created, enable: true)
         setError(configurationError)
+        return true
     }
 
     private func tearDownTap() {
         CleanerController.shared.inputChannelInvalidated()
         CleanerController.shared.inputSafety.bind(nil, active:false)
-        tapGeneration &+= 1
         enhanced.stop()
-        gestureStart = nil
-        cancelWindowInput()
+        FlyKeyController.shared.cancelPendingTap()
+        cancelPendingBasicInput()
+        removeInstalledTap()
+        enhanced.scrollAcceptanceTapActive=false
+        publishEnhancementState()
+    }
+
+    private func removeInstalledTap() {
+        tapGeneration &+= 1
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes); CFRunLoopSourceInvalidate(source) }
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         source = nil; tap = nil
         installedAuthorization=nil;installedActiveTap=false;installedEventMask=0;tapModeError=nil
-        enhanced.scrollAcceptanceTapActive=false
-        publishEnhancementState()
+    }
+
+    private func cancelPendingBasicInput() {
+        basicInputGeneration &+= 1
+        gestureStart = nil
+        if windowDragToken != nil { cancelWindowInput() }
+    }
+
+    private func pendingInputAuthorizationIsCurrent() -> Bool {
+        guard let installedAuthorization else { return false }
+        let current = InputListenerAuthorization(monitoring:CGPreflightListenEventAccess(),accessibility:AXIsProcessTrusted())
+        return current == installedAuthorization
     }
 
     private func receive(type: CGEventType, event: CGEvent) {
@@ -541,17 +636,17 @@ final class InputController: ObservableObject {
         }
         if let matched {
             // Defer work outside the event-tap callback, which the system expects to return promptly.
-            let action = matched.actionID,capturedGeneration=tapGeneration,hostedGeneration=hostedInputGeneration.snapshot
+            let action = matched.actionID,capturedGeneration=basicInputGeneration,hostedGeneration=hostedInputGeneration.snapshot
             guard let front,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
             DispatchQueue.main.async { [weak self] in
                 guard let self,!self.isPaused,self.desiredRunning,!self.sleepingOrInactive,
                       self.hostedInputIsExclusive?() != true,
                       self.hostedInputGeneration.matches(hostedGeneration),
-                      self.tapGeneration==capturedGeneration,!IsSecureEventInputEnabled(),
+                      self.basicInputGeneration==capturedGeneration,!IsSecureEventInputEnabled(),
                       let current=NSWorkspace.shared.frontmostApplication,!current.isTerminated,
                       current.bundleIdentifier==app,!self.excludedApps.contains(app),
                       identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)),
-                      self.bindings.contains(where:{$0==matched}) else { return }
+                      self.bindings.contains(where:{$0==matched}),self.pendingInputAuthorizationIsCurrent() else { return }
                 self.handler?(action)
             }
         }

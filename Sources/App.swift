@@ -178,6 +178,7 @@ final class OperationPanel: NSPanel {
         }
         pendingMainReopen = false
         pendingInitialPresentation = false
+        if NSApp.isActive { store.input.refreshPermissionsOnPresentation() }
         store.windows.captureTarget()
         store.captureSelectionForActions()
         if mainWindow.isMiniaturized { mainWindow.deminiaturize(nil) }
@@ -202,6 +203,7 @@ final class OperationPanel: NSPanel {
         NotificationCenter.default.post(name:OperationPanelSearchField.focusReadyNotification,object:panel)
     }
     func showSettings(tab:Int=0){
+        if NSApp.isActive { store.input.refreshPermissionsOnPresentation() }
         store.windows.captureTarget()
         if settingsWindow == nil {
             let window=NSWindow(contentRect:NSRect(x:0,y:0,width:1000,height:680),styleMask:[.titled,.closable],backing:.buffered,defer:false)
@@ -396,6 +398,7 @@ final class OperationPanel: NSPanel {
     }
     func applicationDidBecomeActive(_ notification:Notification){
         if pendingInitialPresentation { showMain() }
+        else { store?.input.refreshPermissionsOnPresentation() }
     }
     func applicationWillTerminate(_ notification: Notification) {
         store?.screenshots.cleanupAfterApprovedTermination();GaoActionClient.localRequestReceiver=nil;ScreenshotExchangeController.localResultReceiver=nil

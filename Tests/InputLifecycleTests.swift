@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 
 @MainActor func runInputLifecycleTests() throws {
@@ -12,8 +13,9 @@ import Foundation
     let ax=InputListenerAuthorization(monitoring:false,accessibility:true)
     let healthy=InputTapState(authorization:listen,active:false,portValid:true,sourceValid:true,enabled:true)
     func decision(_ authorization:InputListenerAuthorization,_ state:InputTapState?=nil,
-                  running:Bool=true,paused:Bool=false,work:Bool=true,active:Bool=false)->InputTapLifecycle.Decision {
-        InputTapLifecycle.decision(running:running,paused:paused,hasWork:work,authorization:authorization,wantsActive:active,tap:state)
+                  running:Bool=true,paused:Bool=false,work:Bool=true,active:Bool=false,
+                  mask:CGEventMask=0)->InputTapLifecycle.Decision {
+        InputTapLifecycle.decision(running:running,paused:paused,hasWork:work,authorization:authorization,wantsActive:active,tap:state,eventMask:mask)
     }
     try check(decision(none) == .stop,"无权限不启动")
     try check(decision(listen) == .install && decision(ax) == .install,"两种监听授权均可恢复缺失tap")
@@ -43,19 +45,37 @@ import Foundation
               mouseAndWindows & InputTapEvents.bit(.rightMouseUp) != 0 &&
               mouseAndWindows & InputTapEvents.bit(.leftMouseDragged) != 0, "鼠标绑定、绘图手势与窗口拖动仍各自保留事件")
     let pointerMotion = InputTapEvents.bit(.mouseMoved)
+    state=healthy;state.eventMask=defaults
+    try check(decision(listen,state,mask:defaults | pointerMotion) == .replaceMask,"健康通道只变事件掩码时仅替换系统通道")
+    try check(decision(both,state,active:true,mask:defaults | pointerMotion) == .rebuild &&
+              decision(listen,state,running:false,mask:defaults | pointerMotion) == .stop,"权限模式变化和休眠仍优先完全清理")
     try check(InputTapEvents.enhanced(enabled: true, hotCorners: false) & pointerMotion == 0 &&
               InputTapEvents.enhanced(enabled: true, hotCorners: true) & pointerMotion != 0 &&
               InputTapEvents.cleaner & pointerMotion != 0, "只有热角和清洁模式订阅高频指针移动")
     try check(InputTapEvents.flyKey & InputTapEvents.bit(.leftMouseDown) != 0 &&
               InputTapEvents.flyKey & pointerMotion == 0, "FlyKey 保留点击打断双击，并忽略指针移动")
 
+    var presses=InputPressSequence<Int>()
+    try check(presses.begin(1) && presses.begin(2) && presses.pressed == [1,2],"持续输入归属于开始时的前台")
+    presses.cancelContext() // A → B
+    let newPressInB=presses.begin(3)
+    presses.cancelContext() // B → A
+    try check(newPressInB && presses.pressed.isEmpty && !presses.begin(1) && !presses.begin(3),
+              "切回旧应用也不会延续旧按键重复、鼠标手势或长按")
+    let oldRelease=presses.takeCancelledRelease(1)
+    let duplicateRelease=presses.takeCancelledRelease(1)
+    try check(oldRelease && !duplicateRelease && presses.begin(1),"旧松开只清理原所有权，新按下才能开始下一次动作")
+    try check(!presses.begin(2) && presses.takeCancelledRelease(2),"不同键或按钮的松开各自独立")
+
     // Inject only the public monitor registration boundary: no fabricated pressure events or permissions.
+    let root=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("GaoCaoZuo-InputLifecycle-"+UUID().uuidString)
+    defer{try? FileManager.default.removeItem(at:root)}
     var globalAdds=0,localAdds=0,nextToken=0
     var removed:[Int]=[]
     let backend=InputPressureMonitorBackend(addGlobal:{_ in globalAdds += 1;nextToken += 1;return nextToken},
                                            addLocal:{_ in localAdds += 1;nextToken += 1;return nextToken},
                                            remove:{if let token=$0 as? Int {removed.append(token)}})
-    let engine=EnhancedInputEngine(pressureBackend:backend)
+    let engine=EnhancedInputEngine(pressureBackend:backend,trackingDataDirectory:root)
     engine.startMonitoring()
     try check(globalAdds==0 && localAdds==0,"默认高级输入关闭不申请监听")
     var configuration=InputEnhancementConfiguration();configuration.enabled=true
@@ -65,6 +85,9 @@ import Foundation
     try check(globalAdds==0 && localAdds==0,"配置阶段不在权限确认前安装压力监听")
     engine.startMonitoring();engine.startMonitoring()
     try check(globalAdds==1 && localAdds==1 && removed.isEmpty,"重复恢复入口不重复安装压力监听")
+    engine.cancelPendingForForegroundChange()
+    engine.startMonitoring()
+    try check(globalAdds==1 && localAdds==1 && removed.isEmpty,"前台切换不会重启正在使用的压力监听")
     engine.stop()
     try check(removed==[1,2],"暂停清理全部压力监听")
     engine.startMonitoring()
@@ -75,15 +98,13 @@ import Foundation
     engine.configure(configuration,excludedApps:[],handler:{_ in},report:{_ in});engine.startMonitoring()
     try check(globalAdds==3 && localAdds==3 && removed==[1,2,3,4,5,6],"禁用压力规则后不重装")
     var retryGlobal=0,retryLocal=0
-    let retryEngine=EnhancedInputEngine(pressureBackend:.init(addGlobal:{_ in retryGlobal += 1;return retryGlobal==1 ? nil:retryGlobal},addLocal:{_ in retryLocal += 1;return 100+retryLocal},remove:{_ in}))
+    let retryEngine=EnhancedInputEngine(pressureBackend:.init(addGlobal:{_ in retryGlobal += 1;return retryGlobal==1 ? nil:retryGlobal},addLocal:{_ in retryLocal += 1;return 100+retryLocal},remove:{_ in}),trackingDataDirectory:root)
     configuration.rules[0].enabled=true
     retryEngine.configure(configuration,excludedApps:[],handler:{_ in},report:{_ in})
     retryEngine.startMonitoring();retryEngine.startMonitoring();retryEngine.startMonitoring()
     try check(retryGlobal==2 && retryLocal==1,"系统未接受全局monitor时重试，不重复局部monitor")
     retryEngine.stop();engine.stop()
 
-    let root=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("GaoCaoZuo-InputLifecycle-"+UUID().uuidString)
-    defer{try? FileManager.default.removeItem(at:root)}
     let store=OperationStore(directory:root)
     var layout=CustomWindowLayout();layout.name="独立布局验收"
     store.update{$0.windowEnhancements.customLayouts.append(layout);$0.workflows.append(.init(name:"独立组合验收",steps:[]))}

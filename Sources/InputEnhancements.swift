@@ -5,6 +5,28 @@ import Combine
 
 struct InputActionChoice:Identifiable {let id:String;let title:String}
 
+struct InputPressSequence<Control: Hashable> {
+    private(set) var pressed: Set<Control> = []
+    private var cancelled: Set<Control> = []
+
+    mutating func begin(_ control: Control) -> Bool {
+        guard !cancelled.contains(control) else { return false }
+        pressed.insert(control)
+        return true
+    }
+
+    mutating func end(_ control: Control) { pressed.remove(control) }
+
+    mutating func takeCancelledRelease(_ control: Control) -> Bool {
+        cancelled.remove(control) != nil
+    }
+
+    mutating func cancelContext() {
+        cancelled.formUnion(pressed)
+        pressed.removeAll()
+    }
+}
+
 @MainActor struct InputPressureMonitorBackend {
     var addGlobal:(@escaping(NSEvent)->Void)->Any?
     var addLocal:(@escaping(NSEvent)->NSEvent?)->Any?
@@ -21,6 +43,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     var handler:((String)->Void)?
     var invocationHandler:((String,InputWindowTargetMode)->Void)?
     var hostedInputIsExclusive:(()->Bool)?
+    var pendingAuthorizationIsCurrent:(()->Bool)?
     var hostedCaptureBlockingReason:String? {
         if activeScript?.isRunning == true {return "输入脚本仍在运行，请等待后开始捕获。"}
         if !replacements.isEmpty || drawing != nil || touchDrag != nil {return "输入手势尚未结束，请松开后开始捕获。"}
@@ -29,13 +52,31 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     func yieldPendingInputToHost() {
         lifecycleGeneration &+= 1
         cancelSmoothScroll();timers.values.forEach{$0.invalidate()};timers.removeAll()
-        keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll()
-        drawing=nil;corner=nil;pressureLatched=false;touchSession.removeAll()
+        keys = .init();buttons = .init();hidButtons = .init();consumedKeys.removeAll();consumedButtons.removeAll()
+        drawing=nil;corner=nil;pressureLatched=false;pressureInProgress=false;touchSession.removeAll();cancelledTouchDevices.removeAll()
+    }
+    func cancelPendingForForegroundChange() {
+        lifecycleGeneration &+= 1
+        timers.values.forEach { $0.invalidate() }
+        timers.removeAll()
+        keys.cancelContext()
+        buttons.cancelContext()
+        hidButtons.cancelContext()
+        cancelSmoothScroll()
+        drawing = nil
+        corner = nil
+        pressureLatched = pressureInProgress
+        lastTouchTap = nil
+        finishTouchDrag()
+        cancelledTouchDevices.formUnion(touchSession.keys)
+        touchSession.removeAll()
     }
     var report:((String?)->Void)?
     var excludedApps:Set<String> = []
-    private var keys:Set<UInt16> = []
-    private var buttons:Set<Int> = []
+    private var keys=InputPressSequence<UInt16>()
+    private var buttons=InputPressSequence<Int>()
+    private struct HIDButton: Hashable { let deviceID: String; let usage: Int }
+    private var hidButtons=InputPressSequence<HIDButton>()
     private var timers:[String:Timer] = [:]
     private var consumedKeys:Set<UInt16> = []
     private var consumedButtons:Set<Int> = []
@@ -61,6 +102,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private let pressureBackend:InputPressureMonitorBackend
     private var deviceMonitoringStarted=false
     private var pressureLatched=false
+    private var pressureInProgress=false
     private(set) var observedPressureEvents=0
     private let touch = RawTouchInput()
     private let hid = HIDInputDevices()
@@ -73,6 +115,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private var touchDrag:(device:String,pid:pid_t,origin:CGPoint,pointer:CGPoint,ruleID:UUID)?
     private var lastTouchTap:(device:String,fingers:Int,time:Double)?
     private var touchSession:[String:TouchSequence] = [:]
+    private var cancelledTouchDevices: Set<String> = []
     init(pressureBackend:InputPressureMonitorBackend?=nil,trackingDataDirectory:URL?=nil) {
         self.pressureBackend=pressureBackend ?? .system
         self.trackingDataDirectory=trackingDataDirectory ?? HIDTrackingServiceBackend.defaultDataDirectory
@@ -146,12 +189,12 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         trackingTimer?.invalidate();trackingTimer=nil
         if let trackingTuning {trackingServices.refresh(hid.devices);trackingTuning.stop()}
         cancelSmoothScroll()
-        finishTouchDrag();touch.stop();hid.stop();touchSession.removeAll()
+        finishTouchDrag();touch.stop();hid.stop();touchSession.removeAll();cancelledTouchDevices.removeAll();lastTouchTap=nil
         if let pressureMonitor {pressureBackend.remove(pressureMonitor)};pressureMonitor=nil
-        if let localPressureMonitor {pressureBackend.remove(localPressureMonitor)};localPressureMonitor=nil;pressureLatched=false
+        if let localPressureMonitor {pressureBackend.remove(localPressureMonitor)};localPressureMonitor=nil;pressureLatched=false;pressureInProgress=false
         timers.values.forEach{$0.invalidate()};timers.removeAll();smoothTimer?.invalidate();smoothTimer=nil;scrollRemaining = .zero
         for (_,value) in replacements {try? sendKey(value.0,down:false,pid:value.1)}
-        replacements.removeAll();keys.removeAll();buttons.removeAll();consumedKeys.removeAll();consumedButtons.removeAll();drawing=nil;corner=nil
+        replacements.removeAll();keys = .init();buttons = .init();hidButtons = .init();consumedKeys.removeAll();consumedButtons.removeAll();drawing=nil;corner=nil
         activeScript?.terminate();activeScript=nil;deliveryState=InputRuleDeliveryState()
     }
     private func makeTrackingTuning() -> HIDTrackingTuning {
@@ -186,7 +229,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func matching(_ trigger:EnhancedInputTrigger,flags:UInt64,app:String)->[EnhancedInputRule] {
         configuration.rules.filter { $0.enabled && $0.trigger == trigger && $0.modifiers & EnhancedInputValidation.modifiers == flags & EnhancedInputValidation.modifiers && ($0.appBundleID.isEmpty || $0.appBundleID == app) && !$0.excludedApps.contains(app) }.sorted { !$0.appBundleID.isEmpty && $1.appBundleID.isEmpty }
     }
-    private func buttonMatches(_ r:EnhancedInputRule,_ button:Int)->Bool {r.button == button && Set(r.heldButtons).isSubset(of:buttons)}
+    private func buttonMatches(_ r:EnhancedInputRule,_ button:Int)->Bool {r.button == button && Set(r.heldButtons).isSubset(of:buttons.pressed)}
     private func scheduleHold(_ r:EnhancedInputRule,key:String,pid:pid_t) {
         timers[key]?.invalidate()
         guard let launch=NSRunningApplication(processIdentifier:pid)?.launchDate else{return}
@@ -195,7 +238,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             MainActor.assumeIsolated {
                 guard let self else{return};self.timers[key]=nil
                 let mask=r.keyCode==63 && r.trigger == .keyHold ? EnhancedInputValidation.modifiers & ~UInt64(NSEvent.ModifierFlags.function.rawValue):EnhancedInputValidation.modifiers
-                guard self.lifecycleGeneration==generation,self.allowed(pid:pid),NSRunningApplication(processIdentifier:pid)?.launchDate==launch,!IsSecureEventInputEnabled(),UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask else{return}
+                guard self.lifecycleGeneration==generation,self.allowed(pid:pid),NSRunningApplication(processIdentifier:pid)?.launchDate==launch,!IsSecureEventInputEnabled(),
+                      UInt64(NSEvent.modifierFlags.rawValue)&mask == r.modifiers&mask,self.pendingAuthorizationIsCurrent?() != false else{return}
                 self.executeRule(r,pid:pid)
             }
         }
@@ -207,12 +251,30 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     func receive(type:CGEventType,event:CGEvent)->Bool {
         guard hostedInputIsExclusive?() != true else {return false}
         guard configuration.enabled,event.getIntegerValueField(.eventSourceUserData) != Self.syntheticTag else{return false}
-        guard let front=NSWorkspace.shared.frontmostApplication else{return false}
-        let pid=front.processIdentifier,app=front.bundleIdentifier ?? ""
         let code=UInt16(clamping:event.getIntegerValueField(.keyboardEventKeycode))
         // Release an already replaced key to its original recipient even after a focus/exclusion change.
-        if type == .keyUp,let replacement=replacements.removeValue(forKey:code) {try? sendKey(replacement.0,down:false,pid:replacement.1);keys.remove(code);consumedKeys.remove(code);return true}
-        if type == .keyUp,consumedKeys.contains(code),excludedApps.contains(app) {consumedKeys.remove(code);keys.remove(code);timers.removeValue(forKey:"k\(code)")?.invalidate();return true}
+        if type == .keyUp,let replacement=replacements.removeValue(forKey:code) {
+            try? sendKey(replacement.0,down:false,pid:replacement.1)
+            keys.end(code)
+            _ = keys.takeCancelledRelease(code)
+            consumedKeys.remove(code)
+            timers.removeValue(forKey:"k\(code)")?.invalidate()
+            return true
+        }
+        let fnReleased = type == .flagsChanged && code == 63 && !event.flags.contains(.maskSecondaryFn)
+        if type == .keyUp || fnReleased, keys.takeCancelledRelease(code) {
+            return consumedKeys.remove(code) != nil && AXIsProcessTrusted()
+        }
+        if type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp {
+            if type == .leftMouseUp { pressureLatched=false;pressureInProgress=false }
+            let button=Int(event.getIntegerValueField(.mouseEventButtonNumber))
+            if buttons.takeCancelledRelease(button) {
+                return consumedButtons.remove(button) != nil && AXIsProcessTrusted()
+            }
+        }
+        guard let front=NSWorkspace.shared.frontmostApplication else{return false}
+        let pid=front.processIdentifier,app=front.bundleIdentifier ?? ""
+        if type == .keyUp,consumedKeys.contains(code),excludedApps.contains(app) {consumedKeys.remove(code);keys.end(code);timers.removeValue(forKey:"k\(code)")?.invalidate();return true}
         if excludedApps.contains(app) || IsSecureEventInputEnabled() {cancelSmoothScroll();drawing=nil;timers.values.forEach{$0.invalidate()};timers.removeAll();return false}
         let flags=event.flags.rawValue & EnhancedInputValidation.modifiers
         let now=ProcessInfo.processInfo.systemUptime
@@ -220,13 +282,13 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         switch type {
         case .keyDown:
             if IsSecureEventInputEnabled() {return false}
+            guard keys.begin(code) else { return (replacements[code] != nil || consumedKeys.contains(code)) && AXIsProcessTrusted() }
             let repeatKey=event.getIntegerValueField(.keyboardEventAutorepeat) != 0
             if let replacement=replacements[code] {try? sendKey(replacement.0,down:true,pid:replacement.1);return true}
             if let r=matching(.keyReplacement,flags:flags,app:app).first(where:{$0.keyCode==code}) {
                 guard AXIsProcessTrusted() else {report?("按键替换需要辅助功能权限。原始输入仍保留。");return false}
-                do {try sendKey(r.effect,down:true,pid:pid);replacements[code]=(r.effect,pid);keys.insert(code);return true} catch {report?(error.localizedDescription);return false}
+                do {try sendKey(r.effect,down:true,pid:pid);replacements[code]=(r.effect,pid);return true} catch {report?(error.localizedDescription);return false}
             }
-            keys.insert(code)
             if repeatKey {
                 if let rule=matching(.keyDown,flags:flags,app:app).first(where:{$0.keyCode==code && $0.allowKeyRepeat}) {executeLater(rule,pid:pid)}
                 return consumedKeys.contains(code)
@@ -236,21 +298,29 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             if let r=matching(.keyUp,flags:flags,app:app).first(where:{$0.keyCode==code}),r.consume {consume=true}
             if consume {consumedKeys.insert(code)}
         case .keyUp:
-            keys.remove(code);timers.removeValue(forKey:"k\(code)")?.invalidate()
+            keys.end(code);timers.removeValue(forKey:"k\(code)")?.invalidate()
             consume=consumedKeys.remove(code) != nil
             if !IsSecureEventInputEnabled(),let r=matching(.keyUp,flags:flags,app:app).first(where:{$0.keyCode==code}) {executeLater(r,pid:pid);consume = consume || r.consume}
         case .flagsChanged:
             // Fn is a modifier in matching and also has key code 63 for explicit Fn down/up rules.
             let down=code==63 ? event.flags.contains(.maskSecondaryFn) : false
             if code==63 {
+                if down {
+                    guard keys.begin(code) else { return consumedKeys.contains(code) && AXIsProcessTrusted() }
+                } else {
+                    keys.end(code)
+                    consume = consumedKeys.remove(code) != nil
+                }
                 let fnFlags=flags & ~UInt64(NSEvent.ModifierFlags.function.rawValue)
-                if let r=matching(down ? .keyDown:.keyUp,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {executeLater(r,pid:pid);consume=r.consume}
+                if let r=matching(down ? .keyDown:.keyUp,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {executeLater(r,pid:pid);consume = consume || r.consume}
                 if down,let r=matching(.keyHold,flags:fnFlags,app:app).first(where:{$0.keyCode==63}) {scheduleHold(r,key:"fn",pid:pid)}
+                if down,consume { consumedKeys.insert(code) }
                 if !down {timers.removeValue(forKey:"fn")?.invalidate()}
             }
             if drawing?.flags != flags {drawing=nil}
         case .leftMouseDown,.rightMouseDown,.otherMouseDown:
-            let button=Int(event.getIntegerValueField(.mouseEventButtonNumber));buttons.insert(button)
+            let button=Int(event.getIntegerValueField(.mouseEventButtonNumber))
+            guard buttons.begin(button) else { return consumedButtons.contains(button) && AXIsProcessTrusted() }
             if let r=matching(.buttonDown,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r,pid:pid);consume=r.consume}
             if let r=matching(.buttonHold,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {scheduleHold(r,key:"b\(button)",pid:pid);consume = consume || r.consume}
             let drawRules=matching(.drawing,flags:flags,app:app).filter{buttonMatches($0,button)}
@@ -260,14 +330,13 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             if type == .leftMouseDown {receiveTouchClick(pid:pid,flags:flags,app:app)}
             if let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="click" && $0.button==button && Self.matchesEdge($0.corner,at:event.location,start:$0.edgeStart,end:$0.edgeEnd,width:$0.edgeWidth)}) {executeLater(r,pid:pid);consume = consume || r.consume}
         case .leftMouseUp,.rightMouseUp,.otherMouseUp:
-            if type == .leftMouseUp {pressureLatched=false}
             let button=Int(event.getIntegerValueField(.mouseEventButtonNumber));timers.removeValue(forKey:"b\(button)")?.invalidate()
             if let r=matching(.buttonUp,flags:flags,app:app).first(where:{buttonMatches($0,button)}) {executeLater(r,pid:pid);consume=r.consume}
             if let d=drawing,d.button==button {
                 defer {drawing=nil}
                 if d.pid==pid,d.flags==flags {recognizeDrawing(d.points+[event.location],rules:d.rules,pid:pid)}
             }
-            consume = consumedButtons.remove(button) != nil || consume;buttons.remove(button)
+            consume = consumedButtons.remove(button) != nil || consume;buttons.end(button)
         case .leftMouseDragged,.rightMouseDragged,.otherMouseDragged:
             let button=Int(event.getIntegerValueField(.mouseEventButtonNumber))
             if var d=drawing,d.button==button,d.pid==pid,d.flags==flags,d.points.count<2048 {
@@ -278,7 +347,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
             let y=event.getDoubleValueField(.scrollWheelEventDeltaAxis1),x=event.getDoubleValueField(.scrollWheelEventDeltaAxis2)
             let direction=abs(y)>=abs(x) ? (y>=0 ? "up":"down"):(x>=0 ? "left":"right")
             if now-lastScrollFire>0.15,let r=matching(.screenEdge,flags:flags,app:app).first(where:{$0.direction=="scroll"+direction.prefix(1).uppercased()+direction.dropFirst() && Self.matchesEdge($0.corner,at:event.location,start:$0.edgeStart,end:$0.edgeEnd,width:$0.edgeWidth)}) {lastScrollFire=now;executeLater(r,pid:pid);consume=r.consume}
-            if !consume,now-lastScrollFire>0.15,let r=matching(.scroll,flags:flags,app:app).first(where:{$0.direction==direction && Set($0.heldButtons).isSubset(of:buttons)}) {lastScrollFire=now;executeLater(r,pid:pid);consume=r.consume}
+            if !consume,now-lastScrollFire>0.15,let r=matching(.scroll,flags:flags,app:app).first(where:{$0.direction==direction && Set($0.heldButtons).isSubset(of:buttons.pressed)}) {lastScrollFire=now;executeLater(r,pid:pid);consume=r.consume}
             if !consume {consume=transformScroll(event,pid:pid,app:app,flags:flags)}
         case .mouseMoved:
             updateHotCorner(point:event.location,pid:pid,flags:flags,app:app)
@@ -295,8 +364,10 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     private func receivePressure(_ event:NSEvent) {
         guard hostedInputIsExclusive?() != true else {return}
         observedPressureEvents += 1
-        guard configuration.enabled,event.type == .pressure,let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
-        if event.stage==0 || event.pressure<0.05 {pressureLatched=false;return}
+        guard configuration.enabled,event.type == .pressure else{return}
+        if event.stage==0 || event.pressure<0.05 {pressureLatched=false;pressureInProgress=false;return}
+        pressureInProgress=true
+        guard let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
         guard !pressureLatched else{return}
         let rules=matching(.pressure,flags:UInt64(event.modifierFlags.rawValue),app:front.bundleIdentifier ?? "")
         guard let rule=rules.first(where:{event.stage >= $0.pressureStage && Double(event.pressure)>=$0.pressureThreshold}) else{return}
@@ -403,7 +474,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         let generation=lifecycleGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self,self.lifecycleGeneration==generation,self.allowed(pid:pid),!IsSecureEventInputEnabled(),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
-                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
+                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate),
+                  self.pendingAuthorizationIsCurrent?() != false else{return}
             self.executeRule(rule,pid:pid)
         }
     }
@@ -412,7 +484,8 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         let generation=lifecycleGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self,self.lifecycleGeneration==generation,self.allowed(pid:pid),!IsSecureEventInputEnabled(),let app=NSRunningApplication(processIdentifier:pid),!app.isTerminated,
-                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate) else{return}
+                  WindowProcessIdentity.matches(capturedPID:pid,capturedLaunchDate:launch,currentPID:app.processIdentifier,currentLaunchDate:app.launchDate),
+                  self.pendingAuthorizationIsCurrent?() != false else{return}
             self.execute(effect,pid:pid)
         }
     }
@@ -471,23 +544,35 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
     }
     private func receiveHIDButton(_ observation:HIDButtonObservation) {
         guard hostedInputIsExclusive?() != true else {return}
-        guard configuration.enabled,let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
+        guard configuration.enabled,hid.isCurrent(observation),HIDConnectionIdentity.isConnectionScoped(observation.deviceID) else{return}
+        let button = HIDButton(deviceID: observation.deviceID, usage: observation.usage)
+        if observation.pressed {
+            guard hidButtons.begin(button) else { return }
+        } else {
+            hidButtons.end(button)
+            guard !hidButtons.takeCancelledRelease(button) else { return }
+        }
+        guard let front=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(front.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{return}
         let app=front.bundleIdentifier ?? ""
         let mappings=configuration.hidProfiles.filter{$0.enabled && $0.deviceID==observation.deviceID}.flatMap(\.buttons).filter{$0.enabled && $0.usage==observation.usage && $0.whenReleased != observation.pressed && ($0.appBundleID.isEmpty || $0.appBundleID==app) && !$0.excludedApps.contains(app)}.sorted{!$0.appBundleID.isEmpty && $1.appBundleID.isEmpty}
-        guard hid.isCurrent(observation),HIDConnectionIdentity.isConnectionScoped(observation.deviceID),
-              let first=mappings.first,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
+        guard let first=mappings.first,let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
         let mostSpecific=mappings.filter{$0.appBundleID.isEmpty == first.appBundleID.isEmpty}
         guard mostSpecific.count==1 else{report?("同一设备按钮在相同应用范围内存在冲突，未执行。");return}
         let generation=lifecycleGeneration,pid=front.processIdentifier
         DispatchQueue.main.async { [weak self] in
             guard let self,self.lifecycleGeneration==generation,self.hid.isCurrent(observation),self.allowed(pid:pid),
                   !IsSecureEventInputEnabled(),let current=NSWorkspace.shared.frontmostApplication,
-                  identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)) else{return}
+                  identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)),
+                  self.pendingAuthorizationIsCurrent?() != false else{return}
             self.execute(first.effect,pid:pid)
         }
     }
     private func receiveTouch(_ frame:RawTouchFrame) {
         guard hostedInputIsExclusive?() != true else {return}
+        if cancelledTouchDevices.contains(frame.deviceID) {
+            if frame.contacts.isEmpty { cancelledTouchDevices.remove(frame.deviceID) }
+            return
+        }
         guard configuration.enabled,let app=NSWorkspace.shared.frontmostApplication,!excludedApps.contains(app.bundleIdentifier ?? ""),!IsSecureEventInputEnabled() else{finishTouchDrag();touchSession.removeAll();return}
         let pid=app.processIdentifier
         if frame.contacts.isEmpty {

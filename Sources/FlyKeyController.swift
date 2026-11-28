@@ -39,6 +39,7 @@ public final class FlyKeyController: ObservableObject {
     private var excludedApps: Set<String> = []
     private var executeBinding: ((InputBinding) -> Void)?
     private var generation: UInt64 = 0
+    private var tapGeneration: UInt64 = 0
     private struct HUDTarget {
         var bundleID: String
         var identity: WindowProcessIdentity.Snapshot
@@ -60,11 +61,15 @@ public final class FlyKeyController: ObservableObject {
     }
 
     public func stop() {
-        isRunning = false; generation &+= 1; resetTapDetector(); dismiss()
+        isRunning = false; generation &+= 1; cancelPendingTap(); dismiss()
     }
 
     /// Observes the shared tap, never consumes or synthesizes the original modifier event.
     public func handleInputEvent(type: CGEventType, event: CGEvent) {
+        handleInputEvent(type: type, event: event, authorizationIsCurrent: nil)
+    }
+
+    func handleInputEvent(type: CGEventType, event: CGEvent, authorizationIsCurrent: (@MainActor @Sendable () -> Bool)?) {
         guard isRunning, configuration.enabled, !IsSecureEventInputEnabled(),
               let front = NSWorkspace.shared.frontmostApplication,
               !excludedApps.contains(front.bundleIdentifier ?? "") else {
@@ -83,19 +88,20 @@ public final class FlyKeyController: ObservableObject {
         let key = UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode))
         if detector.flagsChanged(key: key, flags: event.flags.rawValue, now: now,
                                  modifier: configuration.triggerModifier, interval: configuration.doubleTapInterval) {
-            let capturedGeneration = generation
+            let capturedGeneration = tapGeneration
             guard let identity=WindowProcessIdentity.capture(pid:front.processIdentifier,launchDate:front.launchDate) else{return}
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.generation == capturedGeneration, self.configuration.enabled,
+                guard let self, self.tapGeneration == capturedGeneration, self.configuration.enabled,
                       let current=NSWorkspace.shared.frontmostApplication,!current.isTerminated,
                       identity.matches(WindowProcessIdentity.capture(pid:current.processIdentifier,launchDate:current.launchDate)),
-                      !IsSecureEventInputEnabled() else { return }
+                      !IsSecureEventInputEnabled(),authorizationIsCurrent?() != false else { return }
                 self.showHUD()
             }
         }
     }
     public func handleFlagsChanged(event: CGEvent) { handleInputEvent(type: .flagsChanged, event: event) }
     public func resetTapDetector() { detector.reset(); triggerPID = nil }
+    func cancelPendingTap() { tapGeneration &+= 1; resetTapDetector() }
 
     /// Explicit invocation remains available when the optional double-tap listener is off.
     public func showHUD() {
