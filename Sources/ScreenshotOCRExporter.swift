@@ -77,6 +77,8 @@ enum ScreenshotOCRExporter {
         var geometry: [(CGRect, CGRect, Int)] = []
         var rasterizedPages: [Int] = []
         let originalPDFKit = source.isPDF ? PDFDocument(data: original) : nil
+        let baseFont = CTFontCreateWithName("Helvetica" as CFString, 100, nil)
+        let hanFont = source.isPDF ? pdfRewriteHanFont() : nil
         progress(ScreenshotOCRPDFExportProgress(phase: .writing, completedPages: 0, totalPages: source.pageCount))
         for number in 1...source.pageCount {
             guard !cancellation.isCancelled else { throw CancellationError() }
@@ -107,7 +109,11 @@ enum ScreenshotOCRExporter {
             if let page, page.status == .completed {
                 // Keep existing native PDF text instead of creating duplicate text layers.
                 if !hasNativeText || rebuildNativePage {
-                    for line in page.lines { guard !cancellation.isCancelled else { throw CancellationError() }; drawInvisible(line: line, context: context) }
+                    for line in page.lines {
+                        guard !cancellation.isCancelled else { throw CancellationError() }
+                        let font = containsHan(line.text) ? (hanFont ?? baseFont) : baseFont
+                        drawInvisible(line: line, context: context, font: font)
+                    }
                 }
             }
             context.endPDFPage(); geometry.append((media, crop, rotation))
@@ -116,17 +122,31 @@ enum ScreenshotOCRExporter {
         context.closePDF(); contextClosed = true
         guard !cancellation.isCancelled else { throw CancellationError() }
         guard let pdf = PDFDocument(url: temp), pdf.pageCount == source.pageCount else { throw ScreenshotOCRError.validation("PDF 页数不一致。") }
-        for (index, boxes) in geometry.enumerated() {
-            guard let page = pdf.page(at: index) else { throw ScreenshotOCRError.validation("PDF 页面缺失。") }
-            page.rotation = boxes.2
-            page.setBounds(boxes.0, for: .mediaBox); page.setBounds(boxes.1, for: .cropBox)
+        // A PDFKit rewrite can change the Unicode mapping of an otherwise
+        // searchable text layer. Keep the Quartz bytes when the boxes and
+        // rotation already match the source.
+        let quartzGeometryMatches = geometry.enumerated().allSatisfy { entry in
+            guard let page = pdf.page(at: entry.offset) else { return false }
+            return matchesGeometry(page, entry.element)
         }
-        guard pdf.write(to: rotatedTemp) else { throw ScreenshotOCRError.validation("PDF 写入失败。") }
-        var validation = try validatePDF(at: rotatedTemp, sourceID: sourceID, document: document, geometry: geometry, cancellation: cancellation, progress: progress)
+        let stagedOutput: URL
+        if quartzGeometryMatches {
+            stagedOutput = temp
+        } else {
+            for (index, boxes) in geometry.enumerated() {
+                guard !cancellation.isCancelled else { throw CancellationError() }
+                guard let page = pdf.page(at: index) else { throw ScreenshotOCRError.validation("PDF 页面缺失。") }
+                page.rotation = boxes.2
+                page.setBounds(boxes.0, for: .mediaBox); page.setBounds(boxes.1, for: .cropBox)
+            }
+            guard pdf.write(to: rotatedTemp) else { throw ScreenshotOCRError.validation("PDF 写入失败。") }
+            stagedOutput = rotatedTemp
+        }
+        var validation = try validatePDF(at: stagedOutput, sourceID: sourceID, document: document, geometry: geometry, cancellation: cancellation, progress: progress)
         validation.rasterizedPages = rasterizedPages
         guard !cancellation.isCancelled else { throw CancellationError() }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rotatedTemp.path)
-        try FileManager.default.moveItem(at: rotatedTemp, to: destination)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stagedOutput.path)
+        try FileManager.default.moveItem(at: stagedOutput, to: destination)
         progress(ScreenshotOCRPDFExportProgress(phase: .finished, completedPages: source.pageCount, totalPages: source.pageCount))
         return validation
     }
@@ -150,9 +170,29 @@ enum ScreenshotOCRExporter {
         guard !overflow, pixels <= Int64(options.maxPixelsPerPage) else { throw ScreenshotOCRError.resourceLimit("原图 \(width)×\(height) 超过导出像素限制，请先明确缩小图像。") }
     }
 
-    private static func drawInvisible(line: ScreenshotOCRLine, context: CGContext) {
+    private static func pdfRewriteHanFont() -> CTFont? {
+        // PDFKit re-encodes every page of a rotated PDF, not only the rotated
+        // page. This installed font preserves common Han Unicode across that
+        // rewrite. If unavailable, the normal cascade and strict validation apply.
+        let name = "HiraginoSansGB-W3"
+        let font = CTFontCreateWithName(name as CFString, 100, nil)
+        return (CTFontCopyPostScriptName(font) as String) == name ? font : nil
+    }
+
+    private static func containsHan(_ text: String) -> Bool {
+        text.unicodeScalars.contains {
+            switch $0.value {
+            case 0x2E80...0x2FDF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF,
+                 0x20000...0x2FA1F, 0x30000...0x323AF:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func drawInvisible(line: ScreenshotOCRLine, context: CGContext, font: CTFont) {
         guard line.pageQuadrilateral.count == 4, !line.text.isEmpty else { return }
-        let font = CTFontCreateWithName("Helvetica" as CFString, 100, nil)
         let attributed = NSAttributedString(string: line.text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
         let ctLine = CTLineCreateWithAttributedString(attributed)
         let glyph = CTLineGetBoundsWithOptions(ctLine, [.useGlyphPathBounds])
@@ -204,7 +244,7 @@ enum ScreenshotOCRExporter {
         progress(ScreenshotOCRPDFExportProgress(phase: .validating, completedPages: 0, totalPages: geometry.count))
         for (index, expected) in geometry.enumerated() {
             guard !cancellation.isCancelled else { throw CancellationError() }
-            guard let page = pdf.page(at: index), approximatelyEqual(page.bounds(for: .mediaBox), expected.0), approximatelyEqual(page.bounds(for: .cropBox), expected.1), page.rotation == expected.2 else { throw ScreenshotOCRError.validation("页面框或旋转没有保留。") }
+            guard let page = pdf.page(at: index), matchesGeometry(page, expected) else { throw ScreenshotOCRError.validation("页面框或旋转没有保留。") }
             if let ocrPage = document.pages.first(where: { $0.sourceID == sourceID && $0.pageNumber == index + 1 && $0.status == .completed }) {
                 for line in ocrPage.lines where !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     guard !cancellation.isCancelled else { throw CancellationError() }
@@ -224,6 +264,11 @@ enum ScreenshotOCRExporter {
         let words = text.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).map(String.init)
         return words.first(where: { $0.count >= 2 }) ?? words.first ?? ""
     }
+    private static func matchesGeometry(_ page: PDFPage, _ expected: (CGRect, CGRect, Int)) -> Bool {
+        approximatelyEqual(page.bounds(for: .mediaBox), expected.0) &&
+            approximatelyEqual(page.bounds(for: .cropBox), expected.1) && page.rotation == expected.2
+    }
+
     private static func approximatelyEqual(_ a: CGRect, _ b: CGRect) -> Bool { abs(a.minX - b.minX) < 0.1 && abs(a.minY - b.minY) < 0.1 && abs(a.width - b.width) < 0.1 && abs(a.height - b.height) < 0.1 }
     private static func rectData(_ rect: CGRect) -> Data { var rect = rect; return Data(bytes: &rect, count: MemoryLayout<CGRect>.size) }
     private static func writeNew(_ data: Data, destination: URL) throws {

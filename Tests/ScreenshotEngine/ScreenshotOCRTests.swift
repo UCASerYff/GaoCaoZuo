@@ -47,6 +47,13 @@ func ScreenshotRunOCRTests() async throws {
     let searchable = directory.appendingPathComponent("searchable.pdf")
     let validation = try ScreenshotOCRExporter.exportSearchablePDF(document: doc, sourceID: pdfSource.id, sourceURL: pdfURL, to: searchable)
     try ocrRequire(validation.pageCount == 2 && validation.verifiedTextLines > 3 && validation.preservedPageGeometry, "searchable PDF validation")
+    try ocrRequireExactHanText(in: searchable, document: doc, sourceID: pdfSource.id, rotations: [0, 90])
+    let firstPDFExport = try Data(contentsOf: searchable)
+    do {
+        _ = try ScreenshotOCRExporter.exportSearchablePDF(document: doc, sourceID: pdfSource.id, sourceURL: pdfURL, to: searchable)
+        throw OCRTestFailure.assertion("searchable PDF overwrote an existing destination")
+    } catch ScreenshotOCRError.outputExists { }
+    try ocrRequire(try Data(contentsOf: searchable) == firstPDFExport, "searchable PDF rejection preserves the destination")
     let exportCancellation = ScreenshotOCRCancellationToken()
     let cancelledPDF = directory.appendingPathComponent("cancelled-searchable.pdf")
     do {
@@ -60,6 +67,8 @@ func ScreenshotRunOCRTests() async throws {
     let imagePDF = directory.appendingPathComponent("image-searchable.pdf")
     let imageValidation = try ScreenshotOCRExporter.exportSearchablePDF(document: doc, sourceID: doc.sources[0].id, sourceURL: imageURL, to: imagePDF)
     try ocrRequire(imageValidation.verifiedTextLines > 3, "image PDF search/select")
+    try ocrRequireExactHanText(in: imagePDF, document: doc, sourceID: doc.sources[0].id, rotations: [0])
+    try ocrRequire(try ScreenshotOCRService.sha256(url: imageURL) == doc.sources[0].sha256, "image PDF export preserves the original")
     let croppedPDF = directory.appendingPathComponent("visible-crop-only.pdf")
     try ocrCropOnlyPDF(image: image, destination: croppedPDF)
     let croppedDocument = try await ScreenshotOCRService().recognize(urls: [croppedPDF], options: options)
@@ -146,6 +155,25 @@ func ScreenshotRunOCRTests() async throws {
         "Retry, cancellation, bad input, page/pixel budget, unsupported language, future schema, no-overwrite: PASS"
     ]
     print(resultLines.joined(separator: "\n"))
+}
+
+private func ocrRequireExactHanText(in url: URL, document: ScreenshotOCRDocument, sourceID: UUID, rotations: [Int]) throws {
+    // PDFKit used to rewrite the second scalar U+6587 (文) to U+2F42 (⽂).
+    // Search and copy must preserve the exact OCR characters in the line's location.
+    let token = "中文测试"
+    guard let pdf = PDFDocument(url: url) else { throw OCRTestFailure.assertion("CJK PDF unreadable") }
+    let matches = pdf.findString(token, withOptions: [])
+    for (index, rotation) in rotations.enumerated() {
+        guard let pdfPage = pdf.page(at: index),
+              let originalPage = document.pages.first(where: { $0.sourceID == sourceID && $0.pageNumber == index + 1 }),
+              let line = originalPage.lines.first(where: { $0.text.contains(token) }) else {
+            throw OCRTestFailure.assertion("missing synthetic CJK source at page \(index + 1)")
+        }
+        try ocrRequire(pdfPage.rotation == rotation, "CJK PDF preserves page rotation")
+        let selected = pdfPage.selection(for: line.pageBoundingBox.insetBy(dx: -1, dy: -1))?.string
+        try ocrRequire(selected?.contains(token) == true && matches.contains { $0.pages.contains(pdfPage) },
+                       "CJK PDF exact search and positioned selection on rotation \(rotation)")
+    }
 }
 
 @MainActor
