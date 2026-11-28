@@ -38,12 +38,18 @@ def test_icon_plate_and_calligraphy_at_desktop_and_tray_sizes(packaged_ico):
             assert .95 <= solid.histogram()[255] / (size * size) <= .98
             assert image.getpixel((size // 2, size // 10)) == (119, 119, 119, 255)
 
-        for size, minimum, maximum in ((16, 8, 11), (24, 14, 17), (48, 32, 35)):
+        for size, cutoff, height_range, area_range in (
+            (16, 198, (8, 10), (10, 14)),
+            (24, 208, (14, 16), (22, 32)),
+            (48, 208, (31, 33), (140, 155)),
+            (72, 208, (47, 49), (360, 400)),
+        ):
             image = icon.ico.getimage((size, size)).convert("RGBA")
             glyph = Image.new("L", image.size)
-            glyph.putdata([255 if red >= 208 and alpha >= 248 else 0 for red, _, _, alpha in image.getdata()])
+            glyph.putdata([255 if red >= cutoff and alpha >= 248 else 0 for red, _, _, alpha in image.getdata()])
             left, top, right, bottom = glyph.getbbox()
-            assert minimum <= bottom - top <= maximum
+            assert height_range[0] <= bottom - top <= height_range[1]
+            assert area_range[0] <= glyph.histogram()[255] <= area_range[1]
             assert abs(left + right - size) <= 2 and abs(top + bottom - size) <= 2
 
 

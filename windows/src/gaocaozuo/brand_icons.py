@@ -27,7 +27,7 @@ def artwork_path() -> Path:
 
 
 def _windows_artwork(source: Path):
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFilter
 
     with Image.open(source) as image:
         original = image.convert("RGBA")
@@ -41,6 +41,8 @@ def _windows_artwork(source: Path):
     glyph = glyph.crop(glyph.getbbox())
     glyph_height = round(height * 0.70)
     glyph = glyph.resize((round(glyph.width * glyph_height / glyph.height), glyph_height), Image.Resampling.LANCZOS)
+    # Pull back the white edges while retaining most of the original coverage at fine tips.
+    glyph = Image.blend(glyph, glyph.filter(ImageFilter.MinFilter(7)), 0.36)
 
     mask = Image.new("L", original.size)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1),
