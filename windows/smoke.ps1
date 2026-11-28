@@ -1,4 +1,4 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.17+8", [switch]$LocalizationOnly)
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.18+1", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot

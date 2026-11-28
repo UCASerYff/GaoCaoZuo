@@ -1,0 +1,60 @@
+# zh-Hans|zh-Hant|en|ja|de|fr|es|it|ko|pt
+图标换装|圖示換裝|Shortcut Icons|ショートカットアイコン|Verknüpfungssymbole|Icônes de raccourci|Iconos de accesos directos|Icone dei collegamenti|바로가기 아이콘|Ícones de atalho
+快捷方式角色图标|捷徑角色圖示|Character icons for shortcuts|||||||
+角色图标|角色圖示|Character Icons|||||||
+角色图标版本|角色圖示版本|Character Icon Version|||||||
+优先使用高清图标|優先使用高畫質圖示|Prefer HD Icons|||||||
+优先使用本地图标|優先使用本機圖示|Prefer Local Icons|||||||
+从原版程序导入|從原版程式匯入|Import from Original App|||||||
+从 ICO 目录导入|從 ICO 資料夾匯入|Import from ICO Folder|||||||
+导入 ICO|匯入 ICO|Import ICO|||||||
+快捷方式|捷徑|Shortcuts|||||||
+搜索快捷方式|搜尋捷徑|Search shortcuts|||||||
+快捷方式位置|捷徑位置|Shortcut location|||||||
+全部位置|所有位置|All Locations|||||||
+手动加入|手動加入|Added Manually|||||||
+选择本页|選取本頁|Select This View|||||||
+匹配常见 AI|配對常見 AI|Match Common AI Apps|||||||
+批量换装|批次換裝|Apply Icons in Bulk|||||||
+恢复原图标|還原原始圖示|Restore Original Icons|||||||
+刷新列表|重新整理清單|Refresh List|||||||
+加入快捷方式|加入捷徑|Add Shortcuts|||||||
+快捷方式路径|捷徑路徑|Shortcut Path|||||||
+每行一个快捷方式路径|每行一個捷徑路徑|One shortcut path per line|||||||
+请选择 .lnk 快捷方式。|請選擇 .lnk 捷徑。|Choose a .lnk shortcut.|||||||
+正在读取快捷方式|正在讀取捷徑|Reading shortcuts|||||||
+没有匹配的快捷方式|沒有符合的捷徑|No matching shortcuts|||||||
+检查后点击刷新列表重试。|檢查後按一下重新整理清單再試。|Check the files, then refresh the list.|||||||
+选择角色|選擇角色|Choose a Character|||||||
+已换装|已換裝|Icon Changed|||||||
+发现外部修改|發現外部修改|Changed Externally|||||||
+查看原图标|查看原始圖示|Preview Original Icon|||||||
+原始图标|原始圖示|Original Icon|||||||
+应用角色图标|套用角色圖示|Apply Character Icons|||||||
+换装结果|換裝結果|Icon Change Results|||||||
+已完成|已完成|Completed|||||||
+选择角色后可套用到已选快捷方式。原版五款可从本机的 AI Mascot Icons v1.0.0 导入。|選擇角色後可套用到已選捷徑。原版五款可從本機的 AI Mascot Icons v1.0.0 匯入。|Choose a character for the selected shortcuts. Import the five original icons from your local copy of AI Mascot Icons v1.0.0.|||||||
+可以从本机文件夹手动加入 .lnk 快捷方式。|可以從本機資料夾手動加入 .lnk 捷徑。|Add .lnk shortcuts from a local folder.|||||||
+已略过无法读取或不受支持的快捷方式。|已略過無法讀取或不支援的捷徑。|Unreadable or unsupported shortcuts were skipped.|||||||
+扫描结果已达上限，可手动加入所需的快捷方式。|掃描已達上限，可手動加入需要的捷徑。|The scan reached its limit. You can add other shortcuts manually.|||||||
+更换当前用户 .lnk 文件的图标。任务栏运行中图标由应用控制。|更換目前使用者的 .lnk 檔案圖示。工作列中執行中的圖示由應用程式控制。|Change .lnk icons for the current user. Apps control their running taskbar icons.|||||||
+无法预览此快捷方式的原始图标。|無法預覽此捷徑的原始圖示。|The original shortcut icon could not be previewed.|||||||
+最多可手动加入 100 个快捷方式。|最多可手動加入 100 個捷徑。|You can add up to 100 shortcuts manually.|||||||
+换装记录无法读取，已停止修改快捷方式。|無法讀取換裝記錄，已停止修改捷徑。|Icon history is unreadable. Shortcut changes were stopped.|アイコン履歴を読み取れないため、ショートカットの変更を停止しました。|Der Symbolverlauf ist nicht lesbar. Änderungen an Verknüpfungen wurden gestoppt.|L’historique des icônes est illisible. La modification des raccourcis a été interrompue.|No se puede leer el historial de iconos. Se detuvieron los cambios de los accesos directos.|La cronologia delle icone è illeggibile. Le modifiche ai collegamenti sono state interrotte.|아이콘 기록을 읽을 수 없어 바로가기 변경을 중단했습니다.|Não foi possível ler o histórico de ícones. As alterações nos atalhos foram interrompidas.
+请先导入所选角色的本地图标。|請先匯入所選角色的本機圖示。|Import a local icon for this character first.|このキャラクターのアイコンを先に取り込んでください。|Importieren Sie zuerst ein lokales Symbol für diese Figur.|Importez d’abord une icône locale pour ce personnage.|Importa primero un icono local para este personaje.|Importa prima un’icona locale per questo personaggio.|이 캐릭터의 로컬 아이콘을 먼저 가져오세요.|Importe primeiro um ícone local para este personagem.
+没有找到原版的五款角色图标。|找不到原版的五款角色圖示。|The five original character icons were not found.|元のキャラクターアイコン5個が見つかりません。|Die fünf Originalsymbole wurden nicht gefunden.|Les cinq icônes originales sont introuvables.|No se encontraron los cinco iconos originales.|Le cinque icone originali non sono state trovate.|원본 캐릭터 아이콘 5개를 찾을 수 없습니다.|Os cinco ícones originais não foram encontrados.
+手动加入的快捷方式数量或格式无效。|手動加入的捷徑數量或格式無效。|The number or format of the added shortcuts is invalid.|追加するショートカットの数か形式が無効です。|Anzahl oder Format der hinzugefügten Verknüpfungen sind ungültig.|Le nombre ou le format des raccourcis ajoutés est incorrect.|La cantidad o el formato de los accesos directos no es válido.|Il numero o il formato dei collegamenti aggiunti non è valido.|추가된 바로가기 수나 형식이 올바르지 않습니다.|A quantidade ou o formato dos atalhos adicionados é inválido.
+快捷方式已被其他程序修改，已跳过。|捷徑已被其他程式修改，已略過。|Another program modified this shortcut. It was skipped.|他のアプリが変更したため、このショートカットはスキップしました。|Ein anderes Programm änderte diese Verknüpfung. Sie wurde übersprungen.|Un autre programme a modifié ce raccourci. Il a été ignoré.|Otro programa modificó este acceso directo. Se omitió.|Un altro programma ha modificato questo collegamento. È stato ignorato.|다른 프로그램에서 수정한 바로가기를 건너뛰었습니다.|Outro programa modificou este atalho. Ele foi ignorado.
+未能确认图标以外的快捷方式信息。|無法確認圖示以外的捷徑資訊。|The shortcut’s other settings could not be verified.|アイコン以外のショートカット設定を確認できませんでした。|Die übrigen Verknüpfungseinstellungen konnten nicht geprüft werden.|Les autres paramètres du raccourci n’ont pas pu être vérifiés.|No se pudo comprobar la configuración restante del acceso directo.|Non è stato possibile verificare le altre impostazioni del collegamento.|아이콘 이외의 바로가기 설정을 확인할 수 없습니다.|Não foi possível verificar as outras configurações do atalho.
+未找到由搞操作保存的原图标。|找不到搞操作儲存的原始圖示。|No saved original icon was found for this shortcut.|保存済みの元のアイコンが見つかりません。|Für diese Verknüpfung wurde kein gespeichertes Originalsymbol gefunden.|Aucune icône originale enregistrée n’a été trouvée pour ce raccourci.|No se encontró un icono original guardado para este acceso directo.|Non è stata trovata un’icona originale salvata per questo collegamento.|이 바로가기의 저장된 원래 아이콘을 찾을 수 없습니다.|Nenhum ícone original salvo foi encontrado para este atalho.
+已保存的角色图标已变化，请重新导入。|已儲存的角色圖示已變更，請重新匯入。|The saved character icon changed. Import it again.|保存したアイコンが変更されました。再度取り込んでください。|Das gespeicherte Figurensymbol wurde geändert. Importieren Sie es erneut.|L’icône du personnage a changé. Importez-la à nouveau.|El icono guardado cambió. Vuelve a importarlo.|L’icona salvata è cambiata. Importala di nuovo.|저장된 캐릭터 아이콘이 변경되었습니다. 다시 가져오세요.|O ícone salvo foi alterado. Importe-o novamente.
+请选择原版程序或含角色 ICO 的本机目录。|請選擇原版程式或含角色 ICO 的本機資料夾。|Choose the original app or a local folder with character ICO files.|元のアプリかキャラクターの ICO があるローカルフォルダを選んでください。|Wählen Sie die Original-App oder einen lokalen Ordner mit Figuren-ICO-Dateien.|Choisissez l’application originale ou un dossier local contenant les ICO des personnages.|Selecciona la aplicación original o una carpeta local con los ICO de los personajes.|Scegli l’app originale o una cartella locale con i file ICO dei personaggi.|원본 앱이나 캐릭터 ICO가 있는 로컬 폴더를 선택하세요.|Escolha o aplicativo original ou uma pasta local com os ICO dos personagens.
+无法确认要恢复的原图标，快捷方式未修改。|無法確認要還原的原始圖示，捷徑未修改。|The original icon could not be verified. The shortcut was left untouched.|元のアイコンを確認できなかったため、ショートカットは変更しませんでした。|Das Originalsymbol ließ sich nicht prüfen. Die Verknüpfung wurde nicht geändert.|L’icône originale n’a pas pu être vérifiée. Le raccourci est resté intact.|No se pudo verificar el icono original. El acceso directo quedó intacto.|Non è stato possibile verificare l’icona originale. Il collegamento è rimasto intatto.|원래 아이콘을 확인할 수 없어 바로가기를 변경하지 않았습니다.|Não foi possível verificar o ícone original. O atalho permaneceu intacto.
+图标路径过长，快捷方式未修改。|圖示路徑過長，捷徑未修改。|The icon path is too long. The shortcut was left untouched.|アイコンのパスが長すぎるため、ショートカットは変更しませんでした。|Der Symbolpfad ist zu lang. Die Verknüpfung wurde nicht geändert.|Le chemin de l’icône est trop long. Le raccourci est resté intact.|La ruta del icono es demasiado larga. El acceso directo quedó intacto.|Il percorso dell’icona è troppo lungo. Il collegamento è rimasto intatto.|아이콘 경로가 너무 길어 바로가기를 변경하지 않았습니다.|O caminho do ícone é muito longo. O atalho permaneceu intacto.
+旧版快捷方式不能保存此图标路径。|舊版捷徑無法儲存此圖示路徑。|This older shortcut cannot store the icon path.|この古いショートカットにはアイコンのパスを保存できません。|Diese ältere Verknüpfung kann den Symbolpfad nicht speichern.|Ce raccourci ancien ne peut pas enregistrer le chemin de l’icône.|Este acceso directo antiguo no admite la ruta del icono.|Questo collegamento meno recente non può salvare il percorso dell’icona.|오래된 형식의 바로가기에는 이 아이콘 경로를 저장할 수 없습니다.|Este atalho antigo não pode salvar o caminho do ícone.
+此文件是链接或云占位，已跳过。|此檔案是連結或雲端預留位置，已略過。|Links and cloud placeholders are skipped.|リンクとクラウドのプレースホルダーはスキップします。|Links und Cloud-Platzhalter werden übersprungen.|Les liens et emplacements cloud sont ignorés.|Se omiten los enlaces y los marcadores de la nube.|I link e i segnaposto cloud vengono ignorati.|링크와 클라우드 자리표시자는 건너뜁니다.|Links e espaços reservados da nuvem são ignorados.
+请先建立可写的本机设置，再修改快捷方式图标。|請先建立可寫入的本機設定，再修改捷徑圖示。|Create writable local settings before changing shortcut icons.|ショートカットアイコンを変更する前に書き込み可能なローカル設定を作成してください。|Erstellen Sie vor Symboländerungen beschreibbare lokale Einstellungen.|Créez des paramètres locaux modifiables avant de changer les icônes.|Crea una configuración local con permiso de escritura para cambiar los iconos.|Crea impostazioni locali scrivibili prima di cambiare le icone.|아이콘을 변경하기 전에 쓰기 가능한 로컬 설정을 만드세요.|Crie configurações locais graváveis antes de alterar os ícones.
+原版图标包路径必须是本机普通文件或目录。|原版圖示包路徑必須是本機一般檔案或資料夾。|The original icon pack must be a local regular file or folder.|元のアイコンパックはローカルの通常ファイルまたはフォルダである必要があります。|Das Originalpaket muss eine reguläre lokale Datei oder ein Ordner sein.|Le pack original doit être un fichier ordinaire ou un dossier local.|El paquete original debe ser un archivo normal o una carpeta local.|Il pacchetto originale deve essere un file normale o una cartella locale.|원본 아이콘 팩은 로컬 일반 파일 또는 폴더여야 합니다.|O pacote original deve ser um arquivo comum ou uma pasta local.
+请选择本机磁盘上的原版图标包。|請選擇本機磁碟上的原版圖示包。|Choose the original icon pack on a local disk.|ローカルディスク上の元のアイコンパックを選んでください。|Wählen Sie das Originalpaket auf einem lokalen Datenträger.|Choisissez le pack original sur un disque local.|Elige el paquete original en un disco local.|Scegli il pacchetto originale su un disco locale.|로컬 디스크의 원본 아이콘 팩을 선택하세요.|Escolha o pacote original em um disco local.
+无法读取本机原版图标包，请重新选择原版 EXE 或解压目录。|無法讀取本機原版圖示包，請重新選擇原版 EXE 或解壓縮資料夾。|The local original icon pack could not be read. Select its original EXE or extracted folder again.|元のアイコンパックを読み取れません。元の EXE または展開したフォルダを選び直してください。|Das Originalpaket ist nicht lesbar. Wählen Sie die Original-EXE oder den entpackten Ordner erneut.|Le pack original est illisible. Sélectionnez à nouveau son EXE ou son dossier extrait.|No se pudo leer el paquete original. Vuelve a seleccionar el EXE original o la carpeta extraída.|Impossibile leggere il pacchetto originale. Riseleziona l’EXE o la cartella estratta.|로컬 원본 아이콘 팩을 읽을 수 없습니다. 원본 EXE 또는 압축을 푼 폴더를 다시 선택하세요.|Não foi possível ler o pacote original. Selecione novamente o EXE original ou a pasta extraída.
+请选择未修改的 AI-Mascot-Icons Windows v1.0.0 原版 EXE 或解压目录。|請選擇未修改的 AI-Mascot-Icons Windows v1.0.0 原版 EXE 或解壓縮資料夾。|Choose the unmodified AI-Mascot-Icons Windows v1.0.0 EXE or its extracted folder.|未変更の AI-Mascot-Icons Windows v1.0.0 EXE か展開したフォルダを選んでください。|Wählen Sie die unveränderte AI-Mascot-Icons Windows v1.0.0-EXE oder den entpackten Ordner.|Choisissez l’EXE d’origine non modifié d’AI-Mascot-Icons Windows v1.0.0 ou son dossier extrait.|Elige el EXE original sin modificar de AI-Mascot-Icons Windows v1.0.0 o su carpeta extraída.|Scegli l’EXE originale di AI-Mascot-Icons Windows v1.0.0 o la cartella estratta.|수정되지 않은 AI-Mascot-Icons Windows v1.0.0 원본 EXE 또는 압축을 푼 폴더를 선택하세요.|Escolha o EXE original e inalterado do AI-Mascot-Icons Windows v1.0.0 ou sua pasta extraída.

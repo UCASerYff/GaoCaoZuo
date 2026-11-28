@@ -34,6 +34,7 @@ from gaocaozuo.layout import LayoutTransaction, Rect, matches, restore_focus, sn
 from gaocaozuo.qr import encode as encode_qr
 from gaocaozuo.qr import to_png
 from gaocaozuo.screenshot import ScreenshotSession
+from gaocaozuo.shortcut_icons import ShortcutIcons
 from gaocaozuo.rules_cloud import RuleCloud
 from gaocaozuo.translation import LocalTranslation
 from gaocaozuo.store import MANAGED_KEYS, Store
@@ -82,6 +83,7 @@ class App:
         self.snippets = SnippetLibrary(self.directory / "Snippets" / "library.json")
         self.handoff = Handoff()
         self.screenshots = ScreenshotSession(self.directory)
+        self.shortcut_icons = ShortcutIcons(self.directory)
         from gaocaozuo.ocr_provider import OcrProvider
 
         self.ocr_provider = OcrProvider(self.directory)

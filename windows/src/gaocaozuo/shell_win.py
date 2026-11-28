@@ -15,7 +15,7 @@ from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_text
 
 
-def pick_file(kind: str, multiple: bool) -> list[str]:
+def pick_file(kind: str, multiple: bool, *, filetypes=()) -> list[str]:
     if kind not in {"files", "directory"}:
         raise AppError("请选择文件或目录。", "invalid")
     if os.name != "nt":
@@ -31,9 +31,9 @@ def pick_file(kind: str, multiple: bool) -> list[str]:
             if kind == "directory":
                 result = filedialog.askdirectory(parent=window, title="搞操作 · " + native_text("选择目录"), mustexist=True)
             elif multiple:
-                result = filedialog.askopenfilenames(parent=window, title="搞操作 · " + native_text("选择文件"))
+                result = filedialog.askopenfilenames(parent=window, title="搞操作 · " + native_text("选择文件"), filetypes=filetypes)
             else:
-                result = filedialog.askopenfilename(parent=window, title="搞操作 · " + native_text("选择文件"))
+                result = filedialog.askopenfilename(parent=window, title="搞操作 · " + native_text("选择文件"), filetypes=filetypes)
         finally:
             window.destroy()
     except tk.TclError as exc:

@@ -14,6 +14,7 @@ const sections = {
   tools: ["实用工具", "wand"],
   windows: ["窗口", "window"],
   overview: ["桌面总览", "desktops"],
+  shortcutIcons: ["图标换装", "image"],
   lockPolicy: ["锁屏策略", "lock"],
   input: ["快捷键与手势", "keyboard"],
   workflows: ["组合操作", "layers"],
@@ -22,7 +23,7 @@ const sections = {
 const navigation = [
   ["", ["home"]],
   ["日常工具", ["screenshots", "clipboard", "files", "archives", "tools"]],
-  ["桌面与窗口", ["windows", "overview", "lockPolicy"]],
+  ["桌面与窗口", ["windows", "overview", "shortcutIcons", "lockPolicy"]],
   ["自动化", ["input", "workflows"]],
   ["活动", ["history"]],
 ];
@@ -387,7 +388,7 @@ function render() {
     home: homePage, screenshots: screenshotPage, clipboard: clipboardPage,
     files: () => actionPage("files"), archives: () => actionPage("archives"),
     tools: () => actionPage("tools"), windows: () => actionPage("windows"),
-    overview: overviewPage, lockPolicy: lockPage, input: inputPage,
+    overview: overviewPage, shortcutIcons: iconDressPage, lockPolicy: lockPage, input: inputPage,
     workflows: workflowPage, history: historyPage,
   };
   page.append(views[section]());
@@ -548,6 +549,7 @@ function homePage() {
     ["windows", "窗口控制", "布局、大小与位置"],
     ["files", "文件处理", "新建、重命名与移动"],
     ["archives", "压缩与解压", "压缩、解压与档案编辑"],
+    ["shortcutIcons", "图标换装", "快捷方式角色图标"],
     ["input", "快捷键与手势", "快捷键、鼠标手势与规则"],
   ]) {
     const card = button("", () => go(id, true), {cls: "destination", label: title});
@@ -1896,6 +1898,10 @@ app.addEventListener("drop", event => {
   });
   if (!paths.length) {
     say("当前窗口无法从拖放取得完整文件路径，请使用“选择文件…”或“输入路径…”。", true);
+    return;
+  }
+  if (section === "shortcutIcons") {
+    void addShortcutPaths(paths).catch(report);
     return;
   }
   files = [...new Set(paths)];

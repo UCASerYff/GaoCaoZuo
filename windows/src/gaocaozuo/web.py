@@ -314,6 +314,24 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def dispatch(app: App, path: str, payload: dict):
+    if path.startswith("/api/shortcut-icons/"):
+        endpoint = path.rsplit("/", 1)[-1]
+        if endpoint == "pick":
+            from gaocaozuo.shell_win import pick_file
+
+            if not app.desktop:
+                raise AppError("此会话未打开交互工作台。", "unavailable")
+            kinds = {"shortcuts": ("files", True, (("Windows 快捷方式", "*.lnk"),)),
+                     "ico": ("files", False, (("ICO 图标", "*.ico"),)),
+                     "original-pack": ("files", False, (("AI-Mascot-Icons.exe", "AI-Mascot-Icons.exe"),)),
+                     "folder": ("directory", False, ())}
+            if payload.get("kind") not in kinds:
+                raise AppError("请选择受支持的本地文件。", "invalid")
+            kind, multiple, filetypes = kinds[payload["kind"]]
+            return {"paths": pick_file(kind, multiple, filetypes=filetypes)}
+        if endpoint in {"apply", "restore", "import", "originals"} and app.store.status != "ready":
+            raise AppError("请先建立可写的本机设置，再修改快捷方式图标。", "unavailable")
+        return app.shortcut_icons.dispatch(endpoint, payload)
     if path == "/api/archive/edit/preview":
         return app.archive_editor.preview(Path(payload["path"]), payload.get("password"))
     if path == "/api/archive/edit/save":
