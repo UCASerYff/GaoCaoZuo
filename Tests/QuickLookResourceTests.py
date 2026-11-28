@@ -4,12 +4,13 @@ from pathlib import Path
 import bz2
 import gzip
 import lzma
-import shutil
 import struct
 import subprocess
 import tempfile
 import zipfile
 import zlib
+
+from QuickLookTestSources import compile_quicklook_harness
 
 PROJECT = Path(__file__).resolve().parent.parent
 RUNNER = r'''
@@ -101,16 +102,7 @@ def main():
             for index in range(4001):output.writestr(f"entry{index:04d}.txt",b"")
         runner=root/"main.swift";runner.write_text(RUNNER)
         executable=root/"native-tests"
-        sources=root/"QuickLookExtension"
-        shutil.copytree(PROJECT/"QuickLookExtension",sources)
-        localization=root/"GaoLocalization.swift"
-        shutil.copyfile(PROJECT/"Shared/GaoLocalization.swift",localization)
-        subprocess.run([
-            "swiftc","-swift-version","5","-Xfrontend","-disable-sandbox","-O",
-            "-target","arm64-apple-macos14.0","-module-cache-path",str(root/"cache"),
-            *[str(p) for p in sorted(sources.glob("*.swift"))],str(localization),str(runner),
-            "-framework","AppKit","-framework","QuickLookUI","-framework","PDFKit","-framework","ImageIO","-framework","CryptoKit","-o",str(executable)
-        ],check=True,timeout=60)
+        compile_quicklook_harness(PROJECT, root, runner, executable)
         def preview(path,mode="normal"):
             result=subprocess.run([str(executable),str(path),mode],check=True,capture_output=True,text=True,timeout=10)
             return result.stdout

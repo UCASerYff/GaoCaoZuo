@@ -151,14 +151,36 @@ import Foundation
           try ReplacementMigrationSupport.identical(early.archiveEnhancements.preferences,earlyArchive),
           early.settings.inputEnhancements.scriptLibrary==earlyScripts else {throw DataFailure.message("缺少旧来源证据时覆盖了用户窗口、文件、压缩或脚本设置。")}
     let upgradedRules=early.settings.inputEnhancements.rules
-    guard upgradedRules.count==3,Set(upgradedRules.map(\.id)).count==3,
-          upgradedRules.contains(where:{$0.id==earlyIDs[0] && $0.migrationOrigin != nil}),
-          upgradedRules.first(where:{$0.id==earlyIDs[1]})==earlyRules[1],
-          !upgradedRules.contains(where:{$0.id==earlyIDs[2]}),
-          upgradedRules.filter({$0.effect.kind == .openTargets}).count==1,
-          upgradedRules.allSatisfy({!$0.enabled}),!early.settings.inputEnhancements.enabled,
-          early.settings.inputEnhancements.migrationSources[0].rows.count==4,
-          early.settings.inputEnhancements.migrationSources[0].rows.filter({$0.disposition == .preservedUserChange}).count==2 else {throw DataFailure.message("早期旧日志升级重复规则、丢失UUID或重新添加已修改/删除的平行替代。")}
+    guard upgradedRules.count==3,Set(upgradedRules.map(\.id)).count==3 else {
+        throw DataFailure.message("早期旧日志升级应保留三条不同身份的规则，实际 \(upgradedRules.count) 条。")
+    }
+    guard upgradedRules.contains(where:{$0.id==earlyIDs[0] && $0.migrationOrigin != nil}) else {
+        throw DataFailure.message("早期旧日志升级未按原 UUID 为未改规则补录来源。")
+    }
+    guard upgradedRules.first(where:{$0.id==earlyIDs[1]})==earlyRules[1],
+          !upgradedRules.contains(where:{$0.id==earlyIDs[2]}) else {
+        throw DataFailure.message("早期旧日志升级改写了用户规则或重新添加了已删除规则。")
+    }
+    guard upgradedRules.filter({$0.effect.kind == .openTargets}).count==1,
+          upgradedRules.allSatisfy({!$0.enabled}),!early.settings.inputEnhancements.enabled else {
+        throw DataFailure.message("早期旧日志升级应只新增一条打开目标规则，输入规则保持暂停。")
+    }
+    let audits=early.settings.inputEnhancements.migrationSources
+    guard audits.count==1,let audit=audits.first else {
+        throw DataFailure.message("早期旧日志升级应生成一份审计，实际 \(audits.count) 份。")
+    }
+    let keyboardRows=audit.rows.filter{$0.module=="ruleOfKeyboard"}
+    let scriptRows=audit.rows.filter{$0.module=="ruleOfAppleScript"}
+    let retainedRows=keyboardRows.filter{$0.disposition == .preservedUserChange}
+    guard audit.rows.count==5,keyboardRows.count==4,retainedRows.count==2 else {
+        throw DataFailure.message("早期旧日志审计条数不符：总计 \(audit.rows.count)，键盘 \(keyboardRows.count)，保留用户改动 \(retainedRows.count)。")
+    }
+    guard scriptRows.count==1,let scriptRow=scriptRows.first,
+          scriptRow.groupIndex==0,scriptRow.rowIndex==0,scriptRow.sourceEnabled==nil,
+          scriptRow.disposition == .requiresReview,scriptRow.requirements==["scriptReview"],
+          scriptRow.mappedRuleID==nil else {
+        throw DataFailure.message("早期旧日志审计未将唯一的来源脚本保留为未绑定的待复核条目。")
+    }
     let oldMenuIDs=Set(earlyMenu.items.map(\.id))
     guard early.finderPreferences.preferences.items.filter({oldMenuIDs.contains($0.id)})==earlyMenu.items,
           early.finderPreferences.preferences.mergeInSubmenu==earlyMenu.mergeInSubmenu,
