@@ -73,6 +73,9 @@ struct OperationDashboardView: View {
             DashboardDestinationCard(title: "桌面总览", detail: "查找窗口，快速切换", icon: "rectangle.3.group", color: Color(red: 0.28, green: 0.46, blue: 0.68)) {
                 store.section = .overview
             }
+            DashboardDestinationCard(title: "图标换装", detail: "自定义 Finder 替身外观", icon: "sparkles.square.filled.on.square", color: Color(red: 0.53, green: 0.36, blue: 0.67)) {
+                store.section = .shortcutIcons
+            }
             DashboardDestinationCard(title: "文件处理", detail: "新建 · 转换 · 压缩", icon: "folder", color: Color(red: 0.65, green: 0.44, blue: 0.23)) {
                 store.section = .files
             }

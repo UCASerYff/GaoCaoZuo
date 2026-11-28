@@ -25,6 +25,7 @@ extension OperationSection {
         case .archives: return "快速打包、解压与预览压缩内容。"
         case .windows: return "为眼前的工作，安排合适的位置。"
         case .overview: return "查找应用与窗口，快速回到正在做的事。"
+        case .shortcutIcons: return "预览、更换和恢复 Finder 替身的图标。"
         case .lockPolicy: return "按自己的习惯设置本机闲置与锁屏。"
         case .screenshots: return "捕捉画面、识别文字，记录重要内容。"
         case .clipboard: return "让复制过的内容，随时回到手边。"
@@ -41,7 +42,7 @@ struct OperationRootView: View {
     @ObservedObject private var fileEnhancements: FileEnhancementController
     init(store: OperationStore) { self.store = store; self.fileEnhancements = store.fileEnhancements }
     private var showsFileSelection: Bool {
-        [.files, .archives, .tools].contains(store.section) || (!store.selection.isEmpty && store.section != .home)
+        store.section != .shortcutIcons && ([.files, .archives, .tools].contains(store.section) || (!store.selection.isEmpty && store.section != .home))
     }
     var body: some View {
         NavigationSplitView {
@@ -63,7 +64,7 @@ struct OperationRootView: View {
                         navigationRow(.archives); navigationRow(.tools)
                     }
                     Section("桌面与窗口") {
-                        navigationRow(.windows); navigationRow(.overview); navigationRow(.lockPolicy)
+                        navigationRow(.windows); navigationRow(.overview); navigationRow(.shortcutIcons); navigationRow(.lockPolicy)
                     }
                     Section("自动化") { navigationRow(.input); navigationRow(.workflows) }
                     Section("活动") { navigationRow(.history) }
@@ -123,6 +124,7 @@ struct OperationRootView: View {
         switch store.section {
         case .home: OperationDashboardView(store: store)
         case .overview: DesktopOverviewView(controller: store.desktopOverview)
+        case .shortcutIcons: ShortcutAliasIconsView(store: store)
         case .lockPolicy: IntegratedLockSettingsView(store: store)
         case .screenshots: store.screenshots.workspaceView
         case .clipboard: ClipboardWorkspace(store: store, clipboard: store.clipboard)

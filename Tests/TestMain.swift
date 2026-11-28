@@ -28,6 +28,16 @@ import Darwin
             return
         }
         setbuf(stdout,nil)
+        if CommandLine.arguments.contains("--shortcut-alias-icons-only") {
+            let arguments = CommandLine.arguments
+            guard let index = arguments.firstIndex(of: "--data-dir"), index + 1 < arguments.count else {
+                throw DataFailure.message("Shortcut icon tests require an isolated test directory.")
+            }
+            let data = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+            try FileManager.default.createDirectory(at: data, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            try runShortcutAliasIconsTests(in: data)
+            return
+        }
         if CommandLine.arguments.contains("--build18-targeted") {
             let arguments = CommandLine.arguments
             guard let dataIndex = arguments.firstIndex(of: "--data-dir"), dataIndex + 1 < arguments.count,
@@ -38,6 +48,7 @@ import Darwin
             try FileManager.default.createDirectory(at: data, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             GaoLocale.shared.setLanguage(.zhHans)
             try runAutomationPreviewTests()
+            try runShortcutAliasIconsTests(in: data)
             try ScreenshotOCRReturnTests.run(in: data)
             try await runScreenshotLongCaptureBatchTests()
             try await runGaoActionTests()

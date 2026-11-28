@@ -77,6 +77,7 @@ if [[ "$COMPILE_ONLY" == false && ( ! -f "$PROJECT_DIR/Assets/AppIcon.icns" || "
   swift -module-cache-path "$STAGING/cache" "$PROJECT_DIR/Scripts/MakeIcon.swift" "$PROJECT_DIR/Assets/AppIcon.png" "$PROJECT_DIR/Assets/AppIcon.icns"
 fi
 ditto "$PROJECT_DIR/Resources" "$APP/Contents/Resources"
+/bin/bash "$PROJECT_DIR/Scripts/stage-shortcut-mascots.sh" "$APP/Contents/Resources"
 python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$APP/Contents/Resources" "$EXT/Contents/Resources" "$QL_EXT/Contents/Resources" "$BROKER/Contents/Resources"
 python3 - "$APP/Contents/Resources/GaoCapabilities.json" "$APP/Contents/Resources/DownloadGaoCapabilities.json" "$APP_VERSION" <<'PY'
 import json,sys

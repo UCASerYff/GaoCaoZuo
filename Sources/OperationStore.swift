@@ -3,10 +3,10 @@ import SwiftUI
 import Combine
 
 enum OperationSection: String, CaseIterable, Identifiable {
-    case home = "常用", files = "文件", windows = "窗口", overview = "窗口总览", lockPolicy = "锁屏策略", screenshots = "截图与录制", archives = "压缩", clipboard = "剪贴板", tools = "小工具", input = "快捷键与手势", workflows = "组合操作", history = "恢复记录"
+    case home = "常用", files = "文件", windows = "窗口", overview = "窗口总览", shortcutIcons = "图标换装", lockPolicy = "锁屏策略", screenshots = "截图与录制", archives = "压缩", clipboard = "剪贴板", tools = "小工具", input = "快捷键与手势", workflows = "组合操作", history = "恢复记录"
     var id: String { rawValue }
     var icon: String {
-        switch self { case .home: return "star"; case .files: return "folder"; case .windows: return "rectangle.split.2x1"; case .overview: return "rectangle.3.group"; case .lockPolicy: return "lock.shield"; case .screenshots: return "viewfinder"; case .archives: return "archivebox"; case .clipboard: return "doc.on.clipboard"; case .tools: return "wand.and.stars"; case .input: return "keyboard"; case .workflows: return "square.stack.3d.up"; case .history: return "clock.arrow.circlepath" }
+        switch self { case .home: return "star"; case .files: return "folder"; case .windows: return "rectangle.split.2x1"; case .overview: return "rectangle.3.group"; case .shortcutIcons: return "sparkles.square.filled.on.square"; case .lockPolicy: return "lock.shield"; case .screenshots: return "viewfinder"; case .archives: return "archivebox"; case .clipboard: return "doc.on.clipboard"; case .tools: return "wand.and.stars"; case .input: return "keyboard"; case .workflows: return "square.stack.3d.up"; case .history: return "clock.arrow.circlepath" }
     }
 }
 struct OperationAction: Identifiable {
@@ -66,6 +66,7 @@ struct OperationAction: Identifiable {
             .init(id:"system.preventSleep.toggle",title:"切换保持唤醒",detail:"阻止自动系统睡眠",icon:"sun.max",section:.tools),
             .init(id:"system.lock",title:"锁定屏幕",detail:"提交系统锁屏快捷键请求",icon:"lock",section:.tools),
             .init(id:"windows.overview",title:"窗口总览",detail:"搜索、分组并选择实际窗口",icon:"rectangle.3.group",section:.windows),
+            .init(id:"desktop.shortcutIcons",title:"图标换装",detail:"预览、更换和恢复 Finder 替身的图标",icon:"sparkles.square.filled.on.square",section:.shortcutIcons,keywords:"快捷方式 桌面 AI 角色"),
             .init(id:"desktop.openSettings",title:"桌面与窗口设置",detail:"总览偏好、迁移与权限",icon:"slider.horizontal.3",section:.windows),
             .init(id:"lock.settings",title:"锁屏策略",detail:"默认关闭的本机闲置策略",icon:"lock.shield",section:.tools),
             .init(id:"screenshot.workspace",title:"截图与录制工作台",detail:"截图、长截图、标注、OCR、翻译及录屏录音",icon:"viewfinder",section:.screenshots),
@@ -142,6 +143,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         return host
     }()
     lazy var desktopStatusStrip = DesktopOverviewStatusStrip()
+    lazy var shortcutAliasIcons = ShortcutAliasIcons(data: LocalData(directory: data.directory, createIfMissing: false))
     lazy var desktopProvider = DesktopActionProvider(directory: data.directory)
     lazy var desktopOverview = DesktopOverviewController(preferences: settings.desktopOverview, onPreferencesChange: { [weak self] value in
         guard let self, self.dataHealthy else { throw DataFailure.message("资料保护模式下不能保存窗口总览设置。") }
@@ -318,6 +320,7 @@ struct ToolRequest: Identifiable { var id = UUID(); var actionID: String; var ti
         }
         if ["windows.overview", "service.windows.overview"].contains(id) { _ = openDesktopAction("windows.overview"); return }
         if ["desktop.openSettings", "service.desktop.openSettings"].contains(id) { _ = openDesktopAction("desktop.openSettings"); return }
+        if id == "desktop.shortcutIcons" { section = .shortcutIcons; showMain?(); return }
         if id == "lock.settings" { section = .lockPolicy; showMain?(); return }
         if id == "screenshot.settings" {showExtensionSettings?(16);return}
         let screenshotAction = id.hasPrefix("service.") ? String(id.dropFirst(8)) : (CrossApplicationActions.legacyIDs[id] ?? id)

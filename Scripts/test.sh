@@ -12,6 +12,7 @@ STAGING="$TEST_ROOT/Build.noindex"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$STAGING/Tests.app/Contents/MacOS"
 python3 "$PROJECT_DIR/Scripts/prepare-localizations.py" "$STAGING/Tests.app/Contents/Resources"
+/bin/bash "$PROJECT_DIR/Scripts/stage-shortcut-mascots.sh" "$STAGING/Tests.app/Contents/Resources"
 ditto "$PROJECT_DIR/Resources/DocumentTemplates" "$STAGING/Tests.app/Contents/Resources/DocumentTemplates"
 python3 - "$STAGING/Tests.app/Contents/Info.plist" <<'PY'
 import plistlib,sys
