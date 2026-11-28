@@ -32,7 +32,7 @@ import Darwin
             }
             print("SCREENSHOT ENGINE ISOLATED TESTS PASSED; no GUI, screen/audio capture, device input or language download")
         } catch {
-            fputs("Screenshot engine FAIL: \(error.localizedDescription)\n", stderr)
+            fputs("Screenshot engine FAIL: \(error.localizedDescription) [\(String(reflecting: error))]\n", stderr)
             exit(1)
         }
     }

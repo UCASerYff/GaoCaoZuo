@@ -57,11 +57,22 @@ func ScreenshotRunOCRExportBudgetTests(in directory: URL) async throws {
     let media = CGRect(x: 20, y: 30, width: 13_000, height: 1_000)
     let crop = CGRect(x: 30, y: 50, width: 600, height: 800)
     try budgetPDF(to: pdfURL, media: media, crop: crop)
-    let pdfSource = try budgetDocument(url: pdfURL, isPDF: true, options: options, media: media, crop: crop, rotation: 90, status: .failed)
+    guard let originalPDF = PDFDocument(url: pdfURL), let originalPage = originalPDF.page(at: 0) else {
+        throw OCRExportBudgetFailure.assertion("synthetic PDF source missing")
+    }
+    // PDFKit may normalize the authored origins when writing the fixture's
+    // rotation. The exporter must preserve the geometry of the file it reads.
+    let inputMedia = originalPage.bounds(for: .mediaBox), inputCrop = originalPage.bounds(for: .cropBox)
+    try exportBudgetRequire(inputMedia.size == media.size && inputCrop.size == crop.size &&
+                            inputCrop != inputMedia && originalPage.rotation == 90,
+                            "source fixture retains its large point dimensions, distinct CropBox and 90-degree rotation")
+    print("OCR budget PDF fixture: media=\(inputMedia) crop=\(inputCrop) rotation=\(originalPage.rotation)")
+    let pdfSource = try budgetDocument(url: pdfURL, isPDF: true, options: options, media: inputMedia, crop: inputCrop,
+                                       rotation: originalPage.rotation, status: .failed)
     let pdfOutput = directory.appendingPathComponent("preserved-failed-pdf.pdf")
     let pdfValidation = try ScreenshotOCRExporter.exportSearchablePDF(document: pdfSource, sourceID: pdfSource.sources[0].id, sourceURL: pdfURL, to: pdfOutput)
     guard let page = PDFDocument(url: pdfOutput)?.page(at: 0) else { throw OCRExportBudgetFailure.assertion("PDF output missing") }
-    try exportBudgetRequire(pdfValidation.pageCount == 1 && pdfValidation.verifiedTextLines == 0 && page.bounds(for: .mediaBox) == media && page.bounds(for: .cropBox) == crop && page.rotation == 90, "PDF source keeps point boxes/rotation without image edge rejection or fake OCR text")
+    try exportBudgetRequire(pdfValidation.pageCount == 1 && pdfValidation.verifiedTextLines == 0 && page.bounds(for: .mediaBox) == inputMedia && page.bounds(for: .cropBox) == inputCrop && page.rotation == originalPage.rotation, "PDF source keeps point boxes/rotation without image edge rejection or fake OCR text")
     try exportBudgetRequire(pdfSource.failedPages.count == 1 && pdfSource.successfulPages == 0 && (try ScreenshotOCRService.sha256(url: pdfURL)) == pdfSource.sources[0].sha256, "PDF failed status and original source remain unchanged")
     try exportBudgetRequire(!(try files.contentsOfDirectory(atPath: directory.path)).contains { $0.hasPrefix(".gaocaozuo-screenshot-ocr-") }, "rejections leave no export intermediates")
     print("OCR export budget PASS: real pixel/edge rejection cannot bypass image decode limits; memory/invalid/overflow budgets reject safely; failed-page JSON/source retained; safe image and PDF point-box/rotation paths preserved. No GUI, capture or downloads.")
