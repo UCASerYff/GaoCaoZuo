@@ -21,7 +21,12 @@ from gaocaozuo.store import JsonDocument
 ROLE_NAMES = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "grok": "Grok", "deepseek": "DeepSeek",
               "kimi": "Kimi", "glm": "GLM", "qwen": "Qwen"}
 ORIGINAL_ROLES = tuple(ROLE_NAMES)[:5]
-ROLE_MATCHES = {role: (role,) for role in ROLE_NAMES} | {"glm": ("glm", "智谱", "zhipu"), "qwen": ("qwen", "千问", "tongyi")}
+ROLE_MATCHES = {role: (role,) for role in ROLE_NAMES} | {
+    "chatgpt": ("chatgpt", "codex"),
+    "gemini": ("gemini", "antigravity"),
+    "glm": ("glm", "智谱", "zhipu", "zcode"),
+    "qwen": ("qwen", "千问", "通义", "tongyi"),
+}
 MAX_LNK = 1024 * 1024
 MAX_ICON = 8 * 1024 * 1024
 MAX_LIST = 400

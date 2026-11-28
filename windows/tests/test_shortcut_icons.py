@@ -60,8 +60,8 @@ def test_current_user_shortcut_icon_remains_a_working_shell_link(tmp_path, monke
     desktop.mkdir()
     start = tmp_path / "Start Menu"
     start.mkdir()
-    link = desktop / "ChatGPT.lnk"
-    other = start / "Claude.lnk"
+    link = desktop / "Codex.lnk"
+    other = start / "Antigravity.lnk"
     ico = tmp_path / "ChatGPT.ico"
     Image.new("RGBA", (96, 96), (255, 0, 11, 255)).save(ico)
     monkeypatch.setattr(platform, "user_folders", lambda: (("desktop", desktop), ("start", start)))
@@ -101,7 +101,7 @@ def test_current_user_shortcut_icon_remains_a_working_shell_link(tmp_path, monke
     state = ShortcutIcons(tmp_path / "data")
     assert state.dispatch("preview", {"path": str(link)})["preview"].startswith("data:image/png;base64,")
     native = state.dispatch("list", {})
-    assert [(row["path"], row["suggested"], row["managed"]) for row in native["items"]] == [(str(link), "chatgpt", False), (str(other), "claude", False)]
+    assert [(row["path"], row["suggested"], row["managed"]) for row in native["items"]] == [(str(link), "chatgpt", False), (str(other), "gemini", False)]
     state.dispatch("import", {"role": "chatgpt", "path": str(ico)})
     with pytest.raises(AppError, match="请确认"):
         state.dispatch("apply", {"items": [{"path": str(link), "role": "chatgpt"}]})
