@@ -19,13 +19,32 @@ def packaged_ico(tmp_path, monkeypatch):
 
 
 def test_ico_preserves_artwork_and_all_common_dpi_frames(packaged_ico):
-    expected = {16, 20, 24, 25, 28, 30, 32, 35, 36, 40, 42, 48, 56, 60, 64, 96, 128, 256}
+    expected = {16, 20, 24, 25, 28, 30, 32, 35, 36, 40, 42, 48, 56, 60, 64, 72, 84, 96, 128, 256}
     with Image.open(io.BytesIO(packaged_ico)) as icon:
         assert icon.format == "ICO" and icon.ico.sizes() == {(size, size) for size in expected}
         for size in sorted(expected):
             image = icon.ico.getimage((size, size)).convert("RGBA")
-            assert image.getpixel((0, 0))[3] == 0
+            for x, y in ((0, 0), (0, size - 1), (size - 1, 0), (size - 1, size - 1)):
+                assert image.getpixel((x, y))[3] < 8
             assert image.getpixel((size // 2, size // 2))[3] == 255
+
+
+def test_icon_plate_and_calligraphy_at_desktop_and_tray_sizes(packaged_ico):
+    with Image.open(io.BytesIO(packaged_ico)) as icon:
+        for size in (24, 48, 60, 72, 84, 96):
+            image = icon.ico.getimage((size, size)).convert("RGBA")
+            solid = image.getchannel("A").point(lambda value: 255 if value >= 128 else 0)
+            assert solid.getbbox() == (0, 0, size, size)
+            assert .95 <= solid.histogram()[255] / (size * size) <= .98
+            assert image.getpixel((size // 2, size // 10)) == (119, 119, 119, 255)
+
+        for size, minimum, maximum in ((16, 8, 11), (24, 14, 17), (48, 32, 35)):
+            image = icon.ico.getimage((size, size)).convert("RGBA")
+            glyph = Image.new("L", image.size)
+            glyph.putdata([255 if red >= 208 and alpha >= 248 else 0 for red, _, _, alpha in image.getdata()])
+            left, top, right, bottom = glyph.getbbox()
+            assert minimum <= bottom - top <= maximum
+            assert abs(left + right - size) <= 2 and abs(top + bottom - size) <= 2
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Win32 icon metrics and loading")

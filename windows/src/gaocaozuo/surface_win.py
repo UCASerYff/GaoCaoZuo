@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
+import io
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from gaocaozuo.brand_icons import ICON_NAME, artwork_path, icon_metrics
+from gaocaozuo.brand_icons import ICON_NAME, artwork_bytes, icon_metrics
 from gaocaozuo.native_win import bind, user
 from gaocaozuo.resources import asset_dir
 
@@ -119,7 +120,7 @@ def set_window_chrome(root, colors):
         from PIL import Image, ImageTk
 
         dpi = window_dpi(hwnd)
-        with Image.open(artwork_path()) as source:
+        with Image.open(io.BytesIO(artwork_bytes())) as source:
             image = source.convert("RGBA")
             photos = [ImageTk.PhotoImage(image.resize(icon_metrics(dpi, small=small), Image.Resampling.LANCZOS),
                                          master=root) for small in (False, True)]

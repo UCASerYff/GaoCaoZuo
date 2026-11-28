@@ -12,32 +12,75 @@ from gaocaozuo.native_win import user
 from gaocaozuo.resources import asset_dir
 
 
-# Exact frames for 16, 20, 24 and 32 logical pixels at common desktop scales.
-ICON_SIZES = (16, 20, 24, 25, 28, 30, 32, 35, 36, 40, 42, 48, 56, 60, 64, 96, 128, 256)
+# Include exact 48-logical-pixel desktop frames as well as window and tray sizes.
+ICON_SIZES = (16, 20, 24, 25, 28, 30, 32, 35, 36, 40, 42, 48, 56, 60, 64, 72, 84, 96, 128, 256)
 ICON_NAME = "operation-icon.ico"
+ARTWORK_NAME = "operation-icon.png"
 
 
 def artwork_path() -> Path:
     assets = asset_dir()
-    source = assets / "operation-icon.png"
+    source = assets / ARTWORK_NAME
     if source.is_file() or len(assets.parents) <= 3:
         return source
     return assets.parents[3] / "Assets" / "AppIcon.png"
 
 
-def build_ico(source: Path) -> bytes:
-    from PIL import Image
+def _windows_artwork(source: Path):
+    from PIL import Image, ImageDraw
 
-    buffer = io.BytesIO()
     with Image.open(source) as image:
-        image.convert("RGBA").save(buffer, format="ICO", sizes=[(size, size) for size in ICON_SIZES])
+        original = image.convert("RGBA")
+    width, height = original.size
+    # The original high-resolution gray-to-white pixels encode the calligraphy coverage.
+    # Exclude the inset plate edge before extracting that coverage.
+    gray = 119
+    margin_x, margin_y = width // 5, height // 5
+    center = original.crop((margin_x, margin_y, width - margin_x, height - margin_y))
+    glyph = center.convert("L").point(lambda value: max(0, (value - gray) * 255 / (255 - gray)))
+    glyph = glyph.crop(glyph.getbbox())
+    glyph_height = round(height * 0.70)
+    glyph = glyph.resize((round(glyph.width * glyph_height / glyph.height), glyph_height), Image.Resampling.LANCZOS)
+
+    mask = Image.new("L", original.size)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1),
+                                           radius=round(min(width, height) * 0.20), fill=255)
+    artwork = Image.new("RGBA", original.size, (gray, gray, gray, 255))
+    left, top = (width - glyph.width) // 2, (height - glyph.height) // 2
+    artwork.paste((255, 255, 255, 255), (left, top, left + glyph.width, top + glyph.height), glyph)
+    artwork.putalpha(mask)
+    return artwork
+
+
+def _ico_bytes(artwork) -> bytes:
+    buffer = io.BytesIO()
+    artwork.save(buffer, format="ICO", sizes=[(size, size) for size in ICON_SIZES])
+    return buffer.getvalue()
+
+
+def build_ico(source: Path) -> bytes:
+    return _ico_bytes(_windows_artwork(source))
+
+
+@lru_cache(maxsize=1)
+def artwork_bytes() -> bytes:
+    source = artwork_path()
+    if source.name == ARTWORK_NAME:
+        return source.read_bytes()
+    buffer = io.BytesIO()
+    _windows_artwork(source).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
 @lru_cache(maxsize=1)
 def workbench_icon_bytes() -> bytes:
     packaged = asset_dir() / ICON_NAME
-    return packaged.read_bytes() if packaged.is_file() else build_ico(artwork_path())
+    if packaged.is_file():
+        return packaged.read_bytes()
+    from PIL import Image
+
+    with Image.open(io.BytesIO(artwork_bytes())) as artwork:
+        return _ico_bytes(artwork)
 
 
 def icon_metrics(dpi: int, *, small: bool) -> tuple[int, int]:
@@ -59,7 +102,7 @@ def load_native_icon(width: int, height: int) -> int | None:
         from PIL import Image
 
         png = io.BytesIO()
-        with Image.open(artwork_path()) as artwork:
+        with Image.open(io.BytesIO(artwork_bytes())) as artwork:
             frame = artwork.convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
             frame.save(png, format="PNG")
     except (OSError, ImportError):
@@ -70,6 +113,14 @@ def load_native_icon(width: int, height: int) -> int | None:
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    Path(sys.argv[2]).write_bytes(build_ico(Path(sys.argv[1])))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=Path)
+    parser.add_argument("ico", type=Path)
+    parser.add_argument("--png", type=Path)
+    args = parser.parse_args()
+    artwork = _windows_artwork(args.source)
+    args.ico.write_bytes(_ico_bytes(artwork))
+    if args.png is not None:
+        artwork.save(args.png, format="PNG")

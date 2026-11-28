@@ -38,8 +38,7 @@ Assert-LastExit "pytest"
 $icon = Join-Path $buildDir 'GaoCaoZuo.ico'
 $iconPng = Join-Path $buildDir 'operation-icon.png'
 $runtimeIcon = Join-Path $buildDir 'operation-icon.ico'
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\Assets\AppIcon.png') -Destination $iconPng -Force
-& $Python -m gaocaozuo.brand_icons $iconPng $runtimeIcon
+& $Python -m gaocaozuo.brand_icons (Join-Path $PSScriptRoot '..\Assets\AppIcon.png') $runtimeIcon --png $iconPng
 Assert-LastExit "icon"
 Copy-Item -LiteralPath $runtimeIcon -Destination $icon -Force
 $versionFile = Join-Path $buildDir 'version-info.txt'
@@ -79,4 +78,11 @@ Assert-LastExit "Inno Setup"
 $package = Join-Path $distDir "$stem.exe"
 $checksum = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$package.sha256" -Value ("$checksum  $stem.exe") -Encoding ascii
-Get-Item -LiteralPath $package, "$package.sha256" | Select-Object FullName,Length
+Write-Output ("$checksum  $stem.exe")
+$desktopIconName = "GaoCaoZuo-Windows-$version-build$buildNumber.ico"
+$desktopIcon = Join-Path $distDir $desktopIconName
+Copy-Item -LiteralPath $runtimeIcon -Destination $desktopIcon -Force
+$iconChecksum = (Get-FileHash -LiteralPath $desktopIcon -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath "$desktopIcon.sha256" -Value ("$iconChecksum  $desktopIconName") -Encoding ascii
+Write-Output ("$iconChecksum  $desktopIconName")
+Get-Item -LiteralPath $package, "$package.sha256", $desktopIcon, "$desktopIcon.sha256" | Select-Object FullName,Length

@@ -1,8 +1,8 @@
 # 搞操作 1.18 Windows x64
 
-运行 `GaoCaoZuo-Windows-1.18-build3-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.18+3`。安装范围是当前 Windows 用户，支持从 `1.18+2`、`1.18+1` 和 `1.17+8` 原位升级。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。
+运行 `GaoCaoZuo-Windows-1.18-build4-x64-Setup.exe`，从开始菜单打开搞操作。本次 Windows 构建为 `1.18+4`。安装范围是当前 Windows 用户，支持从 `1.18+3`、`1.18+2`、`1.18+1` 和 `1.17+8` 原位升级。工作台用本机 Microsoft Edge 或 Google Chrome 的独立窗口呈现，使用单独的临时浏览器资料目录。程序和资料服务只监听 `127.0.0.1`。
 
-开始菜单快捷方式和工作台使用同一个 Windows 应用标识。图标沿用原有书法图案，安装程序、快捷方式、运行窗口和通知区域使用同源的多尺寸图标。旧版手动固定项可能保留旧标识或缓存，可在升级后从新版开始菜单条目重新固定。
+开始菜单快捷方式和工作台使用同一个 Windows 应用标识。安装程序、快捷方式、运行窗口和通知区域共用保留原书法与灰色的 Windows 圆角底板。桌面图标在 100%、125%、150%、175%、200% 分别提供 48、60、72、84、96 像素原生帧。旧版手动固定项可能保留旧标识或缓存，可在升级后从新版开始菜单条目重新固定。
 
 托盘和输入线程按系统消息唤醒，关闭工作台后继续响应快捷键和原有后台任务。隐藏工作台时暂停剪贴板与选区的页面查询，重新显示后立即更新。
 
@@ -74,4 +74,4 @@ pwsh -File .\build.ps1 -InnoCompiler 'C:\Program Files (x86)\Inno Setup 6\ISCC.e
 pwsh -File .\smoke.ps1
 ```
 
-安装包和 `.sha256` 在 `dist`。构建候选时可用 `-DistDirectory build\candidate` 保留原发行文件，再运行 `smoke.ps1 -Installer <候选> -PreviousInstaller <上一版>`。仅验收安装、升级、卸载与界面词条时可加 `-LocalizationOnly`。冒烟用单独的安装目录、资料和随机卸载登记。开始菜单和资源管理器右键登记留给正式安装。浏览器回归、独立窗口站剪贴板、原生截图、媒体及 Cloud Files 测试源码保存在 `tests`。
+安装包、桌面快捷方式可用的独立 `.ico` 和对应的 `.sha256` 在 `dist`。该 ICO 与安装包中可执行文件使用的图标来自同一次生成。构建候选时可用 `-DistDirectory build\candidate` 保留原发行文件，再运行 `smoke.ps1 -Installer <候选> -PreviousInstaller <上一版>`。仅验收安装、升级、卸载与界面词条时可加 `-LocalizationOnly`。冒烟用单独的安装目录、资料和随机卸载登记。开始菜单和资源管理器右键登记留给正式安装。浏览器回归、独立窗口站剪贴板、原生截图、媒体及 Cloud Files 测试源码保存在 `tests`。

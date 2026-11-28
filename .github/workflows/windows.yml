@@ -44,3 +44,10 @@ jobs:
           path: |
             windows/dist/GaoCaoZuo-Windows-*-build*-x64-Setup.exe
             windows/dist/GaoCaoZuo-Windows-*-build*-x64-Setup.exe.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GaoCaoZuo-Windows-Icon
+          if-no-files-found: error
+          path: |
+            windows/dist/GaoCaoZuo-Windows-*-build*.ico
+            windows/dist/GaoCaoZuo-Windows-*-build*.ico.sha256

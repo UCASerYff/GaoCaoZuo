@@ -110,9 +110,9 @@ try {
     $iconBytes = [byte[]]$icon.Content
     if ($iconBytes.Length -lt 6 -or [BitConverter]::ToUInt16($iconBytes, 2) -ne 1) { throw 'Installed workbench icon is not an ICO.' }
     $frameCount = [BitConverter]::ToUInt16($iconBytes, 4)
-    if ($frameCount -ne 18 -or $iconBytes.Length -lt (6 + $frameCount * 16)) { throw 'Installed workbench icon lost its DPI frames.' }
+    if ($frameCount -ne 20 -or $iconBytes.Length -lt (6 + $frameCount * 16)) { throw 'Installed workbench icon lost its DPI frames.' }
     $frameSizes = for ($index = 0; $index -lt $frameCount; $index++) { [int]$iconBytes[6 + $index * 16] }
-    if (@(16, 20, 24, 28, 32, 40, 48, 56, 64) | Where-Object { $_ -notin $frameSizes }) { throw 'Installed workbench icon lost a native DPI size.' }
+    if (@(16, 20, 24, 28, 32, 40, 48, 56, 60, 64, 72, 84, 96, 0) | Where-Object { $_ -notin $frameSizes }) { throw 'Installed workbench icon lost a native DPI size.' }
     $headers = @{ 'X-Gao-Token' = $token }
 
     function Post([string]$Route, $Payload) {
