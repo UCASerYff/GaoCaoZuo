@@ -148,22 +148,36 @@ func runExtensionIntegrationTests() throws {
     try check(!resolved.contains("{uuid}"), "占位符 {uuid} 应已展开")
     try check(!resolved.contains("{year}"), "占位符 {year} 应已展开")
 
-    // PasteStack
-    let stack = PasteStack.shared
-    stack.clear()
-    stack.push("第一段")
-    stack.push("第二段")
-    stack.push("第三段")
-    try check(stack.items.count == 3, "入栈 3 项")
+    // PasteStack: isolate persisted entries and prepare items without publishing.
+    let stackDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("GaoCaoZuo-extension-stack-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: stackDirectory, withIntermediateDirectories: false,
+                                            attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: stackDirectory) }
+    let stack = PasteStack()
+    try stack.configurePersistence(dataDirectory: stackDirectory)
+    let queuedText = ["第一段", "第二段\n保留换行", "第三段 "]
+    for item in queuedText { try stack.pushContent(text: item) }
+    try check(stack.items == queuedText, "三项按入队顺序保留原文本")
 
-    let popped1 = stack.popAndPaste()
-    try check(popped1 == "第一段", "首项弹出")
-    try check(stack.items.count == 2, "剩余 2 项")
+    guard let firstTicket = stack.peek() else { throw DataFailure.message("扩展整合测试失败：缺少首项票据。") }
+    let queuedEntries = stack.entries
+    let preparedPaste = try stack.pasteboardItems(for: firstTicket)
+    try check(preparedPaste.count == 1 && preparedPaste.first?.string(forType: .string) == "第一段",
+              "只准备首项作为粘贴内容")
+    try check(stack.entries == queuedEntries, "准备粘贴不消费队列")
+    try stack.commit(firstTicket)
+    let remainingText = Array(queuedText.dropFirst())
+    try check(stack.items == remainingText && stack.entries.map(\.id) == queuedEntries.dropFirst().map(\.id),
+              "确认提交只消费首项，其余两项原身份和顺序不变")
 
-    let merged = stack.mergeAll(separator: " + ")
-    try check(merged == "第二段 + 第三段", "合并剩余项目：\(merged)")
-    stack.clear()
-    try check(stack.items.isEmpty, "清空后为空")
+    let remainingEntries = stack.entries
+    let preparedMerge = try stack.preparedMerge(separator: " + ")
+    try check(preparedMerge.string(forType: .string) == "第二段\n保留换行 + 第三段 ",
+              "合并剩余项目时保留精确分隔符、换行和尾空格")
+    try check(stack.entries == remainingEntries, "准备合并不消费剩余队列")
+    try stack.clearDurably()
+    try check(stack.entries.isEmpty && stack.items.isEmpty, "清空后为空")
 
     // SnippetCSVCodec Formula Injection Neutralization
     let maliciousText1 = "=1+1"
