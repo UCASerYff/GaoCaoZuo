@@ -15,7 +15,7 @@ from gaocaozuo.images import decode_png
 from gaocaozuo.layout import LayoutTransaction, Rect, is_window_drag, restore_focus, target_frame
 from gaocaozuo.qr import decode_text, encode
 from gaocaozuo.system import LOCK_MESSAGE, SAVER_MESSAGE, FakeSystem
-from gaocaozuo.version import VERSION_LABEL
+from gaocaozuo.version import MARKETING_VERSION, VERSION_LABEL, WINDOWS_BUILD
 from gaocaozuo.web import serve
 
 
@@ -50,7 +50,10 @@ class ScriptedWindow:
 
 
 def test_version_label():
-    assert VERSION_LABEL == "1.18+2"
+    project_version = Path(__file__).resolve().parents[2] / "VERSION"
+    assert MARKETING_VERSION == project_version.read_text(encoding="utf-8").strip()
+    assert WINDOWS_BUILD.isascii() and WINDOWS_BUILD.isdecimal() and int(WINDOWS_BUILD) > 0
+    assert VERSION_LABEL == f"{MARKETING_VERSION}+{WINDOWS_BUILD}"
 
 
 def test_settings_preserve_unknown_and_refuse_newer(tmp_path):
