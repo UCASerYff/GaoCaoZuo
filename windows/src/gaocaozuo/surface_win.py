@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from gaocaozuo.brand_icons import ICON_NAME, artwork_path, icon_metrics
 from gaocaozuo.native_win import bind, user
 from gaocaozuo.resources import asset_dir
 
@@ -103,21 +104,28 @@ def pointer_work_area():
 def set_window_chrome(root, colors):
     import tkinter as tk
 
+    hwnd = hwnd_for(root)
     if colors in (LIGHT, DARK):
-        hwnd = hwnd_for(root)
         dark = w.BOOL(colors == DARK)
         attribute = bind("dwmapi", "DwmSetWindowAttribute", c.c_long, w.HWND, w.DWORD, w.LPVOID, w.DWORD)
         if attribute(hwnd, 20, c.byref(dark), c.sizeof(dark)) != 0:
             attribute(hwnd, 19, c.byref(dark), c.sizeof(dark))
-    assets = asset_dir()
-    icon = assets / "operation-icon.png"
-    if not icon.is_file() and len(assets.parents) > 3:
-        icon = assets.parents[3] / "Assets" / "AppIcon.png"
-    if icon.is_file():
-        try:
-            root.iconphoto(True, tk.PhotoImage(master=root, file=str(icon)).subsample(16))
-        except tk.TclError:
-            pass
+    try:
+        icon = asset_dir() / ICON_NAME
+        if icon.is_file():
+            root.iconbitmap(default=str(icon))
+            return
+
+        from PIL import Image, ImageTk
+
+        dpi = window_dpi(hwnd)
+        with Image.open(artwork_path()) as source:
+            image = source.convert("RGBA")
+            photos = [ImageTk.PhotoImage(image.resize(icon_metrics(dpi, small=small), Image.Resampling.LANCZOS),
+                                         master=root) for small in (False, True)]
+        root.iconphoto(True, *photos)
+    except (OSError, ImportError, tk.TclError):
+        pass
 
 
 class TkSurface:

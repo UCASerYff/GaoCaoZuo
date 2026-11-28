@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from gaocaozuo.app import App
+from gaocaozuo.brand_icons import ICON_NAME, artwork_path, workbench_icon_bytes
 from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_locale
 from gaocaozuo.features import validate_package
@@ -197,11 +198,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         root = asset_dir().resolve()
         asset = (root / parsed.path.lstrip("/")).resolve()
-        if parsed.path == "/operation-icon.png" and not asset.exists() and len(root.parents) > 3:
-            asset = root.parents[3] / "Assets" / "AppIcon.png"
-            if asset.is_file():
-                self._bytes(asset.read_bytes(), "image/png")
-                return
+        if parsed.path == f"/{ICON_NAME}":
+            self._bytes(workbench_icon_bytes(), "image/x-icon")
+            return
+        if parsed.path == "/operation-icon.png" and (artwork := artwork_path()).is_file():
+            self._bytes(artwork.read_bytes(), "image/png")
+            return
         if asset.suffix.lower() in {".js", ".css", ".png", ".svg", ".woff2"} and asset.is_file() and root in asset.parents:
             mime = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
             self._bytes(asset.read_bytes(), mime)

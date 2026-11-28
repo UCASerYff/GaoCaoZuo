@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from gaocaozuo.native_win import kernel, user
+from gaocaozuo.native_win import bind, kernel, user
 from gaocaozuo.version import APP_NAME, MARKETING_VERSION, VERSION_LABEL
 
 
@@ -207,6 +207,58 @@ def find_windows(title):
     return matches
 
 
+def native_app_id(hwnd):
+    from gaocaozuo.brand_shell_win import (
+        _PropertyKey, _PropertyVariant, _store_method, _window_store,
+    )
+
+    with _window_store(hwnd) as store:
+        if store is None:
+            return None
+        prop = _PropertyVariant()
+        get = _store_method(store, 5, c.c_long, c.POINTER(_PropertyKey), c.POINTER(_PropertyVariant))
+        if get(store, c.byref(_PropertyKey(5)), c.byref(prop)) < 0:
+            return None
+        try:
+            return c.wstring_at(prop.value.text) if prop.type == 31 and prop.value.text else None
+        finally:
+            bind("ole32", "PropVariantClear", c.c_long, c.POINTER(_PropertyVariant))(c.byref(prop))
+
+
+def workbench_shell_brand(hwnd):
+    from gaocaozuo.brand_icons import icon_metrics, load_native_icon
+    from gaocaozuo.brand_shell_win import APP_USER_MODEL_ID
+    from gaocaozuo.shortcut_platform_win import _draw_icon
+    from tray_shell_smoke import icon_dimensions
+
+    if native_app_id(hwnd) != APP_USER_MODEL_ID:
+        return None
+    dpi = user("GetDpiForWindow", w.UINT, w.HWND)(hwnd)
+    if not dpi:
+        return None
+    send = user("SendMessageTimeoutW", c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM,
+                w.UINT, w.UINT, c.POINTER(c.c_size_t))
+    destroy = user("DestroyIcon", w.BOOL, w.HICON)
+    dimensions = []
+    for small, kind in ((True, 0), (False, 1)):
+        actual = c.c_size_t()
+        if not send(hwnd, 0x007F, kind, dpi, 0x3, 100, c.byref(actual)) or not actual.value:  # WM_GETICON
+            return None
+        size = icon_metrics(dpi, small=small)
+        if icon_dimensions(actual.value) != size:
+            return None
+        reference = load_native_icon(*size)
+        assert reference
+        try:
+            image = _draw_icon(reference, 32)
+            if not image or _draw_icon(actual.value, 32) != image:
+                return None
+        finally:
+            destroy(reference)
+        dimensions.append(size)
+    return {"appUserModelId": APP_USER_MODEL_ID, "windowDpi": dpi, "smallIcon": dimensions[0], "largeIcon": dimensions[1]}
+
+
 def until(read, description, timeout=20):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -377,6 +429,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
         address = json.loads(descriptor.read_text(encoding="utf-8"))
         port, token = address["port"], address["token"]
         first, first_pid = until(lambda: next(iter(find_windows(BROWSER_TITLE)), None), "workbench window")
+        first_brand = until(lambda: workbench_shell_brand(first), "branded HWND AppUserModelID and small/large icons")
         first_launcher = json.loads((scratch / "browser-launchers.jsonl").read_text(encoding="ascii").splitlines()[0])["launcherPID"]
         first_stopped = watch_process(first_pid, stack)
         hwnd, owner = until(lambda: next(iter(find_windows(TRAY_CAPTION)), None), "native tray owner")
@@ -402,6 +455,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
         early_tray_click = not first_stopped()
         post(hwnd, NOTIFY_MESSAGE, (12 << 16) | 13, (1 << 16) | 0x0400)  # NIN_SELECT, icon 1
         reopened, reopened_pid = until(lambda: next(iter(find_windows(BROWSER_TITLE)), None), "workbench reopen from tray")
+        reopened_brand = until(lambda: workbench_shell_brand(reopened), "branding on the replacement Chromium HWND")
         reopened_launcher = json.loads((scratch / "browser-launchers.jsonl").read_text(encoding="ascii").splitlines()[1])["launcherPID"]
         assert reopened_pid != first_pid and len(events(0)) == 1
         until(first_stopped, "old Chromium root stopping after user closes its window")
@@ -428,6 +482,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
         explorer.taskbar_created()
         until(lambda: len(events(4)) == 2, "native icon recovery after the shell restart notification")
         assert len(events(0)) == 2 and len(explorer.icons) == 1 and explorer.icons[0].icon_id == 1
+        until(lambda: workbench_shell_brand(reopened), "native window branding after taskbar recovery")
 
         if native_launch_only:
             request_exit(hwnd, choice_file)
@@ -436,6 +491,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
             wait_port_closed(port)
             assert len(events(2)) == 1 and not explorer.icons and not find_windows(BROWSER_TITLE) and saved.is_file()
             return {"normalBrowserArguments": True, "browser": browser.name, "coldStart": True, "trayReopen": True,
+                    "runningWindowBrand": [first_brand, reopened_brand],
                     "windowOwnerDifferentFromLauncher": [first_pid != first_launcher, reopened_pid != reopened_launcher],
                     "closedWindowAndSavedInBackground": True, "singleTray": True, "finishedExit": True}
 
@@ -480,6 +536,7 @@ def exercise(scratch, name, desktop, browser, evidence, native_launch_only=False
         assert not descriptor.exists() and saved.is_file() and (data_dir / "settings.json").read_bytes() == before
         assert (data_dir / "OcrProvider" / request_id / "journal.json").is_file()
         return {"nativeShellCalls": "NIM_ADD, NIM_SETVERSION, NIM_DELETE", "isolatedShellReceiver": True,
+                "runningWindowBrand": [first_brand, reopened_brand],
                 "browser": browser.name, "windowOwnerDifferentFromLauncher": [first_pid != first_launcher, reopened_pid != reopened_launcher],
                 "realChromiumWindow": True, "singleTray": True, "oldHiddenPreferencePreserved": True,
                 "closedWindowAndSavedInBackground": True,

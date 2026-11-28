@@ -28,7 +28,7 @@ Source: "{#BinaryDir}\GaoCaoZuo-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\notices\*"; DestDir: "{app}\Licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{userprograms}\搞操作"; Filename: "{app}\GaoCaoZuo.exe"; Check: IsRegisteredInstall
+Name: "{userprograms}\搞操作"; Filename: "{app}\GaoCaoZuo.exe"; IconFilename: "{app}\GaoCaoZuo.exe"; AppUserModelID: "GaoSeries.GaoCaoZuo.Windows"; Check: IsRegisteredInstall
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\*\shell\GaoCaoZuo"; ValueType: string; ValueData: "用搞操作打开"; Flags: uninsdeletekey; Check: IsRegisteredInstall

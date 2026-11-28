@@ -207,6 +207,8 @@ class _BrowserProcess:
 
 class WorkbenchWindow:
     def __init__(self, url: str):
+        from gaocaozuo.brand_shell_win import WorkbenchBrand
+
         binary = browser_path()
         if not binary:
             raise AppError("需安装 Microsoft Edge 或 Google Chrome 才能打开工作台。", "unavailable")
@@ -214,6 +216,7 @@ class WorkbenchWindow:
         self._hwnd = None
         self._seen_window = False
         self._missing_since = None
+        self._brand = WorkbenchBrand()
         try:
             self.process = _BrowserProcess([
                 str(binary), f"--app={url}", f"--user-data-dir={self.profile.name}",
@@ -234,14 +237,18 @@ class WorkbenchWindow:
                 hwnd, pid = window
                 with self.process.member(pid) as process:
                     if process:
+                        self._brand.unbind(hwnd, pid)
                         user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(hwnd, 0x0010, 0, 0)  # WM_CLOSE
                         _winapi.WaitForSingleObject(process, 2000)
         finally:
-            self.process.close()
             try:
-                self.profile.cleanup()
-            except OSError:
-                pass
+                self.process.close()
+            finally:
+                self._brand.close()
+                try:
+                    self.profile.cleanup()
+                except OSError:
+                    pass
 
     def is_running(self):
         if self._window():
@@ -259,8 +266,14 @@ class WorkbenchWindow:
         return now - self._missing_since < 0.5
 
     def window_pid(self):
-        window = self._window()
-        return window[1] if window else None
+        if window := self._window():
+            hwnd, pid = window
+            self._brand.update(hwnd, pid)
+            return pid
+        return None
+
+    def refresh_shell_brand(self):
+        self._brand.schedule_recheck()
 
     def _handle(self):
         window = self._window()
@@ -353,6 +366,7 @@ class WorkbenchWindow:
         if not user("IsWindowVisible", w.BOOL, w.HWND)(hwnd) or user("IsIconic", w.BOOL, w.HWND)(hwnd):
             user("ShowWindowAsync", w.BOOL, w.HWND, c.c_int)(hwnd, 9)
         user("SetForegroundWindow", w.BOOL, w.HWND)(hwnd)
+        self._brand.schedule_recheck()
         return True
 
 

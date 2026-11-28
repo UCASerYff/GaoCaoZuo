@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import ctypes as c
 import ctypes.wintypes as w
-import io
 import os
-import sys
 import time
 from threading import Event, Thread, current_thread
 
+from gaocaozuo.brand_icons import icon_metrics, load_native_icon
+from gaocaozuo.desktop_win import physical_coordinates
 from gaocaozuo.native_win import bind, kernel, user, wait_for_messages
-from gaocaozuo.resources import asset_dir
 from gaocaozuo.version import APP_NAME
 
 
@@ -28,35 +27,21 @@ class _NotifyIcon(c.Structure):
 _TRAY_MESSAGE = 0x8001
 _ICON_ID = 1
 _ADD, _MODIFY, _DELETE, _SETFOCUS, _SETVERSION = range(5)
+_DPI_CHANGED = 0x02E0
 
 
-def _load_icon() -> tuple[int | None, bool]:
-    if getattr(sys, "frozen", False):
-        icon = w.HICON()
-        extract = bind("shell32", "ExtractIconExW", w.UINT, w.LPCWSTR, c.c_int, c.POINTER(w.HICON), c.POINTER(w.HICON), w.UINT)
-        if extract(sys.executable, 0, None, c.byref(icon), 1) == 1 and icon.value:
-            return icon.value, True
-
-    root = asset_dir()
-    source = root / "operation-icon.png"
-    if not source.is_file() and not getattr(sys, "frozen", False):
-        source = root.parents[3] / "Assets" / "AppIcon.png"
+def _notification_dpi(hwnd, changed_dpi=0) -> int:
     try:
-        from PIL import Image
-
-        metrics = user("GetSystemMetrics", c.c_int, c.c_int)
-        width, height = metrics(49) or 16, metrics(50) or 16  # SM_CXSMICON, SM_CYSMICON
-        content = io.BytesIO()
-        with Image.open(source) as image:
-            image.convert("RGBA").resize((width, height), Image.Resampling.LANCZOS).save(content, format="PNG")
-        resource = content.getvalue()
-        create = user("CreateIconFromResourceEx", w.HICON, w.LPVOID, w.DWORD, w.BOOL, w.DWORD, c.c_int, c.c_int, w.UINT)
-        icon = create(c.create_string_buffer(resource), len(resource), True, 0x00030000, width, height, 0)
-        if icon:
-            return icon, True
-    except (ImportError, OSError):
-        pass
-    return user("LoadIconW", w.HICON, w.HINSTANCE, c.c_void_p)(None, 32512), False
+        get_dpi = user("GetDpiForWindow", w.UINT, w.HWND)
+        taskbar = user("FindWindowW", w.HWND, w.LPCWSTR, w.LPCWSTR)("Shell_TrayWnd", None)
+        if taskbar:
+            context = user("GetWindowDpiAwarenessContext", w.HANDLE, w.HWND)(taskbar)
+            awareness = user("GetAwarenessFromDpiAwarenessContext", c.c_int, w.HANDLE)(context)
+            if awareness == 2 and (dpi := get_dpi(taskbar)):  # DPI_AWARENESS_PER_MONITOR_AWARE
+                return dpi
+        return changed_dpi or get_dpi(hwnd) or 96
+    except AttributeError:
+        return changed_dpi or 96
 
 
 class WindowsTray:
@@ -69,6 +54,7 @@ class WindowsTray:
         self._window = None
         self.registered = False
         self.ready = Event()
+        self.taskbar_created = Event()
 
     def configure(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
@@ -109,6 +95,10 @@ class WindowsTray:
             user("DestroyMenu", w.BOOL, w.HMENU)(menu)
 
     def _loop(self) -> None:
+        with physical_coordinates():
+            self._run()
+
+    def _run(self) -> None:
         procedure = c.WINFUNCTYPE(c.c_ssize_t, w.HWND, w.UINT, w.WPARAM, w.LPARAM)
 
         class WindowClass(c.Structure):
@@ -125,13 +115,20 @@ class WindowsTray:
         next_register = 0.0
         has_v4 = False
         announced = False
+        pending_dpi = None
 
         @procedure
         def callback(hwnd, message, first, second):
-            nonlocal next_register, has_v4
+            nonlocal next_register, has_v4, pending_dpi
             if taskbar and message == taskbar:
+                self.taskbar_created.set()
                 self.registered = False
                 has_v4 = False
+                next_register = 0.0
+                pending_dpi = 0
+                return 0
+            if message == _DPI_CHANGED:
+                pending_dpi = first & 0xFFFF
                 next_register = 0.0
                 return 0
             if message == _TRAY_MESSAGE:
@@ -161,7 +158,8 @@ class WindowsTray:
             self.ready.set()
             return
         icon = None
-        owns_icon = False
+        icon_size = None
+        destroy_icon = user("DestroyIcon", w.BOOL, w.HICON)
         try:
             create = user("CreateWindowExW", w.HWND, w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, c.c_int, c.c_int,
                           c.c_int, c.c_int, w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID)
@@ -169,9 +167,8 @@ class WindowsTray:
             self.ready.set()
             if not self._window:
                 return
-            icon, owns_icon = _load_icon()
             data.size, data.window, data.identifier = c.sizeof(data), self._window, _ICON_ID
-            data.flags, data.message, data.icon, data.tip, data.version = 0x87, _TRAY_MESSAGE, icon, APP_NAME, 4
+            data.flags, data.message, data.tip, data.version = 0x87, _TRAY_MESSAGE, APP_NAME, 4
             msg = w.MSG()
             peek = user("PeekMessageW", w.BOOL, c.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT)
             dispatch = user("DispatchMessageW", c.c_ssize_t, c.POINTER(w.MSG))
@@ -180,22 +177,39 @@ class WindowsTray:
                     dispatch(c.byref(msg))
                 if self._stop.is_set():
                     break
-                if self._enabled and not self.registered and time.monotonic() >= next_register:
-                    # TaskbarCreated can also follow a DPI change. Reuse the same identity if the shell kept it.
-                    added = notify(_ADD, c.byref(data)) or notify(_MODIFY, c.byref(data))
-                    has_v4 = bool(added and notify(_SETVERSION, c.byref(data)))
-                    self.registered = bool(added)
-                    announced = announced or bool(added)
-                    next_register = time.monotonic() + 2
+                if self._enabled and (not self.registered or pending_dpi is not None) and time.monotonic() >= next_register:
+                    changed_dpi, pending_dpi = pending_dpi, None
+                    dpi = _notification_dpi(self._window, changed_dpi or 0)
+                    size = icon_metrics(dpi, small=True)
+                    replacement = load_native_icon(*size) if icon_size != size else None
+                    if not (replacement or icon):
+                        icon = user("LoadIconW", w.HICON, w.HINSTANCE, c.c_void_p)(None, 32512)
+                    data.icon = replacement or icon
+                    if not self.registered or not notify(_MODIFY, c.byref(data)):
+                        # Explorer may have removed the icon, or kept it during a DPI change.
+                        added = notify(_ADD, c.byref(data)) or notify(_MODIFY, c.byref(data))
+                        has_v4 = bool(added and notify(_SETVERSION, c.byref(data)))
+                        self.registered = bool(added)
+                        announced = announced or bool(added)
+                    if replacement:
+                        if self.registered:
+                            if icon_size is not None:
+                                destroy_icon(icon)
+                            icon, icon_size = replacement, size
+                        else:
+                            destroy_icon(replacement)
+                        data.icon = icon
+                    next_register = 0.0 if pending_dpi is not None else time.monotonic() + 2
                 elif not self._enabled and announced:
                     notify(_DELETE, c.byref(data))
                     announced = False
                     self.registered = False
                     has_v4 = False
                     next_register = 0.0
-                # An installed icon has nothing to poll. Retain the retry deadline
-                # only while Explorer is unavailable and wake on shell messages.
-                retry = next_register - time.monotonic() if self._enabled and not self.registered else None
+                # An installed icon has nothing to poll. A shell event dispatched
+                # during a synchronous notification call can still require a refresh.
+                pending = self._enabled and (not self.registered or pending_dpi is not None)
+                retry = next_register - time.monotonic() if pending else None
                 wait_for_messages(retry)
         finally:
             if announced:
@@ -204,6 +218,6 @@ class WindowsTray:
             if self._window:
                 user("DestroyWindow", w.BOOL, w.HWND)(self._window)
                 self._window = None
-            if owns_icon:
-                user("DestroyIcon", w.BOOL, w.HICON)(icon)
+            if icon_size is not None:
+                destroy_icon(icon)
             user("UnregisterClassW", w.BOOL, w.LPCWSTR, w.HINSTANCE)(class_name, instance)

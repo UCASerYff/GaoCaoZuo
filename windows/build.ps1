@@ -37,9 +37,11 @@ Assert-LastExit "pytest"
 
 $icon = Join-Path $buildDir 'GaoCaoZuo.ico'
 $iconPng = Join-Path $buildDir 'operation-icon.png'
+$runtimeIcon = Join-Path $buildDir 'operation-icon.ico'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\Assets\AppIcon.png') -Destination $iconPng -Force
-& $Python -c 'from PIL import Image; import sys; Image.open(sys.argv[1]).save(sys.argv[2], sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])' $iconPng $icon
+& $Python -m gaocaozuo.brand_icons $iconPng $runtimeIcon
 Assert-LastExit "icon"
+Copy-Item -LiteralPath $runtimeIcon -Destination $icon -Force
 $versionFile = Join-Path $buildDir 'version-info.txt'
 @"
 VSVersionInfo(ffi=FixedFileInfo(filevers=($($version.Replace('.', ',')),$buildNumber,0), prodvers=($($version.Replace('.', ',')),$buildNumber,0), mask=63, flags=0, OS=262148, fileType=1, subtype=0, date=(0,0)), kids=[
@@ -52,7 +54,8 @@ $localization = Join-Path $buildDir 'localization.json'
 Assert-LastExit "Mac-derived localization"
 $common = @('--noconfirm', '--clean', '--onefile', '--paths', 'src', '--distpath', $distDir,
             '--add-data', "$assetDir;gaocaozuo_assets", '--add-data', "$ocrHelper;gaocaozuo_assets",
-            '--add-data', "$iconPng;gaocaozuo_assets", '--add-data', "$localization;gaocaozuo_assets", '--collect-all', 'pillow_heif',
+            '--add-data', "$iconPng;gaocaozuo_assets", '--add-data', "$runtimeIcon;gaocaozuo_assets",
+            '--add-data', "$localization;gaocaozuo_assets", '--collect-all', 'pillow_heif',
             '--collect-binaries', 'ctranslate2', '--collect-data', 'py3langid', '--icon', $icon, '--version-file', $versionFile)
 & $Python -m PyInstaller @common --name GaoCaoZuo-cli --console --workpath build/cli --specpath build/cli launch_cli.py
 Assert-LastExit "PyInstaller CLI"

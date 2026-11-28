@@ -140,6 +140,10 @@ def main(argv: list[str] | None = None, *, console: bool = False) -> int:
                 window.close()
                 window = None
                 server.window_closed()
+            if tray.taskbar_created.is_set():
+                tray.taskbar_created.clear()
+                if window is not None:
+                    window.refresh_shell_brand()
             owner_pid = window.window_pid() if window else None
             if owner_pid != ui_pid:
                 ui_pid = owner_pid
