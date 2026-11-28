@@ -1224,6 +1224,7 @@ function clipboardPage() {
 }
 let clipboardRevision = "";
 async function refreshClipboard(force = false) {
+  if (document.hidden && !force) return;
   if (pending || dialog?.open || lifecycle.dialog?.open || statePollInFlight) return;
   statePollInFlight = true;
   try {
@@ -1837,6 +1838,9 @@ async function pollLifecycle() {
 }
 
 window.addEventListener("focus", () => { if (lifecycle.desktop) void pollLifecycle(); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state) void refreshClipboard();
+});
 window.addEventListener("beforeunload", event => {
   if (lifecycle.committed || !Object.values(workbenchExitStatus()).some(Boolean)) return;
   event.preventDefault();

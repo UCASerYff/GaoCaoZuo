@@ -81,6 +81,7 @@ struct InputActionChoice:Identifiable {let id:String;let title:String}
         configuration.enabled && (configuration.rules.contains { $0.enabled && ($0.consume || $0.trigger == .keyReplacement) } || configuration.scrollProfiles.contains(where: \.enabled))
     }
     var needsEvents:Bool {configuration.enabled && (configuration.rules.contains(where: \.enabled) || configuration.scrollProfiles.contains(where: \.enabled) || configuration.hidProfiles.contains(where: \.enabled))}
+    var needsPointerMotion: Bool { configuration.rules.contains { $0.enabled && $0.trigger == .hotCorner } }
     var capabilityStatus:String {
         guard configuration.enabled else{return L10n.text("高级输入未启用")}
         var details=["高级输入已配置：\(configuration.rules.filter(\.enabled).count)条规则"]

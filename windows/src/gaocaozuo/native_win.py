@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes as c
 import ctypes.wintypes as w
 from functools import lru_cache
+from math import ceil
 
 
 @lru_cache(maxsize=None)
@@ -21,6 +22,14 @@ def user(name, result, *args):
 
 def kernel(name, result, *args):
     return bind("kernel32", name, result, *args)
+
+
+def wait_for_messages(seconds: float | None = None) -> None:
+    """Sleep until this thread receives native input or an actual deadline."""
+    wait = user("MsgWaitForMultipleObjectsEx", w.DWORD, w.DWORD, c.POINTER(w.HANDLE), w.DWORD, w.DWORD, w.DWORD)
+    timeout = 0xFFFFFFFF if seconds is None else min(0xFFFFFFFE, max(0, ceil(seconds * 1000)))
+    if wait(0, None, timeout, 0x04FF, 0x0004) == 0xFFFFFFFF:  # QS_ALLINPUT, MWMO_INPUTAVAILABLE
+        raise c.WinError(c.get_last_error())
 
 
 def is_input_desktop() -> bool:

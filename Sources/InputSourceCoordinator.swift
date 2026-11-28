@@ -146,10 +146,14 @@ public final class InputSourceCoordinator: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isEnabled, !self.sleeping else { return }
                 if !AXIsProcessTrusted() {
-                    self.invalidatePending(); self.removeFocusObserver(); self.lastSwitchStatus = "辅助功能权限不可用，已暂停自动切换。"
+                    self.invalidatePending()
+                    self.removeFocusObserver()
+                    let message = "辅助功能权限不可用，已暂停自动切换。"
+                    if self.lastSwitchStatus != message { self.lastSwitchStatus = message }
                 } else if self.focusObserver == nil { self.attachFocusObserver() }
             }
         }
+        healthTimer?.tolerance = 0.2
         attachFocusObserver()
         lastSwitchStatus = "已启用；等待应用或输入区域切换。"
     }

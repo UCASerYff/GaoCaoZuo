@@ -12,13 +12,14 @@ from threading import Event, RLock, Thread
 from gaocaozuo.desktop_win import physical_coordinates
 from gaocaozuo.errors import AppError
 from gaocaozuo.localization import native_locale, native_text
-from gaocaozuo.native_win import bind, is_input_desktop, is_session_active, kernel, user
+from gaocaozuo.native_win import bind, is_input_desktop, is_session_active, kernel, user, wait_for_messages
 from gaocaozuo.platform_win import last_input
 from gaocaozuo.rules_win import ALT, CTRL, SHIFT, WIN, Binding, direction_between
 from gaocaozuo.surface_win import surface_colors, window_dpi
 
 
 _VK_MODIFIERS = {0x10: SHIFT, 0x11: CTRL, 0x12: ALT, 0x5B: WIN, 0x5C: WIN}
+_DRAG_UPDATE_INTERVAL = 0.025
 
 
 class _MouseEvent(c.Structure):
@@ -190,6 +191,7 @@ class WindowsRuntime:
         self._generation = 0
         self._running = False
         self._thread: Thread | None = None
+        self._message_thread_id: int | None = None
         self._worker: Thread | None = None
         self._commands = queue.Queue(maxsize=32)
 
@@ -219,6 +221,13 @@ class WindowsRuntime:
             self._snap = bool(snap)
             self._drag = bool(drag)
             self._generation += 1
+        self._wake_message_loop()
+
+    def _wake_message_loop(self) -> None:
+        with self._lock:
+            thread_id = self._message_thread_id
+        if thread_id:
+            user("PostThreadMessageW", w.BOOL, w.DWORD, w.UINT, w.WPARAM, w.LPARAM)(thread_id, 0, 0, 0)
 
     @staticmethod
     def _row(identifier, status, detail):
@@ -244,6 +253,11 @@ class WindowsRuntime:
 
     def close(self) -> None:
         self._stop.set()
+        self._wake_message_loop()
+        try:
+            self._commands.put_nowait(None)
+        except queue.Full:
+            pass  # A queued command already wakes the worker to observe shutdown.
         if self._thread is not None:
             self._thread.join(timeout=2)
         if self._worker is not None:
@@ -260,10 +274,10 @@ class WindowsRuntime:
         foreground = user("GetForegroundWindow", w.HWND)
         key_state = user("GetAsyncKeyState", c.c_short, c.c_int)
         while not self._stop.is_set():
-            try:
-                binding, hwnd, generation, started = self._commands.get(timeout=0.25)
-            except queue.Empty:
-                continue
+            command = self._commands.get()
+            if command is None or self._stop.is_set():
+                return
+            binding, hwnd, generation, started = command
             while time.monotonic() - started < 1 and any(key_state(vk) & 0x8000 for vk in _VK_MODIFIERS):
                 if self._stop.wait(0.025):
                     return
@@ -320,6 +334,7 @@ class WindowsRuntime:
         mouse_hook = None
         hwnd_active = 0
         next_tick = 0.0
+        next_drag_tick = 0.0
         generation = 0
         window_events = []
         active_target = None
@@ -352,10 +367,11 @@ class WindowsRuntime:
             drag_messages = {0x0200, 0x0201, 0x0202}
             if code < 0 or not ((mouse_actions and message in button_messages) or (drag_enabled and message in drag_messages)):
                 return next_mouse(None, code, message, param)
+            if message == 0x0200 and dragging is None:
+                return next_mouse(None, code, message, param)
             datum = c.cast(param, c.POINTER(_MouseEvent)).contents
             if datum.flags & 3:  # synthetic or lower-integrity input
                 return next_mouse(None, code, message, param)
-            hwnd = int(foreground() or 0)
             point = datum.point.x, datum.point.y
             if dragging is not None and message in {0x0200, 0x0202}:
                 dragging.point = point
@@ -364,8 +380,7 @@ class WindowsRuntime:
                     dragging.final = True
                     return 1
                 return next_mouse(None, code, message, param)
-            if message == 0x0200:
-                return next_mouse(None, code, message, param)
+            hwnd = int(foreground() or 0)
             mask = modifiers()
             if message == 0x0201 and hwnd == hwnd_active and active_target and mask == ALT:
                 if self.desktop.pointer_is_over(hwnd, point):
@@ -394,6 +409,7 @@ class WindowsRuntime:
         hooks = [hook_event(kind, end, None, event, 0, 0, 2) for kind, end in ((3, 3), (0x000A, 0x000B))]
         try:
             with self._lock:
+                self._message_thread_id = kernel("GetCurrentThreadId", w.DWORD)()
                 self._running = True
             while not self._stop.is_set():
                 while peek(c.byref(msg), None, 0, 0, 1):
@@ -409,7 +425,7 @@ class WindowsRuntime:
                 moment = time.monotonic()
                 with self._lock:
                     generation, rules, paused, snap, drag = self._generation, self._rules, self._paused, self._snap, self._drag
-                current = int(foreground() or 0)
+                current = int(foreground() or 0) if (rules and not paused) or snap or drag else 0
                 interactive = bool(current and is_input_desktop())
                 desired = generation, current, interactive
                 if configuration != desired:
@@ -439,7 +455,7 @@ class WindowsRuntime:
 
                 if dragging is not None and (not drag_enabled or dragging.identity != active_target):
                     dragging = None
-                if dragging is not None and dragging.changed:
+                if dragging is not None and dragging.changed and (dragging.final or moment >= next_drag_tick):
                     try:
                         if dragging.original is None:
                             dragging.original = self.desktop.drag_origin(dragging.identity)
@@ -447,6 +463,7 @@ class WindowsRuntime:
                             self.desktop.drag(dragging.identity, dragging.original, dragging.start, dragging.point,
                                               final=dragging.final, snap=snap)
                         dragging.changed = False
+                        next_drag_tick = moment + _DRAG_UPDATE_INTERVAL
                         if dragging.final:
                             dragging = None
                     except AppError as exc:
@@ -472,7 +489,12 @@ class WindowsRuntime:
                         self.on_tick()
                     except Exception:
                         pass
-                self._stop.wait(0.025)
+                if self._stop.is_set():
+                    break
+                deadline = next_tick
+                if dragging is not None and dragging.changed:
+                    deadline = min(deadline, next_drag_tick)
+                wait_for_messages(deadline - time.monotonic())
         finally:
             if mouse_hook:
                 stop_mouse(mouse_hook)
@@ -483,6 +505,7 @@ class WindowsRuntime:
                 unregister(None, handle)
             show_warning.update(None)
             with self._lock:
+                self._message_thread_id = None
                 self._running = False
 
     def _register_bindings(self, rules, application, paused, interactive, generation, register, installed, mouse_actions):

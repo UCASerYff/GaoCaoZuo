@@ -35,6 +35,20 @@ import Foundation
     try check(!InputTapLifecycle.shouldRecoverDisabledTap(triggerGeneration:7,currentGeneration:8,hasTap:true),"旧回调不能拆掉重新配置/轮询恢复的新tap")
     try check(!InputTapLifecycle.shouldRecoverDisabledTap(triggerGeneration:7,currentGeneration:7,hasTap:false),"暂停或停止后陈旧恢复不能重启监听")
 
+    let defaults = InputTapEvents.basic(bindings: InputBinding.defaults, windows: false)
+    try check(defaults == InputTapEvents.bit(.keyDown), "默认全局快捷键无需接收鼠标或按键松开")
+    let mouse = InputBinding(trigger: .mouseButton), gesture = InputBinding(trigger: .gesture)
+    let mouseAndWindows = InputTapEvents.basic(bindings: [mouse, gesture], windows: true)
+    try check(mouseAndWindows & InputTapEvents.bit(.otherMouseDown) != 0 &&
+              mouseAndWindows & InputTapEvents.bit(.rightMouseUp) != 0 &&
+              mouseAndWindows & InputTapEvents.bit(.leftMouseDragged) != 0, "鼠标绑定、绘图手势与窗口拖动仍各自保留事件")
+    let pointerMotion = InputTapEvents.bit(.mouseMoved)
+    try check(InputTapEvents.enhanced(enabled: true, hotCorners: false) & pointerMotion == 0 &&
+              InputTapEvents.enhanced(enabled: true, hotCorners: true) & pointerMotion != 0 &&
+              InputTapEvents.cleaner & pointerMotion != 0, "只有热角和清洁模式订阅高频指针移动")
+    try check(InputTapEvents.flyKey & InputTapEvents.bit(.leftMouseDown) != 0 &&
+              InputTapEvents.flyKey & pointerMotion == 0, "FlyKey 保留点击打断双击，并忽略指针移动")
+
     // Inject only the public monitor registration boundary: no fabricated pressure events or permissions.
     var globalAdds=0,localAdds=0,nextToken=0
     var removed:[Int]=[]

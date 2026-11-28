@@ -2,9 +2,13 @@
 
 搞操作是一款原生 macOS 操作增强工具，把文件处理、窗口控制、剪贴板、压缩包与自定义动作集中到一个操作库，通过主窗口、菜单栏、快捷面板、访达菜单、系统服务和输入规则调用。
 
-当前源码为 **V1.16 / build 18**（首版 V1.00 / build 1）。运行要求为 Apple Silicon Mac、macOS 14 或更高版本。独立 Bundle ID 为 `com.gaoseries.GaoCaoZuo`。
+当前源码为 **V1.17 / build 19**（首版 V1.00 / build 1）。运行要求为 Apple Silicon Mac、macOS 14 或更高版本。独立 Bundle ID 为 `com.gaoseries.GaoCaoZuo`。
 
 逐项实现、迁移与未验收边界见[功能覆盖清单](Docs/功能覆盖-V1.09.md)。
+
+## V1.17 更新
+
+后台输入监听按启用功能订阅事件。只有热角和清洁模式需要每次指针移动。暂停输入规则、系统睡眠或没有监听需求时停掉健康轮询，状态未变化时不刷新界面。原有快捷键、窗口拖动、输入法切换和清洁模式保留各自所需事件。
 
 ## V1.16 更新
 
@@ -209,7 +213,7 @@ Scripts/test.sh --swift-only --extensions-only
 Scripts/build.sh
 ```
 
-本版发行包构建到 `Release/GaoCaoZuo-1.16.dmg`，旁边生成 SHA-256 校验文件。临时构建先位于系统临时目录的 `.noindex` 容器；成功后清理。签名或随后处理失败时停止，按输出的精确路径核验并清除临时产物，不生成旧程序或资料备份。只构建 `.app`：
+本版发行包构建到 `Release/GaoCaoZuo-1.17.dmg`，旁边生成 SHA-256 校验文件。临时构建先位于系统临时目录的 `.noindex` 容器；成功后清理。签名或随后处理失败时停止，按输出的精确路径核验并清除临时产物，不生成旧程序或资料备份。只构建 `.app`：
 
 ```sh
 mkdir -p /private/tmp/GaoCaoZuo-review.noindex

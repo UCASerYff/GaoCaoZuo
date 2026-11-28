@@ -81,8 +81,8 @@ def test_native_idle_does_not_dispatch_a_stale_or_invisible_warning():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows message queues")
-def test_runtime_starts_and_releases_resources_without_interaction():
-    from gaocaozuo.runtime_win import WindowsRuntime
+def test_runtime_starts_and_releases_resources_without_interaction(monkeypatch):
+    from gaocaozuo import runtime_win
     from gaocaozuo.system import FakeSystem, SystemGateway
 
     class NoUserWindows:
@@ -90,31 +90,54 @@ def test_runtime_starts_and_releases_resources_without_interaction():
             return None
 
     observed = threading.Event()
+    idle_wait = threading.Event()
     actions = []
-    runtime = WindowsRuntime(NoUserWindows(), SystemGateway(FakeSystem()), IdlePolicy({"enabled": False}),
-                             lambda *action: actions.append(action), on_tick=observed.set)
+    native_wait = runtime_win.wait_for_messages
+
+    def observe_wait(timeout):
+        if timeout > 0.1:
+            idle_wait.set()
+        native_wait(timeout)
+
+    monkeypatch.setattr(runtime_win, "wait_for_messages", observe_wait)
+    runtime = runtime_win.WindowsRuntime(NoUserWindows(), SystemGateway(FakeSystem()), IdlePolicy({"enabled": False}),
+                                         lambda *action: actions.append(action), on_tick=observed.set)
     runtime.configure([], paused=True)
     runtime.start()
     try:
         assert observed.wait(3)
+        assert idle_wait.wait(3)
         assert runtime.snapshot()["running"]
         assert actions == []
     finally:
         runtime.close()
     assert not runtime.snapshot()["running"]
+    assert not runtime._worker.is_alive()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows message queues")
-def test_disabled_tray_owns_only_a_hidden_window():
-    from gaocaozuo.tray_win import WindowsTray
+def test_disabled_tray_owns_only_a_hidden_window(monkeypatch):
+    from gaocaozuo import tray_win
 
     calls = []
-    tray = WindowsTray(lambda: calls.append("show"), lambda: calls.append("exit"))
+    waits = []
+    blocked = threading.Event()
+    native_wait = tray_win.wait_for_messages
+
+    def observe_wait(timeout):
+        waits.append(timeout)
+        blocked.set()
+        native_wait(timeout)
+
+    monkeypatch.setattr(tray_win, "wait_for_messages", observe_wait)
+    tray = tray_win.WindowsTray(lambda: calls.append("show"), lambda: calls.append("exit"))
     tray.configure(False)
     tray.start()
     try:
         assert tray.ready.wait(3)
         assert tray._window
+        assert blocked.wait(3)
+        assert waits and all(timeout is None for timeout in waits)
         assert not user("IsWindowVisible", w.BOOL, w.HWND)(tray._window)
         assert not tray.registered
         assert calls == []

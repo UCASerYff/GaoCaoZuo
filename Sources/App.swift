@@ -164,7 +164,7 @@ final class OperationPanel: NSPanel {
         FlyKeyController.shared.configure(configuration:fly,bindings:store.settings.bindings,excludedApps:store.settings.inputExcludedApps) { [weak self] binding in
             self?.store.prepare(binding.actionID)
         }
-        store.input.configureExtensionDemand(auto.enabled || fly.enabled)
+        store.input.configureExtensionDemand(autoInput: auto.enabled, flyKey: fly.enabled)
     }
     private func applyAppearance(){
         NSApp.appearance=store.settings.appearance == "system" ? nil : NSAppearance(named:store.settings.appearance == "dark" ? .darkAqua : .aqua)

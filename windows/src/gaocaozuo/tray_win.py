@@ -10,7 +10,7 @@ import sys
 import time
 from threading import Event, Thread, current_thread
 
-from gaocaozuo.native_win import bind, kernel, user
+from gaocaozuo.native_win import bind, kernel, user, wait_for_messages
 from gaocaozuo.resources import asset_dir
 from gaocaozuo.version import APP_NAME
 
@@ -72,6 +72,8 @@ class WindowsTray:
 
     def configure(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
+        if self._window:
+            user("PostMessageW", w.BOOL, w.HWND, w.UINT, w.WPARAM, w.LPARAM)(self._window, 0, 0, 0)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -191,7 +193,10 @@ class WindowsTray:
                     self.registered = False
                     has_v4 = False
                     next_register = 0.0
-                self._stop.wait(0.04)
+                # An installed icon has nothing to poll. Retain the retry deadline
+                # only while Explorer is unavailable and wake on shell messages.
+                retry = next_register - time.monotonic() if self._enabled and not self.registered else None
+                wait_for_messages(retry)
         finally:
             if announced:
                 notify(_DELETE, c.byref(data))
