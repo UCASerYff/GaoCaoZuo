@@ -1,0 +1,30 @@
+name: macOS fixes validation
+on:
+  push:
+    branches: ['codex/macos-fixes-20261128-c5bf74ea8b-finderfocus']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and run isolated checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+          project="$PWD"
+          /usr/bin/python3 -B "$project/Scripts/setup-workspace-leases.py"
+          lease="$(dirname "$project")/合并迁移-2026-11-02/build_lease.py"
+          export GAO_BUILD_LEASE_OWNER="macos-shortcut-focus-$GITHUB_RUN_ID-$$"
+          receipt=$(/usr/bin/python3 -B "$lease" acquire --owner "$GAO_BUILD_LEASE_OWNER" --purpose "Run native Finder alias fixtures")
+          GAO_BUILD_LEASE_TOKEN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$receipt")
+          export GAO_BUILD_LEASE_TOKEN
+          trap '/usr/bin/python3 -B "$lease" release >/dev/null' EXIT
+          /bin/zsh Scripts/test.sh --swift-only --shortcut-alias-icons-only
