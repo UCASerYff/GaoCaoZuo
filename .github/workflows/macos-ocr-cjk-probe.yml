@@ -1,0 +1,120 @@
+name: macOS CJK searchable text probe
+on:
+  push:
+    branches: ['codex/macos-ocr-cjk-probe-20261128-c3ee1ff8']
+permissions:
+  contents: read
+jobs:
+  cjk:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Measure glyph selection, text and case-insensitive search before and after PDFKit rewrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          project=$(pwd -P)
+          /usr/bin/python3 -B "$project/Scripts/setup-workspace-leases.py"
+          lease="$(dirname -- "$project")/合并迁移-2026-11-02/build_lease.py"
+          export GAO_BUILD_LEASE_OWNER="macos-cjk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$"
+          receipt=$(/usr/bin/python3 -B "$lease" acquire --owner "$GAO_BUILD_LEASE_OWNER" --purpose 'Probe searchable PDF Unicode on synthetic text')
+          GAO_BUILD_LEASE_TOKEN=$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$receipt")
+          export GAO_BUILD_LEASE_TOKEN
+          scratch=$(mktemp -d /private/tmp/gaocaozuo-cjk.XXXXXX)
+          trap 'rm -rf -- "$scratch"; /usr/bin/python3 -B "$lease" release >/dev/null' EXIT
+          cat > "$scratch/main.swift" <<'SWIFT'
+          import Foundation
+          import CoreGraphics
+          import CoreText
+          import PDFKit
+
+          let phrase = "中文测试 你好世界"
+          let token = "中文测试"
+          let probeBox = CGRect(x: 49.1164, y: 368.5, width: 226.3362, height: 32.7109)
+          let crop = CGRect(x: 5, y: 5, width: 890, height: 490)
+          let originalMedia = CGRect(x: 0, y: 0, width: 900, height: 500)
+          let scratch = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+          let baseFont = CTFontCreateWithName("Helvetica" as CFString, 100, nil)
+          let languageFont = CTFontCreateForStringWithLanguage(baseFont, phrase as CFString, CFRange(location: 0, length: (phrase as NSString).length), "zh-Hans" as CFString)
+          let choices: [(String,CTFont,Bool)] = [
+              ("fallback", baseFont, false), ("fallback-actual-text", baseFont, true),
+              ("simplified-cover", languageFont, false),
+              ("pingfang", CTFontCreateWithName("PingFangSC-Regular" as CFString, 100, nil), false),
+              ("hiragino", CTFontCreateWithName("HiraginoSansGB-W3" as CFString, 100, nil), false),
+              ("songti", CTFontCreateWithName("STSongti-SC-Regular" as CFString, 100, nil), false)
+          ]
+
+          func rectData(_ rect: CGRect) -> Data {
+              var value = rect
+              return Data(bytes: &value, count: MemoryLayout<CGRect>.size)
+          }
+
+          func scalars(_ value: String?) -> String {
+              guard let value else { return "<nil>" }
+              return value.unicodeScalars.map { String(format: "U+%04X", $0.value) }.joined(separator: ",")
+          }
+
+          func output(_ url: URL, font: CTFont, actual: Bool) {
+              var media = originalMedia
+              guard let consumer = CGDataConsumer(url: url as CFURL),
+                    let context = CGContext(consumer: consumer, mediaBox: &media, nil) else {
+                  fatalError("synthetic context")
+              }
+              let entry = [kCGPDFContextMediaBox as String: rectData(media), kCGPDFContextCropBox as String: rectData(crop)] as CFDictionary
+              context.beginPDFPage(entry)
+              let attr = NSAttributedString(string: phrase,attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
+              let text = CTLineCreateWithAttributedString(attr)
+              let glyphs = CTLineGetBoundsWithOptions(text, [.useGlyphPathBounds])
+              let sx = probeBox.width / glyphs.width
+              let sy = probeBox.height / glyphs.height
+              let transform = CGAffineTransform(a: sx, b: 0, c: 0, d: sy,
+                  tx: probeBox.minX - glyphs.minX * sx, ty: probeBox.minY - glyphs.minY * sy)
+              context.saveGState()
+              context.concatenate(transform)
+              context.textMatrix = .identity
+              context.textPosition = .zero
+              context.setTextDrawingMode(.invisible)
+              if actual {
+                  let properties = [CGPDFTagProperty.actualText.rawValue as String: phrase] as CFDictionary
+                  CGPDFContextBeginTag(context, .span, properties)
+              }
+              CTLineDraw(text, context)
+              if actual { CGPDFContextEndTag(context) }
+              context.restoreGState()
+              context.endPDFPage()
+              context.closePDF()
+          }
+
+          func measure(_ pdf: PDFDocument, label: String, stage: String) {
+              guard let page = pdf.page(at: 0) else { fatalError("synthetic page") }
+              let selected = page.selection(for: probeBox.insetBy(dx: -1, dy: -1))?.string
+              let found = pdf.findString(token, withOptions: [.caseInsensitive]).filter { $0.pages.contains(page) }
+              let unlocalized = pdf.findString(token, withOptions: []).filter { $0.pages.contains(page) }
+              let positions = found.map { $0.bounds(for: page) }
+              let equivalent = selected?.precomposedStringWithCompatibilityMapping == phrase.precomposedStringWithCompatibilityMapping
+              print("GAO_CJK label=\(label) stage=\(stage) chars=\(scalars(selected)) page=\(scalars(page.string)) matches=\(found.count) matchesExact=\(unlocalized.count) normalizedEqual=\(equivalent) searchPositions=\(positions)")
+          }
+
+          print("GAO_CJK input=\(scalars(phrase)) token=\(scalars(token))")
+          for (label, font, tagged) in choices {
+              let first = scratch.appendingPathComponent("\(label).pdf")
+              let second = scratch.appendingPathComponent("\(label)-rewritten.pdf")
+              print("GAO_CJK label=\(label) font=\(CTFontCopyPostScriptName(font)) tag=\(tagged)")
+              output(first, font: font, actual: tagged)
+              guard let raw = PDFDocument(url: first), let page = raw.page(at: 0) else { fatalError("read generated PDF") }
+              measure(raw, label: label, stage: "quartz")
+              page.rotation = 0
+              page.setBounds(originalMedia, for: .mediaBox)
+              page.setBounds(crop, for: .cropBox)
+              guard raw.write(to: second), let rewritten = PDFDocument(url: second) else { fatalError("rewrite generated PDF") }
+              measure(rewritten, label: label, stage: "pdfkit")
+          }
+          SWIFT
+          swiftc -target arm64-apple-macos14.0 -module-cache-path "$scratch/cache" "$scratch/main.swift" -framework CoreGraphics -framework CoreText -framework PDFKit -o "$scratch/diagnostics"
+          "$scratch/diagnostics" "$scratch"
