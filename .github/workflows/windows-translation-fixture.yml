@@ -1,0 +1,88 @@
+name: Windows native translation fixture
+
+on:
+  push:
+    branches: ['codex/windows-translation-qa-*']
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-offline-translation:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: windows
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install the locked native test dependencies
+        run: |
+          $locked = Get-Content -LiteralPath requirements-dev.txt |
+            Where-Object { $_ -match '^(pytest|Pillow|ctranslate2|sentencepiece|py3langid)==' }
+          if ($locked.Count -ne 5) { throw 'Missing locked translation test dependencies.' }
+          python -m pip install --disable-pip-version-check --only-binary=:all: $locked
+      - name: Fetch and verify the two exact official Argos fixtures
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD 'src'
+          $env:GAO_TRANSLATION_TEST_PACKS = Join-Path $env:RUNNER_TEMP 'gao-synthetic-argos-fixtures'
+          @'
+          import hashlib
+          import os
+          from concurrent.futures import ThreadPoolExecutor
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          from urllib.request import Request, build_opener
+
+          from gaocaozuo.translation import NoRedirect
+          from gaocaozuo.translation_models import PACKS
+
+          folder = Path(os.environ["GAO_TRANSLATION_TEST_PACKS"])
+          folder.mkdir()
+          if {pack.pair for pack in PACKS} != {"en-zh", "zh-en"} or len(PACKS) != 2:
+              raise RuntimeError("The expected fixture directions changed.")
+
+          def download(pack):
+              parsed = urlsplit(pack.url)
+              expected_path = f"/argospm/v1/{pack.archive_name}"
+              if (parsed.scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment) != (
+                      "https", "data.argosopentech.com", expected_path, "", ""):
+                  raise RuntimeError("Unexpected official fixture URL.")
+              target = folder / pack.archive_name
+              request = Request(pack.url, headers={"Accept": "application/octet-stream"})
+              expected_digest = hashlib.sha256()
+              count = 0
+              with build_opener(NoRedirect()).open(request, timeout=60) as response, target.open("xb") as stream:
+                  if int(response.headers["Content-Length"]) != pack.size:
+                      raise RuntimeError("Official fixture length does not match the release pin.")
+                  while content := response.read(1024 * 1024):
+                      count += len(content)
+                      if count > pack.size:
+                          raise RuntimeError("Official fixture exceeds the release pin.")
+                      expected_digest.update(content)
+                      stream.write(content)
+              if count != pack.size or expected_digest.hexdigest() != pack.digest:
+                  raise RuntimeError("Official fixture does not match the release SHA-256.")
+              print(f"{target.name}: {count} bytes, SHA-256 {pack.digest}", flush=True)
+
+          with ThreadPoolExecutor(max_workers=2) as executor:
+              list(executor.map(download, PACKS))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "GAO_TRANSLATION_TEST_PACKS=$env:GAO_TRANSLATION_TEST_PACKS" >> $env:GITHUB_ENV
+      - name: Run only the synthetic bidirectional offline inference test
+        run: |
+          if (!(Test-Path -LiteralPath $env:GAO_TRANSLATION_TEST_PACKS -PathType Container)) {
+            throw 'Verified models are absent.'
+          }
+          python -m pytest -q -ra -p no:cacheprovider tests/test_local_translation.py::test_native_translation_with_official_local_fixtures
