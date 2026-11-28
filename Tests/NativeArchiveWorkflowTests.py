@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from QuickLookTestSources import compile_quicklook_harness
+
 PROJECT = Path(__file__).resolve().parent.parent
 RUNNER = r'''
 import Foundation
@@ -64,8 +66,16 @@ let links=try NativeArchive.inspect(root.appendingPathComponent("links.zip"))
 try expect(!links.canEditCopy,"link-bearing archives are not silently rewritten")
 try rejects("archive link extraction") {_ = try NativeArchive.extract(links,selected:nil,directory:output,name:"links")}
 let encrypted=try NativeArchive.inspect(root.appendingPathComponent("encrypted.zip"))
-try expect(!encrypted.canEditCopy && encrypted.items.contains(where:\.encrypted),"encrypted archive editing cannot strip protection")
-try expect(encrypted.editCopyUnavailableReason?.contains("带密码编辑请用主应用") == true,"encrypted edit limitation identifies the existing password-aware main-app route")
+let originalEncrypted = try Data(contentsOf:encrypted.url)
+try expect(!encrypted.canEditCopy && encrypted.canEditEncryptedCopy && encrypted.items.contains(where:\.encrypted),
+    "encrypted ZIP is only editable through the password-aware path")
+try expect(encrypted.editCopyUnavailableReason == nil,"the encrypted edit workflow is available")
+try rejects("native edit must not rebuild an encrypted archive as plaintext") {
+    _ = try NativeArchive.editedCopy(encrypted,deleting:[],adding:[],cleanHidden:false,directory:output,name:"plaintext.zip")
+}
+try expect(try Data(contentsOf:encrypted.url) == originalEncrypted &&
+    !FileManager.default.fileExists(atPath:output.appendingPathComponent("plaintext.zip").path),
+    "rejected plaintext edit does not publish or change the AES ZIP")
 try expect(try NativeArchive.memberData(encrypted,path:"added.txt",password:"FixtureOnly") == Data("added new\n".utf8),"native AES ZIP extraction uses explicit password")
 try rejects("incorrect password") {_ = try NativeArchive.memberData(encrypted,path:"added.txt",password:"incorrect")}
 try rejects("fallback rejects special FIFO without a writer") {_ = try ArchiveQuickLookNative.list(url:root.appendingPathComponent("fifo"))}
@@ -239,13 +249,7 @@ def main():
         runner = root / "main.swift"
         runner.write_text(RUNNER)
         executable = root / "native-workflows"
-        subprocess.run([
-            "swiftc", "-swift-version", "5", "-Xfrontend", "-disable-sandbox", "-O",
-            "-application-extension", "-target", "arm64-apple-macos14.0", "-module-cache-path", str(root / "cache"),
-            *[str(p) for p in sorted((PROJECT / "QuickLookExtension").glob("*.swift"))],
-            str(PROJECT / "Shared/GaoLocalization.swift"), str(runner),
-            "-framework", "AppKit", "-framework", "QuickLookUI", "-framework", "PDFKit", "-framework", "ImageIO", "-framework", "CryptoKit", "-o", str(executable),
-        ], check=True, timeout=90)
+        compile_quicklook_harness(PROJECT, root, runner, executable)
         subprocess.run([str(executable), str(root)], check=True, timeout=90)
 
 
