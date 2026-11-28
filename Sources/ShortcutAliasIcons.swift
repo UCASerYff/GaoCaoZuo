@@ -130,7 +130,7 @@ struct ShortcutAliasBatch {
             let state: ShortcutAliasPreview.State
             if let pending = saved.pending[key], pending != current.stamp { state = .interrupted }
             else if let receipt { state = receipt.applied == current.stamp ? .managed : .changed }
-            else { state = current.customIcon == nil ? .available : .custom }
+            else { state = current.stamp.icon == nil ? .available : .custom }
             return ShortcutAliasPreview(url: url, currentImage: current.customIcon ?? NSWorkspace.shared.icon(forFile: url.path),
                 stamp: current.stamp, state: state, appliedName: state == .managed ? receipt?.name : nil)
         }
@@ -233,10 +233,10 @@ struct ShortcutAliasBatch {
         }
         let prior = journal.receipts[key]
         if let prior {
-            guard before.stamp == prior.applied, before.customIcon != nil else { throw FileToolsError.changed(url) }
+            guard before.stamp == prior.applied, before.stamp.icon != nil else { throw FileToolsError.changed(url) }
         } else {
             guard image != nil else { throw FileToolsError.invalid("此替身没有可恢复的换装记录。") }
-            guard before.customIcon == nil else { throw FileToolsError.invalid("该替身已有自定义图标。") }
+            guard before.stamp.icon == nil else { throw FileToolsError.invalid("该替身已有自定义图标。") }
         }
 
         journal.pending[key] = before.stamp
@@ -247,7 +247,7 @@ struct ShortcutAliasBatch {
         let didSet = NSWorkspace.shared.setIcon(image, forFile: key, options: [])
         let after = try inspect(url)
         guard before.stamp.isSameAlias(as: after.stamp) else { throw FileToolsError.changed(url) }
-        guard didSet, (after.customIcon != nil) == (image != nil) else {
+        guard didSet, (after.stamp.icon != nil) == (image != nil) else {
             if before.stamp == after.stamp {
                 journal.clearPending(for: key)
                 try data.save(journal, name: Self.recordFile)
@@ -262,7 +262,7 @@ struct ShortcutAliasBatch {
             journal = completed
         } catch {
             // Revert this write only while its exact post-state is still ours.
-            if (try? inspect(url).stamp) == after.stamp {
+            if (before.stamp.icon == nil || before.customIcon != nil), (try? inspect(url).stamp) == after.stamp {
                 _ = NSWorkspace.shared.setIcon(before.customIcon, forFile: key, options: [])
             }
             throw FileToolsError.invalid("图标记录未能保存，请在 Finder 核对该替身。")
@@ -293,7 +293,8 @@ struct ShortcutAliasBatch {
         let icon: String?
         if values.customIcon != nil || hasFinderIcon {
             let resource = try extendedAttribute("com.apple.ResourceFork", at: fd, limit: Self.maximumImageBytes, url: url)
-            guard values.customIcon != nil, !resource.isEmpty else { throw FileToolsError.invalid("无法核对已有自定义图标。") }
+            // Finder writes its custom icon here even when Foundation supplies no NSImage.
+            guard !resource.isEmpty else { throw FileToolsError.invalid("无法核对已有自定义图标的资源数据。") }
             icon = Self.digest(resource)
         } else { icon = nil }
         var opened = stat()
