@@ -29,9 +29,13 @@ jobs:
       - name: Install the locked native test dependencies
         run: |
           $locked = Get-Content -LiteralPath requirements-dev.txt |
-            Where-Object { $_ -match '^(pytest|Pillow|ctranslate2|sentencepiece|py3langid)==' }
-          if ($locked.Count -ne 5) { throw 'Missing locked translation test dependencies.' }
+            Where-Object { $_ -match '^(pytest|Pillow|ctranslate2|sentencepiece|py3langid|setuptools)==' }
+          if ($locked.Count -ne 6) { throw 'Missing locked translation test dependencies.' }
           python -m pip install --disable-pip-version-check --only-binary=:all: $locked
+      - name: Verify the release-pinned native inference runtime
+        run: |
+          python -c 'import pkg_resources, ctranslate2, sentencepiece, py3langid; from importlib.metadata import version; assert callable(ctranslate2.Translator); assert ctranslate2.get_supported_compute_types("cpu"); print("CTranslate2", version("ctranslate2"), "setuptools", version("setuptools"), "native CPU inference available")'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch and verify the two exact official Argos fixtures
         run: |
           $env:PYTHONPATH = Join-Path $PWD 'src'
@@ -85,4 +89,4 @@ jobs:
           if (!(Test-Path -LiteralPath $env:GAO_TRANSLATION_TEST_PACKS -PathType Container)) {
             throw 'Verified models are absent.'
           }
-          python -m pytest -q -ra -p no:cacheprovider tests/test_local_translation.py::test_native_translation_with_official_local_fixtures
+          python -m pytest -q -ra --showlocals -p no:cacheprovider tests/test_local_translation.py::test_native_translation_with_official_local_fixtures
