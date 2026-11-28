@@ -1,7 +1,15 @@
-param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "1.18+1", [switch]$LocalizationOnly)
+param([string]$Installer = "", [string]$PreviousInstaller = "", [string]$ExpectedVersion = "", [switch]$LocalizationOnly)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
+if (!$ExpectedVersion) {
+    $versionSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'src\gaocaozuo\version.py') -Raw
+    $marketingMatch = [regex]::Match($versionSource, '(?m)^MARKETING_VERSION = "(\d+\.\d+)"\r?$')
+    $buildMatch = [regex]::Match($versionSource, '(?m)^WINDOWS_BUILD = "(\d+)"\r?$')
+    if (!$marketingMatch.Success -or !$buildMatch.Success) { throw 'Windows version could not be read from the source.' }
+    $ExpectedVersion = $marketingMatch.Groups[1].Value + '+' + $buildMatch.Groups[1].Value
+}
+if ($ExpectedVersion -notmatch '^\d+\.\d+\+\d+$') { throw 'ExpectedVersion must include the Windows build number.' }
 $marketingVersion, $expectedBuild = $ExpectedVersion -split '\+', 2
 if (-not $Installer) {
     $Installer = Join-Path $PSScriptRoot "dist\GaoCaoZuo-Windows-$marketingVersion-build$expectedBuild-x64-Setup.exe"
