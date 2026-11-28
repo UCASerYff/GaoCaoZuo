@@ -1,0 +1,57 @@
+name: Validated Windows installer publication
+on:
+  push:
+    branches: ['codex/windows-release-20261128-c6b2bdab68-visualsizepublish']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish the verified installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GH_TOKEN="${{ github.token }}"
+          repo=UCASerYff/GaoCaoZuo
+          tag=windows-v1.18-build.4
+          source=c6b2bdab68ecfd15c7310e2b19bcc091c1720f32
+          asset=GaoCaoZuo-Windows-1.18-build4-x64-Setup.exe
+          work=$(mktemp -d)
+          trap 'rm -f -- "$work/original.zip" "$work/$asset" "$work/$asset.sha256" "$work/notes.md"; rmdir -- "$work"' EXIT
+          cd "$work"
+          gh api "repos/$repo/actions/artifacts/15255925981/zip" > original.zip
+          printf '%s  original.zip\n' 'c05e3756fc1dae3880b7e6ac83bd504149a3f15fc9de8853d3b9bdef5d8c7c9d' | sha256sum -c -
+          for name in "$asset" "$asset.sha256"; do
+            entry=$(unzip -Z1 original.zip | awk -F/ -v name="$name" '$NF == name {print $0}')
+            test -n "$entry"
+            test "$(printf '%s\n' "$entry" | wc -l)" -eq 1
+            unzip -p original.zip "$entry" > "$name"
+          done
+          sha256sum -c "$asset.sha256"
+          printf '%s  %s\n' 'af70d183f9639b68c01ea5e1db8a74bad5d59f83ee7d5d5ea0d06272bdd29c19' "$asset" | sha256sum -c -
+          test "$(gh api "repos/$repo/commits/main" --jq .sha)" = "$source"
+          test "$(gh api "repos/$repo/releases?per_page=100" --jq 'map(select(.tag_name == "windows-v1.18-build.4")) | length')" -eq 0
+          cat <<'NOTES' > notes.md
+          统一桌面、任务栏和托盘图标的底板占幅，补齐桌面多 DPI 原生图档，保留灰底与书法字形。
+          
+          附 SHA-256 校验文件。
+          NOTES
+          gh release create "$tag" "$asset" "$asset.sha256" --repo "$repo" --target "$source" --title "GaoCaoZuo Windows 1.18 (build 4)" --notes-file notes.md --draft --latest=false
+          draft=$(gh api "repos/$repo/releases?per_page=100" --jq '.[] | select(.tag_name == "windows-v1.18-build.4" and .draft).id')
+          test -n "$draft"
+          test "$(gh api "repos/$repo/releases/$draft" --jq .target_commitish)" = "$source"
+          test "$(gh api "repos/$repo/releases/$draft/assets" --jq length)" -eq 2
+          for name in "$asset" "$asset.sha256"; do
+            hash=$(sha256sum "$name" | cut -d ' ' -f1)
+            bytes=$(wc -c < "$name" | tr -d ' ')
+            metadata=$(gh api "repos/$repo/releases/$draft/assets" | jq -r --arg name "$name" '.[] | select(.name == $name and .state == "uploaded") | .digest + "/" + (.size | tostring)')
+            test "$metadata" = "sha256:$hash/$bytes"
+          done
+          gh api -X PATCH "repos/$repo/releases/$draft" -F draft=false -f make_latest=false --jq .html_url
+          test "$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)" = "$source"
