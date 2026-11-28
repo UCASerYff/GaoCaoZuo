@@ -211,6 +211,7 @@ func runExtensionIntegrationTests() throws {
     // Import with overwrite policy
     var modifiedS1InCSV = s1
     modifiedS1InCSV.text = "修改后的退货话术"
+    modifiedS1InCSV.shortcut = s1.shortcut?.uppercased()
     let csvToOverwrite = SnippetCSVCodec.exportCSV(snippets: [modifiedS1InCSV], groups: [group])
     let importedOverwrite = try SnippetCSVCodec.importCSV(
         csvToOverwrite,
@@ -218,7 +219,8 @@ func runExtensionIntegrationTests() throws {
         existingGroups: [group],
         policy: .overwrite
     )
-    try check(importedOverwrite.snippets.first(where: { $0.name == "退货话术" })?.text == "修改后的退货话术", "覆盖策略成功更新")
+    let overwritten = importedOverwrite.snippets.first(where: { $0.id == s1.id })
+    try check(overwritten?.text == modifiedS1InCSV.text && overwritten?.shortcut == "TH", "覆盖策略保留原 UUID 并导入文本与快捷码")
 
     // Import with keepBoth policy
     let importedKeepBoth = try SnippetCSVCodec.importCSV(
@@ -227,7 +229,15 @@ func runExtensionIntegrationTests() throws {
         existingGroups: [group],
         policy: .keepBoth
     )
-    try check(importedKeepBoth.snippets.contains(where: { $0.name == "退货话术 (副本)" }), "保留两者生成副本")
+    try check(importedKeepBoth.snippets.count == 2, "保留两者仅留下原条目和一个副本")
+    try check(importedKeepBoth.snippets.first(where: { $0.id == s1.id }) == s1, "保留两者完整保留原条目")
+    guard let copy = importedKeepBoth.snippets.first(where: { $0.id != s1.id }) else {
+        throw DataFailure.message("扩展整合测试失败：保留两者的副本需要独立 UUID")
+    }
+    let expectedCopyName = L10n.format("%@ (副本)", s1.name)
+    try check(copy.name == expectedCopyName && copy.name != s1.name, "副本名称应使用本地化模板，预期 \(expectedCopyName.debugDescription)，实际 \(copy.name.debugDescription)")
+    try check(copy.text == modifiedS1InCSV.text && copy.groupID == group.id, "副本保存导入文本和原分组")
+    try check(copy.shortcut == nil, "仅副本清除大小写不同的冲突快捷码")
 
     print("短语库占位符、粘贴堆栈与 CSV 公式注入防御测试通过")
 
