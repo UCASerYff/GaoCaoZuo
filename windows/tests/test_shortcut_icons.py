@@ -4,13 +4,16 @@ import os
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from gaocaozuo.app import App
 from gaocaozuo.errors import AppError
 from gaocaozuo.shortcut_icons import ShortcutIcons
 from gaocaozuo.shortcut_link import HEADER_SIZE, ICON_ENV, ICON_ENV_SIZE, LINK_CLSID, ShellLink
+from gaocaozuo.web import dispatch
 
 
 def _string(value):
@@ -50,6 +53,100 @@ def test_rejects_corrupt_shortcut():
         ShellLink(_shortcut_fixture("test")[:-3])
     with pytest.raises(AppError, match="结构"):
         ShellLink(b"not a shortcut")
+
+
+def test_migrated_icon_profile_can_apply_and_restore_without_settings(tmp_path, monkeypatch):
+    data = tmp_path / "profile"
+    ico = tmp_path / "ChatGPT.ico"
+    Image.new("RGBA", (96, 96), (255, 0, 11, 255)).save(ico)
+    link = tmp_path / "ChatGPT.lnk"
+    original = _shortcut_fixture(r"C:\Synthetic\artist.ico")
+    link.write_bytes(original)
+
+    def replace_shortcut(path, before, after):
+        assert path.read_bytes() == before
+        path.write_bytes(after)
+
+    platform = SimpleNamespace(source_path=lambda value, suffixes, maximum: Path(value),
+                               replace_shortcut=replace_shortcut, notify_shortcut=lambda path: None)
+    monkeypatch.setattr(ShortcutIcons, "_platform", staticmethod(lambda: platform))
+    ShortcutIcons(data).dispatch("import", {"role": "chatgpt", "path": str(ico)})
+
+    app = App(data)
+    assert app.snapshot()["status"] == "missing"
+    assert app.snapshot()["shortcutIconsWritable"] is True
+    item = {"path": str(link), "role": "chatgpt", "variant": "local"}
+    applied = dispatch(app, "/api/shortcut-icons/apply", {"confirm": True, "items": [item]})
+    assert applied["items"] == [{"path": str(link), "ok": True}]
+    assert Path(ShellLink(link.read_bytes()).icon_path).read_bytes() == ico.read_bytes()
+
+    app = App(data)
+    restored = dispatch(app, "/api/shortcut-icons/restore", {"confirm": True, "items": [{"path": str(link)}]})
+    assert restored["items"] == [{"path": str(link), "ok": True}]
+    assert link.read_bytes() == original
+    assert not (data / "settings.json").exists()
+
+    state = data / "ShortcutIcons" / "state.json"
+    saved = state.read_bytes()
+    dispatch(app, "/api/settings/create", {})
+    assert app.snapshot()["status"] == "ready"
+    assert app.snapshot()["shortcutIconsWritable"] is True
+    assert state.read_bytes() == saved
+
+
+@pytest.mark.parametrize(("state", "extra"), [(b"{", None), (b'{"schema":2,"roles":{},"links":{}}', None),
+    (b'{"schema":1,"roles":[],"links":{}}', None), (b'{"schema":1,"roles":{},"links":{}}', "notes.txt")])
+def test_unrecognized_icon_only_profile_stays_read_only(tmp_path, state, extra):
+    icon_state = tmp_path / "ShortcutIcons" / "state.json"
+    icon_state.parent.mkdir()
+    icon_state.write_bytes(state)
+    if extra:
+        (tmp_path / extra).write_bytes(b"foreign")
+
+    app = App(tmp_path)
+    assert app.snapshot()["status"] == "foreign"
+    assert app.snapshot()["shortcutIconsWritable"] is False
+    with pytest.raises(AppError) as raised:
+        dispatch(app, "/api/shortcut-icons/apply", {"confirm": True, "items": []})
+    assert raised.value.code == "unavailable"
+    with pytest.raises(AppError) as raised:
+        dispatch(app, "/api/settings/create", {})
+    assert raised.value.code == "foreign"
+    assert not (tmp_path / "settings.json").exists()
+    assert icon_state.read_bytes() == state
+
+
+@pytest.mark.parametrize(("content", "status"), [(b"{", "corrupt"), (b'{"schema":2}', "newer")])
+def test_bad_main_settings_never_allow_icon_changes(tmp_path, content, status):
+    icon_state = tmp_path / "ShortcutIcons" / "state.json"
+    icon_state.parent.mkdir()
+    icon_state.write_bytes(b'{"schema":1,"roles":{},"links":{}}')
+    candidate = tmp_path / "settings.json"
+    candidate.write_bytes(content)
+
+    app = App(tmp_path)
+    assert app.snapshot()["status"] == status
+    assert app.snapshot()["shortcutIconsWritable"] is False
+    with pytest.raises(AppError) as raised:
+        dispatch(app, "/api/shortcut-icons/apply", {"confirm": True, "items": []})
+    assert raised.value.code == "unavailable"
+    with pytest.raises(AppError):
+        dispatch(app, "/api/settings/create", {})
+    assert candidate.read_bytes() == content
+
+
+def test_existing_settings_are_kept_when_added_to_migrated_profile_before_create(tmp_path):
+    icon_state = tmp_path / "ShortcutIcons" / "state.json"
+    icon_state.parent.mkdir()
+    icon_state.write_bytes(b'{"schema":1,"roles":{},"links":{}}')
+    app = App(tmp_path)
+    assert app.store.status == "missing"
+    candidate = tmp_path / "settings.json"
+    current = b'{"schema":1,"appearance":"dark"}'
+    candidate.write_bytes(current)
+
+    assert dispatch(app, "/api/settings/create", {})["appearance"] == "dark"
+    assert candidate.read_bytes() == current
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Shell Link and ReplaceFileW")

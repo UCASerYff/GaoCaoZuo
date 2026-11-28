@@ -34,7 +34,7 @@ function iconDressPage() {
   if (iconDress.items === null && !iconDress.loading && !iconDress.failed) {
     queueMicrotask(() => refreshIconDress().catch(report));
   }
-  const writable = state.status === "ready";
+  const writable = state.shortcutIconsWritable;
   const imports = box("row icon-imports",
     button("从原版程序导入…", () => importIconOriginals("original-pack"), {glyph: "inbox", disabled: !writable}),
     button("从 ICO 目录导入…", () => importIconOriginals("folder"), {cls: "plain", glyph: "folder", disabled: !writable}));

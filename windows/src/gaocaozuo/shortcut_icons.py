@@ -15,7 +15,7 @@ from gaocaozuo.atomic import atomic_replace
 from gaocaozuo.errors import AppError
 from gaocaozuo.resources import asset_dir
 from gaocaozuo.shortcut_link import ShellLink
-from gaocaozuo.store import JsonDocument
+from gaocaozuo.store import shortcut_icons_document, valid_shortcut_icons_state
 
 
 ROLE_NAMES = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "grok": "Grok", "deepseek": "DeepSeek",
@@ -70,14 +70,14 @@ def _key(path: Path) -> str:
 
 class ShortcutIcons:
     def __init__(self, directory: Path):
-        self.directory = directory / "ShortcutIcons"
-        self.document = JsonDocument(self.directory / "state.json", {"schema": 1, "roles": {}, "links": {}})
+        self.document = shortcut_icons_document(directory)
+        self.directory = self.document.path.parent
 
     def _read_document(self) -> dict:
         doc = self.document
         doc.load()
         data = doc.raw if doc.status == "ready" else doc.empty
-        if not doc.writable or not isinstance(data.get("roles"), dict) or not isinstance(data.get("links"), dict):
+        if not doc.writable or not valid_shortcut_icons_state(data):
             raise AppError("换装记录无法读取，已停止修改快捷方式。", "corrupt")
         return data
 

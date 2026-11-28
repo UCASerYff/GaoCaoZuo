@@ -1,4 +1,4 @@
-"""settings.json / receipts.json。损坏、过新或目录不空却没有主设置时不覆盖。"""
+"""settings.json / receipts.json。保留损坏、过新和来源不明的资料。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import stat
 import uuid
 from pathlib import Path
 
@@ -224,6 +225,33 @@ class JsonDocument:
         self.notice = ""
 
 
+def shortcut_icons_document(directory: Path) -> JsonDocument:
+    return JsonDocument(directory / "ShortcutIcons" / "state.json", {"schema": 1, "roles": {}, "links": {}})
+
+
+def valid_shortcut_icons_state(data: dict | None) -> bool:
+    return isinstance(data, dict) and isinstance(data.get("roles"), dict) and isinstance(data.get("links"), dict)
+
+
+def _is_shortcut_icons_profile(directory: Path) -> bool:
+    if directory.name != "ShortcutIcons":
+        return False
+    for path, check_type, optional in ((directory, stat.S_ISDIR, False), (directory / "state.json", stat.S_ISREG, False),
+                                      (directory / "Icons", stat.S_ISDIR, True)):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            if optional:
+                continue
+            return False
+        except OSError:
+            return False
+        if not check_type(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            return False
+    document = shortcut_icons_document(directory.parent)
+    return document.status == "ready" and valid_shortcut_icons_state(document.raw)
+
+
 class Store:
     def __init__(self, directory: Path):
         self.directory = Path(directory)
@@ -236,6 +264,7 @@ class Store:
         self._inspect_settings()
 
     def _inspect_settings(self) -> None:
+        self._shortcut_icons_only = False
         if self.settings_doc.status != "missing":
             if self.settings_doc.status == "ready":
                 try:
@@ -246,7 +275,8 @@ class Store:
                     self.settings_doc.raw = None
             return
         extras = [p for p in self.directory.iterdir() if p.name not in {".DS_Store"} and not p.name.startswith(".")]
-        if extras:
+        self._shortcut_icons_only = len(extras) == 1 and _is_shortcut_icons_profile(extras[0])
+        if extras and not self._shortcut_icons_only:
             self.settings_doc.status = "foreign"
             self.settings_doc.notice = "资料目录已有文件但没有 settings.json，已停止写入，不会用空白设置覆盖。"
 
@@ -262,7 +292,14 @@ class Store:
     def settings(self) -> dict | None:
         return self.settings_doc.raw
 
+    @property
+    def shortcut_icons_writable(self) -> bool:
+        return self.status == "ready" or (self.status == "missing" and self._shortcut_icons_only)
+
     def create_settings(self) -> dict:
+        if self.settings_doc.status == "missing":
+            self.settings_doc.load()
+            self._inspect_settings()
         if self.settings_doc.status == "foreign":
             raise AppError(self.settings_doc.notice, "foreign")
         if self.settings_doc.status == "ready":

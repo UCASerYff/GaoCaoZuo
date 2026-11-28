@@ -130,6 +130,7 @@ class App:
             "status": self.store.status,
             "notice": self.store.notice,
             "settings": public,
+            "shortcutIconsWritable": self.store.shortcut_icons_writable,
             "preservedKeys": preserved,
             "groups": [{"id": key, "title": title} for key, title in GROUPS],
             "favorites": list((settings or {}).get("favorites") or []),

@@ -329,7 +329,7 @@ def dispatch(app: App, path: str, payload: dict):
                 raise AppError("请选择受支持的本地文件。", "invalid")
             kind, multiple, filetypes = kinds[payload["kind"]]
             return {"paths": pick_file(kind, multiple, filetypes=filetypes)}
-        if endpoint in {"apply", "restore", "import", "originals"} and app.store.status != "ready":
+        if endpoint in {"apply", "restore", "import", "originals"} and not app.store.shortcut_icons_writable:
             raise AppError("请先建立可写的本机设置，再修改快捷方式图标。", "unavailable")
         return app.shortcut_icons.dispatch(endpoint, payload)
     if path == "/api/archive/edit/preview":
