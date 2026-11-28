@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   synthetic-offline-translation:
@@ -90,3 +91,78 @@ jobs:
             throw 'Verified models are absent.'
           }
           python -m pytest -q -ra --showlocals -p no:cacheprovider tests/test_local_translation.py::test_native_translation_with_official_local_fixtures
+      - name: Fetch the exact ec19dac Windows release-candidate artifact
+        env:
+          GAO_ARTIFACT_READ_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactUri = 'https://api.github.com/repos/UCASerYff/GaoCaoZuo/actions/artifacts/15250322204'
+          $headers = @{
+            Authorization = "Bearer $env:GAO_ARTIFACT_READ_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $artifact = Invoke-RestMethod -Uri $artifactUri -Headers $headers -TimeoutSec 30
+          if ($artifact.id -ne 15250322204 -or $artifact.expired -or $artifact.name -ne 'GaoCaoZuo-Windows-x64' -or
+              $artifact.workflow_run.head_sha -ne 'ec19dac7c534f6a4cb77cc919a7df9410e7fb0fa') {
+            throw 'The artifact is not the pinned Windows release candidate.'
+          }
+          $archiveSha = [regex]::Match([string]$artifact.digest, '^sha256:([a-f0-9]{64})$').Groups[1].Value
+          if (!$archiveSha) { throw 'The workflow artifact is missing a SHA-256 digest.' }
+          $folder = Join-Path $env:RUNNER_TEMP 'gao-exact-windows-candidate'
+          $null = New-Item -ItemType Directory -Path $folder
+          $zipPath = Join-Path $folder 'candidate.zip'
+          # PowerShell drops Authorization on redirects to the artifact storage host.
+          Invoke-WebRequest -Uri "$artifactUri/zip" -Headers $headers -OutFile $zipPath -TimeoutSec 180
+          if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $archiveSha) {
+            throw 'Downloaded workflow artifact SHA-256 differs.'
+          }
+          $setupName = 'GaoCaoZuo-Windows-1.18-build3-x64-Setup.exe'
+          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            foreach ($name in @($setupName, "$setupName.sha256")) {
+              $entries = @($archive.Entries | Where-Object Name -eq $name)
+              if ($entries.Count -ne 1) { throw "Missing or duplicate expected artifact entry: $name" }
+              [IO.Compression.ZipFileExtensions]::ExtractToFile($entries[0], (Join-Path $folder $name))
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          $setupPath = Join-Path $folder $setupName
+          $sidecar = Get-Content -Raw -LiteralPath "$setupPath.sha256"
+          $setupSha = [regex]::Match($sidecar, '(?i)^([a-f0-9]{64})(?:\s|$)').Groups[1].Value
+          if (!$setupSha -or (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash -ne $setupSha) {
+            throw 'Candidate installer SHA-256 differs from its sidecar.'
+          }
+          "GAO_CANDIDATE_SETUP=$setupPath" >> $env:GITHUB_ENV
+          "Validated artifact $($artifact.id), installer SHA-256 $setupSha"
+      - name: Exercise both native translation directions from installed candidate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'gao-isolated-translation-install'
+          $install = Join-Path $root 'installed'
+          $null = New-Item -ItemType Directory -Path $root
+          $installerArgs = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ISOLATEDSMOKE=1 /DIR="' + $install + '"'
+          $process = Start-Process -FilePath $env:GAO_CANDIDATE_SETUP -ArgumentList $installerArgs -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Isolated candidate installation exited $($process.ExitCode)." }
+          $env:GAO_PACKAGED_CLI = Join-Path $install 'GaoCaoZuo-cli.exe'
+          $file = Get-Item -LiteralPath $env:GAO_PACKAGED_CLI
+          if ($file.VersionInfo.FileVersion -ne '1.18.3.0') { throw 'Unexpected installed CLI version.' }
+          $env:APPDATA = (New-Item -ItemType Directory -Path (Join-Path $root 'roaming')).FullName
+          $env:LOCALAPPDATA = (New-Item -ItemType Directory -Path (Join-Path $root 'local')).FullName
+          @'
+          import os
+          from pathlib import Path
+          import runpy
+          import sys
+
+          sys.path.insert(0, str(Path.cwd() / "src"))
+          for key in ("PYTHONPATH", "PYTHONHOME", "TCL_LIBRARY", "TK_LIBRARY", "CONDA_PREFIX"):
+              os.environ.pop(key, None)
+          system = Path(os.environ["SystemRoot"])
+          os.environ["PATH"] = os.pathsep.join((str(system / "System32"), str(system)))
+          sys.argv = ["tests/packaged_translation_smoke.py", os.environ["GAO_PACKAGED_CLI"],
+                      os.environ["GAO_TRANSLATION_TEST_PACKS"]]
+          runpy.run_path(sys.argv[0], run_name="__main__")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
