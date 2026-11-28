@@ -147,7 +147,12 @@ private func writeRecoveryAAC(to url: URL) async throws {
 
 private func recoveryPCM(index: Int) throws -> CMSampleBuffer {
     let frames = 1600
-    let values = (0..<frames).map { Float(sin(2 * Double.pi * 440 * Double(index * frames + $0) / 48_000) * 0.2) }
+    let startFrame = index * frames
+    let radiansPerSecond = 2.0 * Double.pi * 440.0
+    let values: [Float] = (0..<frames).map { frame in
+        let phase = radiansPerSecond * Double(startFrame + frame) / 48_000.0
+        return Float(sin(phase) * 0.2)
+    }
     var format = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagsNativeFloatPacked, mBytesPerPacket: 4, mFramesPerPacket: 1,
         mBytesPerFrame: 4, mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
